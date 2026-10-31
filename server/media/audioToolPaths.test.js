@@ -69,18 +69,17 @@ test('runnable tool resolution returns null when every candidate fails', async (
 });
 
 test('the packaged arm64 ffprobe is skipped on arm64 hosts if it cannot execute', { skip: process.arch !== 'arm64' }, async () => {
+  // ffprobe-static 的 darwin/arm64 实际是 x86_64：有 Rosetta 时能跑（GitHub runner），没有时跑不起来。
+  // 系统 ffprobe 也是可选的。期望结果按本机真实可运行性算出：第一个能跑的候选，或 null。
   const packaged = new URL('../../node_modules/ffprobe-static/bin/darwin/arm64/ffprobe', import.meta.url).pathname;
-  let packagedResult = null;
-  try { packagedResult = execFileSync(packaged, ['-version'], { encoding: 'utf8', stdio: 'ignore' }); } catch { /* expected for mismatched binary */ }
-  if (packagedResult !== null) return;
-  // 系统 ffprobe 是可选的（CI runner 没有 Homebrew ffprobe）：有就必须选中它，没有就必须返回 null。
-  const fallbacks = ['/opt/homebrew/bin/ffprobe', 'ffprobe'];
-  const systemFfprobe = fallbacks.find(candidate => {
+  const candidates = [packaged, '/opt/homebrew/bin/ffprobe', 'ffprobe'];
+  const runs = candidate => {
     try { execFileSync(candidate, ['-version'], { stdio: 'ignore' }); return true; } catch { return false; }
-  }) ?? null;
-  const selected = await resolveRunnableAudioTool([packaged, ...fallbacks],
+  };
+  const expected = candidates.find(runs) ?? null;
+  const selected = await resolveRunnableAudioTool(candidates,
     // 全量测试并发时进程 spawn 可能明显变慢：真实探测放宽超时，只影响本测试。
     { timeoutMs: 15_000 });
-  assert.notEqual(selected, packaged, 'an unlaunchable packaged path must never be selected');
-  assert.equal(selected, systemFfprobe, 'the first working system ffprobe (or none) should be selected');
+  if (expected !== packaged) assert.notEqual(selected, packaged, 'an unlaunchable packaged path must never be selected');
+  assert.equal(selected, expected, 'the first runnable candidate (or none) should be selected');
 });
