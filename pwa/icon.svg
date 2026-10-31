@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#000"/>
+  <g fill="#fff" font-family="ui-monospace, monospace" font-weight="700">
+    <text x="256" y="295" text-anchor="middle" font-size="120">CL</text>
+  </g>
+  <g stroke="#fff" stroke-width="14" stroke-linecap="round" fill="none" opacity=".7">
+    <line x1="120" y1="380" x2="120" y2="420"/>
+    <line x1="160" y1="360" x2="160" y2="440"/>
+    <line x1="200" y1="380" x2="200" y2="420"/>
+    <line x1="240" y1="345" x2="240" y2="455"/>
+    <line x1="280" y1="370" x2="280" y2="430"/>
+    <line x1="320" y1="385" x2="320" y2="415"/>
+    <line x1="360" y1="355" x2="360" y2="445"/>
+    <line x1="400" y1="378" x2="400" y2="422"/>
+  </g>
+</svg>

@@ -1,0 +1,172 @@
+/* Contextual control feedback, after structural/theme styles.
+ * No new click targets, borders, layout or player state. Foreground-derived washes
+ * darken paper themes and lift dark themes; existing selected marks stay intact.
+ */
+:root {
+  --control-hover: color-mix(in srgb, var(--t-hi) 10%, transparent);
+  --control-pressed: color-mix(in srgb, var(--t-hi) 17%, transparent);
+  --control-row-hover: color-mix(in srgb, var(--t-hi) 7%, transparent);
+  --control-danger-hover: color-mix(in srgb, var(--warn-ink) 12%, transparent);
+  --control-danger-pressed: color-mix(in srgb, var(--warn-ink) 20%, transparent);
+}
+
+/* Quiet tools: local wash, not another row of permanently outlined buttons.
+ * Include the actual select, not its non-clickable label/container. */
+:root[data-theme] body :is(
+  .quiet-button, #room-settings, #companion-mode, .radio-toggle,
+  .top-bar-tab, .top-bar-all, .top-bar-dest-item, .top-bar-menu,
+  .appearance-option, .shell-nav-item, .room-list-create,
+  .sb-cog, .sb-collapse, .sb-settings-open, .sb-source-open, .sb-account-btn, .sb-acc-logout,
+  .surface-icon-button, .qr-close, .qr-refresh, .toast-close,
+  .sb-taste-popover-close, .room-action, .llm-icon-button, .llm-switch,
+  .focus-mode-enter, #focus-mode-chat, .chat-settings-link,
+  .listening-reaction, .listening-reaction-retry, .skip-btn, .queue-toggle,
+  .chat-msg-action, .person-edit-toggle, .room-quiet-restore, .chat-focus-toggle, .timeline-return, .mem-consolidate,
+  .today-task-filter, .today-filter-tab, .today-icon-btn,
+  .today-pill-btn, .today-quiet-btn, .today-back-to-list,
+  .usage-range-button, .source-warning-actions button,
+  .mobile-pane-switch button
+) {
+  -webkit-tap-highlight-color: var(--control-pressed);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body :is(
+    .quiet-button, #room-settings, #companion-mode, .radio-toggle,
+    .top-bar-tab, .top-bar-all, .top-bar-dest-item, .top-bar-menu,
+    .appearance-option, .shell-nav-item, .room-list-create,
+    .sb-cog, .sb-collapse, .sb-settings-open, .sb-source-open, .sb-account-btn, .sb-acc-logout,
+    .surface-icon-button, .qr-close, .qr-refresh, .toast-close,
+    .sb-taste-popover-close, .room-action, .llm-icon-button, .llm-switch,
+    .focus-mode-enter, #focus-mode-chat, .chat-settings-link,
+    .listening-reaction, .listening-reaction-retry, .skip-btn, .queue-toggle,
+    .chat-msg-action, .person-edit-toggle, .room-quiet-restore, .chat-focus-toggle, .timeline-return, .mem-consolidate,
+    .today-task-filter, .today-filter-tab, .today-icon-btn,
+    .today-pill-btn, .today-quiet-btn, .today-back-to-list,
+    .usage-range-button, .source-warning-actions button,
+    .mobile-pane-switch button
+  ):not(.danger-button, .llm-icon-danger, .song-tag-danger):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    background-image: linear-gradient(var(--control-hover), var(--control-hover));
+  }
+}
+:root[data-theme] body :is(
+  .quiet-button, #room-settings, #companion-mode, .radio-toggle,
+  .top-bar-tab, .top-bar-all, .top-bar-dest-item, .top-bar-menu,
+  .appearance-option, .shell-nav-item, .room-list-create,
+  .sb-cog, .sb-collapse, .sb-settings-open, .sb-source-open, .sb-account-btn, .sb-acc-logout,
+  .surface-icon-button, .qr-close, .qr-refresh, .toast-close,
+  .sb-taste-popover-close, .room-action, .llm-icon-button, .llm-switch,
+  .focus-mode-enter, #focus-mode-chat, .chat-settings-link,
+  .listening-reaction, .listening-reaction-retry, .skip-btn, .queue-toggle,
+  .chat-msg-action, .person-edit-toggle, .room-quiet-restore, .chat-focus-toggle, .timeline-return, .mem-consolidate,
+  .today-task-filter, .today-filter-tab, .today-icon-btn,
+  .today-pill-btn, .today-quiet-btn, .today-back-to-list,
+  .usage-range-button, .source-warning-actions button,
+  .mobile-pane-switch button
+):not(.danger-button, .llm-icon-danger, .song-tag-danger):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  background-image: linear-gradient(var(--control-pressed), var(--control-pressed));
+}
+/* The fullscreen and appearance entries have a two-ID resting rule in the shared shell. */
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] #app :is(#focus-mode-enter, #appearance-quick):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    background-image: linear-gradient(var(--control-hover), var(--control-hover));
+  }
+  :root[data-theme] button.player-artwork:not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover { filter: brightness(.85); }
+}
+:root[data-theme] #app :is(#focus-mode-enter, #appearance-quick):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  background-image: linear-gradient(var(--control-pressed), var(--control-pressed));
+}
+:root[data-theme] :is(button.player-artwork, button.person-avatar):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active { filter: brightness(.75); }
+/* 纯图标入口没有文字可依赖，打开态沿用同一份局部底色。 */
+:root[data-theme] #app #appearance-quick[aria-expanded="true"] { color: var(--t-hi); background-image: linear-gradient(var(--control-hover), var(--control-hover)); }
+
+/* These previously had no corner treatment. Theme geometry is the authority:
+ * soft in moonlight, almost square in timeline, square in modernist. */
+:root[data-theme] :is(.top-bar-tab, .top-bar-all, .top-bar-dest-item, .top-bar-menu, #room-settings, .person-edit-toggle, .room-quiet-restore) {
+  border-radius: var(--radius-row);
+}
+
+/* Navigation/selection rows respond over their existing hit area. Never put
+ * hover on a whole memory card/article when only its disclosure is actionable. */
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body :is(
+    .settings-nav-item, .room-row, .person-row, .room-group-heading,
+    .room-row-menu-item, .llm-provider-item, .song-tag-row,
+    .cike-queue-row, .sb-q-item, .cast-persona, .cast-voice,
+    .theme-option, .boot-opt, .create-launcher-option, .recording-review__row,
+    .recording-review__merged summary, .mem-card summary, .today-add summary
+  ):not(.danger):not(:has(input:disabled)):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    background-image: linear-gradient(var(--control-row-hover), var(--control-row-hover));
+  }
+}
+:root[data-theme] body :is(
+  .settings-nav-item, .room-row, .person-row, .room-group-heading,
+  .room-row-menu-item, .llm-provider-item, .song-tag-row,
+  .cike-queue-row, .sb-q-item, .cast-persona, .cast-voice,
+  .theme-option, .boot-opt, .create-launcher-option, .recording-review__row,
+  .recording-review__merged summary, .mem-card summary, .today-add summary
+):not(.danger):not(:has(input:disabled)):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  background-image: linear-gradient(var(--control-pressed), var(--control-pressed));
+}
+
+/* Inline content actions keep their baseline/spacing. Underline, not a chip. */
+:root[data-theme] :is(.history-button, .chat-aside-accept, .appearance-more, .recording-review__link, .source-link, .source-person) {
+  text-decoration-thickness: 1px;
+  text-underline-offset: .22em;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body :is(.history-button, .chat-aside-accept, .appearance-more, .recording-review__link, .source-link, .source-person):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    color: var(--t-hi);
+    text-decoration-line: underline;
+    text-decoration-thickness: 2px;
+  }
+}
+:root[data-theme] body :is(.history-button, .chat-aside-accept, .appearance-more, .recording-review__link, .source-link, .source-person):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  color: var(--studio-accent-ink);
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+}
+
+/* Keep primary hierarchy, including existing solid/outlined theme variants. */
+:root[data-theme] body :is(.listen-together, .shell-primary, .boot-go, .cast-go, .cookie-btn, .mem-add, .today-btn-primary, .recording-review__confirm, #compose-send, .play-btn):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  filter: brightness(.88);
+}
+/* Destructive tools never acquire a neutral/selected appearance. */
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme] body :is(.danger-button, .room-row-menu-item.danger, .llm-icon-danger, .song-tag-danger, .today-action-btn.delete-btn):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    background: var(--control-danger-hover);
+    color: var(--warn-ink);
+  }
+}
+:root[data-theme] body :is(.danger-button, .room-row-menu-item.danger, .llm-icon-danger, .song-tag-danger, .today-action-btn.delete-btn):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  background: var(--control-danger-pressed);
+  color: var(--warn-ink);
+}
+
+/* Portalled dialogs, native disclosures and tabindex surfaces need the same
+ * visible keyboard cue as buttons. Disabled controls can still expose focus. */
+:root[data-theme] body :is(button, a[href], select, summary, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--studio-accent-ink);
+  outline-offset: 3px;
+}
+:root[data-theme] .persistent-player :is(button, [tabindex]):focus-visible {
+  outline-color: var(--player-accent);
+}
+/* .source-warning-close is included by .source-warning-actions button above. */
+
+/* Animate only feedback properties, never dimensions or position. */
+@media (prefers-reduced-motion: no-preference) {
+  /* Zero specificity: never replace an existing control/transport transition. */
+  :where(:root[data-theme] button, :root[data-theme] select, :root[data-theme] summary, :root[data-theme] .recording-review__row) {
+    transition: background-color 120ms ease-out, color 120ms ease-out;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] :is(button, select, summary, .recording-review__row) { transition: none; }
+}
+@media (forced-colors: active) {
+  :root[data-theme] body :is(button, a[href], select, summary, [role="button"], [tabindex]):focus-visible {
+    outline-color: Highlight;
+  }
+  :root[data-theme] .persistent-player :is(button, [tabindex]):focus-visible { outline-color: Highlight; }
+}

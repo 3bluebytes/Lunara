@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="nocturne" data-layout="timeline">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07050c" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.png" type="image/png" />
+  <title>Lunara — Luna Radio</title>
+  <!-- 首帧主题：先于样式表同步写入保存的主题，避免先画默认主题再跳。 -->
+  <script src="/themes/boot.js?v=1"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400;9..144,500;9..144,600;9..144,700&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=theme-polish-2" />
+  <!-- 主题插件：每个选择器都限定在自己的 data-theme 下，全部静态加载，切换只改 data-theme。 -->
+  <link rel="stylesheet" href="/themes/moonlight/tokens.css?v=4" data-theme-tokens="moonlight" />
+  <link rel="stylesheet" href="/themes/modernist/tokens.css?v=2" data-theme-tokens="modernist" />
+  <link rel="stylesheet" href="/themes/nocturne/tokens.css?v=5" data-theme-tokens="nocturne" />
+  <link rel="stylesheet" href="/features/conversations/conversations.css?v=review-polish-4" />
+  <link rel="stylesheet" href="/features/chat/webSources.css?v=1" />
+  <link rel="stylesheet" href="/features/auth/sourceFailureWarning.css?v=1" />
+  <link rel="stylesheet" href="/features/settings/llmFailoverSettings.css?v=1" />
+  <link rel="stylesheet" href="/features/today/today.css?v=12" />
+  <link rel="stylesheet" href="/features/settings/routineSettings.css?v=1" />
+  <link rel="stylesheet" href="/features/settings/llmProvidersSettings.css?v=3" />
+  <link rel="stylesheet" href="/features/settings/usageSettings.css?v=1" />
+  <link rel="stylesheet" href="/features/settings/songTagInspector.css?v=1" />
+  <link rel="stylesheet" href="/features/library/recordingReview.css?v=1" />
+  <link rel="stylesheet" href="/assets/fonts/cike-fonts.css" />
+  <link rel="stylesheet" href="/assets/fonts/noto-sc.css" />
+  <link rel="stylesheet" href="/assets/fonts/nocturne-fonts.css" />
+  <link rel="stylesheet" href="/features/shell/panelDoors.css?v=3" />
+  <!-- 舞台版式（layout: stage）：在 feature 样式之后、主题覆盖样式之前。 -->
+  <link rel="stylesheet" href="/features/shell/stage.css?v=11" />
+  <link rel="stylesheet" href="/features/shell/timeline.css?v=36" />
+  <link rel="stylesheet" href="/themes/moonlight/overrides.css?v=4" data-theme-overrides="moonlight" />
+  <link rel="stylesheet" href="/themes/moonlight/partner.css?v=8" />
+  <link rel="stylesheet" href="/themes/moonlight/sidebar.css?v=1" />
+  <link rel="stylesheet" href="/themes/modernist/overrides.css?v=7" data-theme-overrides="modernist" />
+  <link rel="stylesheet" href="/themes/nocturne/overrides.css?v=15" data-theme-overrides="nocturne" />
+  <!-- Interaction roles complement theme skins; no layout or behavior overrides. -->
+  <link rel="stylesheet" href="/interactions.css?v=2" />
+</head>
+<body>
+  <!-- macOS hiddenInset 拖动条：顶部一条 28px 透明区，留给 traffic lights + 拖动 -->
+  <div id="drag-bar" aria-hidden="true"></div>
+
+  <div id="source-failure-warnings" class="source-failure-warnings" role="status" aria-live="polite" aria-label="音乐源提醒" hidden></div>
+
+  <div id="app">
+    <!-- 氛围属于应用画布内层，不被画布自己的背景盖住。 -->
+    <div class="aurora" aria-hidden="true"><div class="blob"></div></div>
+    <!-- 主题氛围层容器：由当前主题的 atmosphere.js 挂载内容（例如 #particle-canvas）。 -->
+    <div id="theme-atmosphere" class="theme-atmosphere" aria-hidden="true"></div>
+    <div class="noise" aria-hidden="true"></div>
+
+    <!-- 时间线版式的顶栏（data-layout="timeline" 时由 topBarView 渲染并显示）。 -->
+    <header id="top-bar" class="top-bar" aria-label="导航" hidden></header>
+    <!-- 「外观」浮层：两套版式共用的一个面板（三个主题的主题选项 + 当前主题的材质 / 底色 / 跟色），
+         内容与开关由 features/shell/appearancePop.js 独占；触发器是顶栏「外观」（时间线）
+         和听歌列页眉的 #appearance-quick（舞台版式），两处都只是按钮。 -->
+    <div class="appearance-pop" id="appearance-pop" role="dialog" aria-label="外观" hidden></div>
+
+    <!-- ====== 左侧栏 ====== -->
+    <aside class="conversation-sidebar expanded" id="conversation-sidebar" aria-label="主导航">
+      <!-- 品牌区 -->
+      <div class="sb-brand-row">
+        <span class="sb-logo" aria-hidden="true">
+          <!-- 标识「轨道点」：环跟正文墨色，点与顶栏「正在听」同用 --brand-dot。几何源 scripts/orbitMark.mjs。 -->
+          <svg class="sb-logo-orbit" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            <circle class="sb-logo-dot" cx="23.1" cy="8.9" r="3"/>
+          </svg>
+          <!-- 月色恢复最初的原地旋转电波标识；其他主题仍用轨道点。 -->
+          <svg class="sb-logo-radio" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+            <defs><linearGradient id="moonlight-logo-gradient" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#ffd28a"/><stop offset="1" stop-color="#ff7a59"/></linearGradient></defs>
+            <circle class="logo-core" cx="20" cy="20" r="3.2" fill="url(#moonlight-logo-gradient)"/>
+            <path class="logo-arc a1" d="M20 7.5 a12.5 12.5 0 0 1 12.5 12.5" stroke="url(#moonlight-logo-gradient)" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+            <path class="logo-arc a2" d="M20 12 a8 8 0 0 1 8 8" stroke="url(#moonlight-logo-gradient)" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".8"/>
+            <path class="logo-arc a3" d="M20 16 a4 4 0 0 1 4 4" stroke="url(#moonlight-logo-gradient)" stroke-width="1.2" fill="none" stroke-linecap="round" opacity=".6"/>
+          </svg>
+        </span>
+        <div class="sb-brand">Lunara</div>
+        <button class="sb-cog" id="sb-cog" title="设置" aria-label="打开设置">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+            <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm6.4 1.7-1.4-.3a5 5 0 0 0-.5-1.2l.8-1.2-1.6-1.6-1.2.8a5 5 0 0 0-1.2-.5l-.3-1.4H6.9l-.3 1.4a5 5 0 0 0-1.2.5l-1.2-.8L2.6 4.5l.8 1.2a5 5 0 0 0-.5 1.2l-1.4.3v2.2l1.4.3c.1.4.3.8.5 1.2l-.8 1.2 1.6 1.6 1.2-.8c.4.2.8.4 1.2.5l.3 1.4h2.2l.3-1.4a5 5 0 0 0 1.2-.5l1.2.8 1.6-1.6-.8-1.2c.2-.4.4-.8.5-1.2l1.4-.3V7.2Z"/>
+          </svg>
+        </button>
+        <button class="sb-collapse" id="sidebar-close" type="button" title="收起侧边栏" aria-label="收起侧边栏">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 5-5 5 5 5"/></svg>
+        </button>
+      </div>
+
+      <nav class="shell-navigation" aria-label="主导航">
+        <button id="nav-conversations" class="shell-nav-item active" type="button" aria-current="page" title="聊天" aria-label="聊天">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17.5 3.8 21l3.8-1.6A8.5 8.5 0 1 0 5 17.5Z"/></svg><span>聊天</span>
+        </button>
+        <button id="nav-settings" class="shell-nav-item" type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M14 4v6M6 14v6"/></svg><span>设置</span>
+        </button>
+        <button id="recording-review-open" class="shell-nav-item" type="button" title="歌曲整理" aria-label="歌曲整理" aria-expanded="false" aria-controls="recording-review-panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 7 2 2 3-4M11 7h10M3 14h5m3 0h10M3 20h5m3 0h10"/></svg><span>歌曲整理</span>
+        </button>
+        <button id="nav-people" class="shell-nav-item" type="button" title="人物" aria-label="人物">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7-1a3 3 0 1 0 0-6M3 20v-1.3A4.7 4.7 0 0 1 7.7 14h1.6a4.7 4.7 0 0 1 4.7 4.7V20m1-6h1.3a4.7 4.7 0 0 1 4.7 4.7V20"/></svg><span>人物</span>
+        </button>
+      </nav>
+
+      <div class="conversation-list-heading" id="room-list-heading"><span>聊天</span>
+        <!-- 主题可选入口：共享样式默认隐藏，由主题覆盖样式开启；与「创建」同一处理。
+             这里只新建聊天；新增伙伴属于人物列表（#people-list-create）。 -->
+        <button id="room-list-create" class="room-list-create" type="button" title="新建聊天" aria-label="新建聊天">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <label class="room-search-label"><span class="sr-only">搜索聊天</span><input id="room-search" type="search" placeholder="搜索聊天" /></label>
+      <nav id="room-list" class="room-list"><p class="room-empty">正在恢复聊天…</p></nav>
+      <!-- 人物列表自己的标题与新增入口：新增伙伴不再混在聊天标题旁。 -->
+      <div class="conversation-list-heading" id="people-list-heading" hidden><span>人物</span>
+        <button id="people-list-create" class="room-list-create" type="button" title="认识一位新伙伴" aria-label="认识一位新伙伴">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <nav id="people-list" class="people-list" aria-label="人物" hidden></nav>
+      <button class="quiet-button" id="room-archived">已归档</button>
+      <!-- 归档撤销条：误触归档可在时限内一键恢复；单槽，新归档覆盖旧条。 -->
+      <div class="sb-undo-toast" id="sb-undo-toast" role="status" hidden>
+        <span class="sb-undo-text" id="sb-undo-toast-text"></span>
+        <span class="sb-undo-actions">
+          <button id="sb-undo-toast-undo" class="quiet-button" type="button">撤销</button>
+          <button id="sb-undo-toast-view" class="quiet-button" type="button">查看</button>
+          <button id="sb-undo-toast-close" class="quiet-button" type="button" aria-label="关闭提醒">✕</button>
+        </span>
+      </div>
+      <!-- 行内“更多”菜单：轻量 popover，不用模态；不含分叉与新标签页。 -->
+      <div class="room-row-menu" id="room-row-menu" role="menu" aria-label="会话操作" hidden>
+        <button class="room-row-menu-item" role="menuitem" type="button" data-menu-action="pin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 3.5 3.5H6.5L10 9l-1-6Z"/><path d="M12 12.5V21"/></svg>
+          <span id="room-row-menu-pin">置顶</span>
+        </button>
+        <button class="room-row-menu-item" role="menuitem" type="button" data-menu-action="rename">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5.5 4 4L8 20H4v-4L14.5 5.5Z"/></svg>
+          <span>重命名</span>
+        </button>
+        <button class="room-row-menu-item" role="menuitem" type="button" data-menu-action="unread">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/></svg>
+          <span id="room-row-menu-unread">标为未读</span>
+        </button>
+        <button class="room-row-menu-item" role="menuitem" type="button" data-menu-action="archive">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8Z"/><path d="M3 4h18v4H3z"/><path d="M10 12h4v4h-4z"/></svg>
+          <span id="room-row-menu-archive">归档</span>
+        </button>
+        <button class="room-row-menu-item danger" role="menuitem" type="button" data-menu-action="delete">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2m-7 0 1 13h8l1-13"/></svg>
+          <span>删除…</span>
+        </button>
+      </div>
+      <!-- 参考稿：栏底第二个图标组（今日 / 创建），与账号入口一起沉底。 -->
+      <div class="shell-nav-tail" aria-label="更多入口">
+        <button id="nav-today" class="shell-nav-item" type="button" title="帐本" aria-label="帐本">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/><path d="M9 13l2 2 4-4"/></svg><span>帐本</span>
+        </button>
+        <button id="nav-create" class="shell-nav-item" type="button" title="创建" aria-label="创建聊天或认识新伙伴">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg><span>创建</span>
+        </button>
+      </div>
+
+      <button id="nav-account" class="shell-nav-item nav-account-launcher" type="button" title="音乐账号与登录" aria-label="音乐账号与登录">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.4A6.6 6.6 0 0 1 11.6 12h.8a6.6 6.6 0 0 1 6.6 6.6V20"/></svg><span>登录</span>
+      </button>
+      <!-- 底部：当前配置 + 登录 -->
+      <div class="sb-bottom sb-bottom-compact">
+        <div class="sb-meta" id="sb-meta">
+          <span class="sb-meta-item" id="sb-meta-llm">未配置 LLM</span>
+          <span class="sb-meta-dot">&middot;</span>
+          <span class="sb-meta-item" id="sb-meta-source">ncm</span>
+          <span class="sb-meta-dot">&middot;</span>
+          <span class="sb-meta-item" id="sb-meta-source-primary">qq</span>
+          <span class="sb-meta-spacer"></span>
+        </div>
+        <div class="sb-source-entry">
+          <button id="source-menu-open" class="sb-source-open" type="button" aria-expanded="false" aria-controls="source-menu" title="音乐源与登录状态">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 13.5V6.2l5-2v9.6M8 13.8V4.2l6 1.9v7.7" /><circle cx="6" cy="14.4" r="1.7"/><circle cx="12.6" cy="14.9" r="1.7"/></svg>
+            <span id="source-menu-label">音乐源</span>
+          </button>
+          <!-- 小浮窗：所有音乐源的状态与登录入口集中在这里，账号区不再并排堆两行。 -->
+          <div class="sb-source-pop" id="source-menu" role="group" aria-label="音乐源" hidden>
+          <div class="sb-account-compact" id="sb-account-ncm">
+            <button class="sb-account-btn" data-source="ncm" title="登录网易云">
+              <span class="sb-acc-avatar" data-source="ncm">
+                <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-5 6.5C3 12 5.2 10 8 10s5 2 5 4.5v.5H3v-.5Z"/></svg>
+              </span>
+              <span class="sb-acc-name" data-source="ncm">未登录</span>
+              <span class="sb-acc-hint" data-source="ncm">网易云</span>
+            </button>
+            <button class="sb-acc-logout" data-source="ncm" title="退出 NCM 登录" style="display:none">
+              <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M6 2v2H4v8h2v2H2V2h4Zm4.3 2.3 4 3.7-4 3.7-1-1.1L11.7 9H6V7h5.7L9.3 5.4l1-1.1Z"/></svg>
+            </button>
+          </div>
+          <div class="sb-account-compact" id="sb-account-qq">
+            <button class="sb-account-btn" data-source="qq" title="登录 QQ 音乐">
+              <span class="sb-acc-avatar" data-source="qq">
+                <svg viewBox="0 0 40 40" width="12" height="12" fill="currentColor"><path d="M20 4a16 16 0 1 0 0 32 16 16 0 0 0 0-32zm1.5 6c3.3 0 6 2.7 6 6v3c0 3.3-2.7 6-6 6s-6-2.7-6-6v-3c0-3.3 2.7-6 6-6zM12 28c.8-1 2-1.7 3.3-1.7H26c1.3 0 2.5.7 3.3 1.7"/></svg>
+              </span>
+              <span class="sb-acc-name" data-source="qq">未登录</span>
+              <span class="sb-acc-hint" data-source="qq">QQ 音乐</span>
+            </button>
+            <button class="sb-acc-logout" data-source="qq" title="退出 QQ 登录" style="display:none">
+              <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M6 2v2H4v8h2v2H2V2h4Zm4.3 2.3 4 3.7-4 3.7-1-1.1L11.7 9H6V7h5.7L9.3 5.4l1-1.1Z"/></svg>
+            </button>
+          </div>
+          </div>
+        </div>
+        <!-- 主题可选入口：底部状态行的设置图标，共享样式默认隐藏；与「设置」同一处理。 -->
+        <button id="sb-settings-open" class="sb-settings-open" type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M14 4v6M6 14v6"/></svg>
+        </button>
+      </div>
+      <!-- 桌面宽度下拖动调侧栏宽度（sidebarResize.js）；窄屏抽屉不显示。 -->
+      <div id="sidebar-resize" class="sb-resize" role="separator" aria-orientation="vertical" aria-controls="conversation-sidebar" aria-label="调整侧栏宽度" title="拖动调整宽度，双击恢复默认" tabindex="0"></div>
+    </aside>
+
+    <!-- B: user-opened non-modal side panel; no backdrop, focus trap or playback writes. -->
+    <section id="recording-review-panel" class="recording-review" role="region" aria-labelledby="recording-review-title" hidden></section>
+
+    <main id="today-panel" class="today-panel" aria-label="帐本" tabindex="-1" hidden></main>
+
+    <div class="panel-door listening-door" id="listening-door">
+    <section class="listening-panel" id="listening-panel" aria-labelledby="listening-title">
+      <header class="listening-panel-header">
+        <div class="listening-wordmark">
+          <h2 id="listening-title">此刻，</h2><time id="listening-clock">--:--</time>
+          <p id="listening-weather" class="listening-weather" hidden></p><p id="listening-date" class="sr-only"></p>
+        </div>
+        <!-- 全窗聆听入口只保留图标；保留原位置与既有进入/退出行为。 -->
+        <div class="listening-toolbar-actions">
+          <!-- 外观快切入口（舞台版式的月色 / 素色）：和全屏一样是纯图标按钮，只改界面、不碰播放；
+               时间线版式由顶栏「外观」承担，这里由 timeline.css 隐藏。 -->
+          <button id="appearance-quick" class="quiet-button appearance-quick" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="appearance-pop" title="外观与主题" aria-label="外观与主题">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v16a8 8 0 0 0 0-16Z" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button id="focus-mode-enter" class="quiet-button focus-mode-enter" type="button" title="全屏聆听" aria-label="全屏聆听">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 9.6 4 4m0 0h4.3M4 4v4.3"/><path d="M14.4 9.6 20 4m0 0h-4.3M20 4v4.3"/><path d="M9.6 14.4 4 20m0 0h4.3M4 20v-4.3"/><path d="M14.4 14.4 20 20m0 0h-4.3M20 20v-4.3"/></svg>
+          </button>
+          <button id="artwork-theme-quick" class="quiet-button artwork-theme-quick" type="button" aria-pressed="true" title="随歌曲封面变色" aria-label="随歌曲封面变色">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 7 7 0 0 0 7-7c0-1.2-.8-2-2-2h-1.4a2 2 0 0 1-2-2V8.6c0-1.7-.7-3.1-1.6-5.6Z"/><circle cx="8" cy="9" r="1"/><circle cx="7" cy="14" r="1"/></svg>
+            <span>随歌曲变色</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="listening-welcome" id="listening-welcome" aria-label="此刻">
+        <p>告诉我你此刻的心情，或者直接说一首想听的歌。</p>
+      </section>
+
+      <div class="cike-companionship"><span id="listening-companion-dots"></span><p id="listening-company">有人陪你听。</p><span id="listening-elapsed">从一首歌开始</span></div>
+      <div class="listening-hero" id="listening-hero" role="region" aria-label="歌曲信息与旁白" tabindex="0" hidden>
+        <!-- 浮动封面必须先于正文，文字才能从它左侧绕到下方；不复制封面或旁白。 -->
+        <figure class="listening-artwork">
+          <img data-player-cover id="listening-cover" src="/icon.png" alt="当前歌曲封面" />
+          <figcaption id="listening-artwork-caption"></figcaption>
+        </figure>
+        <!-- 时间线（只在 data-layout="timeline" 时由 timelineView 显示）：已放 / 待播 / 横线与播放头时刻。
+             只读 runtime state 与播放条进度，不是第二个播放器。 -->
+        <p class="timeline-now-cap" id="timeline-cap" hidden></p>
+        <div class="timeline-past" id="timeline-past" hidden></div>
+        <div class="timeline-next" id="timeline-next" hidden></div>
+        <div class="timeline-rail" id="timeline-rail" aria-hidden="true" hidden><span class="timeline-seg"><i></i><span class="timeline-head"></span><span class="timeline-clock"><span data-timeline-hm>--:--</span><small data-timeline-ss></small></span></span></div>
+        <div class="listening-hero-copy">
+          <!-- 「正在聆听」是状态标签，不是动作；动作按钮在页眉右侧的设置组里。 -->
+          <div class="listening-state-row">
+            <span class="listening-eyebrow">正在聆听</span>
+          </div>
+          <h3 class="listening-song-title" data-np-title>—</h3>
+          <p class="listening-song-meta" data-np-meta></p>
+          <div class="listening-narration" id="listening-narration">
+            <span class="listening-narration-label" id="listening-narration-label">Lunara 的旁白</span>
+            <blockquote class="listening-intro" id="listening-intro" hidden>
+              <p id="listening-intro-text" tabindex="0" aria-label="本首介绍"></p>
+              <span class="listening-narration-rule" aria-hidden="true"></span>
+              <cite id="listening-intro-source"></cite>
+            </blockquote>
+          </div>
+          <div class="listening-reactions" data-reactions>
+            <button class="listening-reaction" type="button" data-reaction="like" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3S4.6 15.6 3 11.9C1.7 8.6 3.9 5.7 6.9 5.7c1.9 0 3.4 1 4.3 2.5h1.6c.9-1.5 2.4-2.5 4.3-2.5 3 0 5.2 2.9 3.9 6.2-1.6 3.7-9 8.4-9 8.4Z"/></svg>
+              <span>喜欢</span>
+            </button>
+            <button class="listening-reaction" type="button" data-reaction="dislike" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3S4.6 15.6 3 11.9C1.7 8.6 3.9 5.7 6.9 5.7c1.9 0 3.4 1 4.3 2.5h1.6c.9-1.5 2.4-2.5 4.3-2.5 3 0 5.2 2.9 3.9 6.2-1.6 3.7-9 8.4-9 8.4Z"/><path d="m12 8.2-1.5 2.6 2.9 1.3-1.7 2.7"/></svg>
+              <span>不喜欢</span>
+            </button>
+            <button class="listening-reaction-retry" type="button" data-reaction-retry hidden>重试</button>
+            <p class="listening-reaction-hint">不喜欢会移出播放列表并跳过</p>
+            <p class="listening-reaction-status" data-reaction-status role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="cike-lyrics"><p class="cike-lyric-near" id="listening-lyric-previous" hidden></p><p class="listening-lyric" id="listening-lyric" data-np-lyric hidden></p><p class="cike-lyric-near" id="listening-lyric-next" hidden></p><p class="cike-interlude" id="listening-interlude" hidden></p></div>
+      <section class="cike-next" aria-label="接下来"><h3>接下来</h3><div id="listening-next-queue"></div></section>
+
+      <!-- 收起态的“接下来”队列：填充窄列中部空白；普通态隐藏（队列在播放条弹层里）。 -->
+      <div class="listening-strip-queue" id="listening-strip-queue" aria-label="接下来" hidden></div>
+
+      <!-- 宽屏竖时间线往回拖过之后才出现：平滑滚回正在播放。只动滚动位置，不碰播放。
+           放在面板里而不是门框下：门框有「直接子元素 hidden 就整扇隐藏」的规则。 -->
+      <button class="timeline-return" id="timeline-return" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m0 0-5-5m5 5 5-5"/></svg>回到正在播放
+      </button>
+    </section>
+    </div>
+
+    <!-- ====== 主内容区：聊天列（含专注舞台） ====== -->
+    <div class="panel-door chat-door" id="chat-door">
+    <main class="conversation-main" id="main-content">
+      <header class="conversation-header chat-header">
+        <button class="quiet-button mobile-rooms" id="room-menu" aria-label="打开聊天列表"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <div class="chat-header-copy">
+          <h1 class="chat-heading" id="room-title">Lunara</h1>
+          <p class="chat-sub" id="room-introduction">此刻在这里，也在等你说话</p>
+        </div>
+        <div class="chat-header-actions">
+          <div id="room-members" class="room-members" hidden></div>
+          <button id="conversation-person" class="person-avatar conversation-person-avatar" type="button" aria-label="查看当前聊天人物"></button>
+          <div class="room-actions">
+            <button id="room-listen" class="listen-together">一起听</button>
+            <button id="room-after" class="quiet-button" title="等这首歌结束后一起听">本首结束后</button>
+            <button id="room-invite" class="quiet-button">邀请伙伴</button>
+            <button id="room-settings" class="quiet-button chat-settings-link" aria-label="聊天设置">会话设置</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 面包屑：一起听 · 当前会话 / 伙伴 / 自动续播。普通态在聊天标题下，专注态在专注舞台页眉下。 -->
+      <div class="session-breadcrumb" id="session-breadcrumb">
+        <span class="source-fact"><span class="source-label">一起听</span><button id="player-source" class="source-link">当前会话</button></span>
+        <span class="source-divider breadcrumb-sep" aria-hidden="true">/</span>
+        <span class="source-fact"><span class="source-label">伙伴</span><button id="player-person" class="source-person" aria-label="当前没有伙伴" disabled>—</button></span>
+        <span class="source-divider breadcrumb-sep" aria-hidden="true">/</span>
+        <button id="radio-toggle" class="radio-toggle" title="队列播完后自动选歌，保持一起听" role="switch" aria-label="自动续播" aria-checked="true">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+            <path d="M12 3a9 9 0 0 0-9 9h2a7 7 0 0 1 14 0h2a9 9 0 0 0-9-9zm0 4a5 5 0 0 0-5 5h2a3 3 0 0 1 6 0h2a5 5 0 0 0-5-5zm0 4a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>
+          </svg>
+          <span class="radio-label">自动续播：开</span>
+          <svg class="radio-chev" viewBox="0 0 10 6" aria-hidden="true"><path d="m1 1 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <label class="companion-mode-control" for="companion-mode" title="只影响当前一起听的会话；不切歌、不改人格">
+          <span class="source-label">陪伴</span>
+          <select id="companion-mode" aria-label="陪伴模式（作用于当前听歌来源）">
+            <option value="music_only">只听歌</option>
+            <option value="occasional">偶尔介绍</option>
+            <option value="conversational" selected>多聊一点</option>
+          </select>
+        </label>
+      </div>
+
+      <!-- 专注页眉（参考稿 3 第一行）：字标 + 回到聊天；只在专注态出现。 -->
+      <header class="focus-topbar" id="focus-topbar">
+        <div class="listening-wordmark focus-wordmark">
+          <span class="focus-wordmark-title">此刻，</span><time id="focus-clock">--:--</time><p id="focus-company">有人陪你听。</p>
+        </div>
+        <!-- 只保留一个退出入口：两个按钮做的是同一件事（退出专注），
+             留一个带描边的胶囊，文案用「回到聊天」。 -->
+        <div class="focus-mode-actions" id="focus-mode-actions" hidden>
+          <button id="focus-mode-chat" class="listen-together" type="button">回到聊天</button>
+        </div>
+      </header>
+
+      <!-- 专注舞台（参考稿 3）：只在 #app.focus-mode 展开；同一批播放器元素原地重排。 -->
+      <section class="focus-stage" id="focus-stage" aria-label="专注聆听">
+        <div class="focus-stage-grid">
+          <figure class="focus-artwork">
+            <button id="player-artwork" class="player-artwork" type="button" aria-label="当前歌曲封面">
+              <img id="player-cover" src="/icon.png" alt="当前歌曲封面" />
+            </button>
+            <figcaption class="focus-artwork-caption" id="focus-artwork-caption"></figcaption>
+            <div class="np-info">
+              <div class="np-title" id="np-title">未在播放</div>
+              <div class="np-sub" id="np-sub"></div>
+              <div class="np-album" id="np-album"></div>
+            </div>
+            <div class="listening-reactions focus-reactions" data-reactions>
+              <button class="listening-reaction" type="button" data-reaction="like" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3S4.6 15.6 3 11.9C1.7 8.6 3.9 5.7 6.9 5.7c1.9 0 3.4 1 4.3 2.5h1.6c.9-1.5 2.4-2.5 4.3-2.5 3 0 5.2 2.9 3.9 6.2-1.6 3.7-9 8.4-9 8.4Z"/></svg>
+                <span>喜欢</span>
+              </button>
+              <button class="listening-reaction" type="button" data-reaction="dislike" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3S4.6 15.6 3 11.9C1.7 8.6 3.9 5.7 6.9 5.7c1.9 0 3.4 1 4.3 2.5h1.6c.9-1.5 2.4-2.5 4.3-2.5 3 0 5.2 2.9 3.9 6.2-1.6 3.7-9 8.4-9 8.4Z"/><path d="m12 8.2-1.5 2.6 2.9 1.3-1.7 2.7"/></svg>
+                <span>不喜欢</span>
+              </button>
+              <button class="listening-reaction-retry" type="button" data-reaction-retry hidden>重试</button>
+              <p class="listening-reaction-status" data-reaction-status role="status" aria-live="polite"></p>
+            </div>
+          </figure>
+          <div class="focus-stage-main">
+            <blockquote class="focus-player-recommendation" id="focus-player-recommendation" tabindex="0" aria-label="本首推荐理由" hidden>
+              <p id="focus-player-recommendation-text"></p>
+              <cite id="focus-player-recommendation-source"></cite>
+            </blockquote>
+            <div class="player-line" id="player-line" aria-label="当前歌词">
+              <span class="player-line-viewport"><span class="player-line-text" id="player-line-text">未在播放</span></span>
+              <span class="player-line-viewport next"><span class="player-line-text next" id="player-line-next"></span></span>
+            </div>
+            <p id="focus-interlude" class="cike-interlude" hidden></p>
+            <p id="focus-next-track" class="cike-focus-next"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="source-mismatch" id="source-mismatch" role="status" aria-live="polite" hidden>
+        <p id="source-mismatch-copy"></p>
+        <div class="source-mismatch-actions">
+          <button id="mismatch-listen-now" class="listen-together" type="button">和 TA 一起听</button>
+          <button id="mismatch-listen-after" class="quiet-button" type="button">本首结束后</button>
+          <button id="mismatch-return-source" class="quiet-button" type="button">回到来源聊天</button>
+        </div>
+      </section>
+      <!-- 聊天 -->
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat-list" id="chat-list">
+          <div class="chat-msg assistant">
+            <div class="chat-speaker"><span class="chat-speaker-signal" aria-hidden="true"></span><span class="chat-speaker-name">LUNARA</span></div>
+            <div class="chat-text">我是 Lunara。跟我说你现在的心情，或者直接让我放首歌。</div>
+            <div class="chat-time">--:--</div>
+          </div>
+        </div>
+      </div>
+      <!-- 聊天条「听」态右栏：最近一张推荐卡的镜像（chatAsideView；时间线布局宽屏才显示） -->
+      <aside class="chat-aside" id="chat-aside" aria-label="推荐" hidden></aside>
+
+      <!-- 正在输入（presence-activity；只是瞬时提示） -->
+      <div class="room-composing" id="room-composing" role="status" aria-live="polite" hidden>
+        <span class="room-composing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span id="room-composing-text"></span>
+      </div>
+
+      <!-- 「安静点」：这次一起听不主动开口（可见事实 + 一键恢复；你说话时照常回应） -->
+      <div class="room-quiet" id="room-quiet" role="status" hidden>
+        <span id="room-quiet-text"></span>
+        <button type="button" class="room-quiet-restore" id="room-quiet-restore">恢复主动说话</button>
+      </div>
+
+      <!-- thinking -->
+      <div class="thinking" id="thinking" style="display:none">
+        <span class="thinking-text">thinking</span>
+        <span class="thinking-dots"><span></span><span></span><span></span></span>
+      </div>
+
+      <button id="room-history" class="history-button" hidden>查看更早的消息</button>
+      <!-- 改写提示：点「编辑」后出现，发送时才改写聊天，取消不碰聊天记录 -->
+      <div class="compose-edit" id="compose-edit" role="status" hidden>
+        <span>正在改写这条消息，发送后从这里重新开始；已安排的歌曲不会撤回。</span><button type="button" id="compose-edit-cancel" class="quiet-button">取消</button>
+      </div>
+      <!-- 输入提示（生成时仍可编辑和插话） -->
+      <div class="compose-hint" id="compose-hint">
+        <span class="ch-dots"><span></span><span></span><span></span></span>
+        <span id="compose-hint-text">正在回复…</span>
+      </div>
+
+      <!-- 输入条 -->
+      <div class="compose" id="compose">
+        <label for="compose-input" class="sr-only">发送消息</label><textarea id="compose-input" rows="1" placeholder="说说此刻的心情，或点一首歌…" autocomplete="off" enterkeyhint="send" spellcheck="false"></textarea>
+        <button id="compose-send"><span class="sr-only">发送</span></button>
+      </div>
+    </main>
+
+      <!-- 门框凸部：常规态是聊天门的子节点，展开态由控制器移入聆听门。
+           门框整体负责表面与遮挡；内层 main/section 独立滚动和裁切。 -->
+      <button id="chat-focus-toggle" class="chat-focus-toggle" type="button" aria-pressed="false" aria-label="收起听歌列，进入聊天聚焦">
+        <svg class="chev-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>
+        <svg class="chev-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg>
+        <span class="chat-focus-label" id="chat-focus-label" aria-hidden="true">展开看全部</span>
+      </button>
+    </div>
+
+      <nav class="mobile-pane-switch" id="mobile-pane-switch" aria-label="切换页面" hidden>
+        <button id="mobile-pane-listen" type="button" aria-pressed="true">一起听</button>
+        <button id="mobile-pane-chat" type="button" aria-pressed="false">聊一聊</button>
+      </nav>
+
+      <!-- 唯一全局播放器：参考稿的通栏底部控制条（传输/进度/混音/待播/队列）。 -->
+      <footer class="persistent-player" aria-label="音乐播放器">
+        <div class="cike-player-meta"><img data-player-cover src="/icon.png" alt="" /><div><strong data-np-title>未在播放</strong><span id="cike-player-caption">从一首歌开始</span></div></div>
+        <div class="player-transport">
+          <button class="skip-btn previous-btn" id="player-previous" aria-label="上一首" title="上一首" disabled>
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 6h2v12H6zm3 6 9 6V6z"/></svg>
+          </button>
+          <button class="play-btn" id="big-play" aria-label="play" aria-keyshortcuts="Space" title="播放（空格）">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="skip-btn" id="skip-btn" aria-label="下一首" title="下一首">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+        <span class="np-time" id="np-time">0:00</span>
+        <div class="progress" id="progress-bar" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00 / 0:00"><div class="waveform player-waveform" id="waveform" aria-hidden="true"></div><i id="progress-fill"></i></div>
+        <span class="np-duration" id="np-duration">0:00</span>
+
+        <!-- 整集混音 / 伴听音量：人声是本地偏好，背景（整集）或音乐（伴听）随来源分派。
+             上下顺序与波形一致：上音乐、下人声。 -->
+        <details class="player-details" id="player-mixer-details">
+          <summary class="mixer-summary" id="mixer-summary" aria-label="声音混合" aria-controls="episode-mixer" title="声音混合">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h7m4 0h5M4 17h3m4 0h9M11 4v6M7 14v6"/></svg>
+          </summary>
+        <div class="episode-mixer" id="episode-mixer" role="group" aria-label="声音混合" hidden>
+          <span class="mixer-title" aria-hidden="true">声音混合</span>
+          <label class="mixer-row">
+            <span class="mixer-label" id="mixer-bed-label">音乐</span>
+            <input type="range" class="mixer-slider" id="mixer-bed" min="0" max="1" step="0.05" value="1" aria-labelledby="mixer-bed-label" />
+          </label>
+          <label class="mixer-row">
+            <span class="mixer-label" id="mixer-voice-label">人声</span>
+            <input type="range" class="mixer-slider" id="mixer-voice" min="0" max="1" step="0.05" value="1" aria-labelledby="mixer-voice-label" />
+          </label>
+        </div>
+        </details>
+
+        <div class="player-upcoming" id="player-upcoming">
+          <span class="upcoming-label">待播</span>
+          <span class="upcoming-count" id="player-upcoming-count">00</span>
+        </div>
+        <button id="queue-toggle" class="queue-toggle" type="button" aria-expanded="false" aria-controls="queue-pop" aria-label="播放队列" title="播放队列">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h9M3 10h9M3 14.5h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/><path d="M15.5 5.5v9M13 12.2l2.5 2.5 2.5-2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        </button>
+        <div class="queue-pop" id="queue-pop" hidden>
+          <div class="queue-pop-head">待播队列</div>
+          <div class="sb-queue" id="sb-queue"><div class="sb-empty">还没有播放队列</div></div>
+        </div>
+
+        <!-- 供移动端竖排播放栏显示当前曲目（桌面端隐藏；与专注舞台同源镜像）。 -->
+        <div class="player-mobile-np" aria-hidden="true">
+          <div class="np-title" data-np-title></div>
+          <div class="np-sub" data-np-sub></div>
+        </div>
+
+        <div class="sb-status-row">
+          <div class="sb-status" id="status">
+            <span class="dot"></span>
+            <span class="status-text">尚未开始</span>
+          </div>
+          <span id="continuation-status" class="continuation-status" role="status" aria-live="polite" hidden></span>
+          <button id="continuation-retry" class="quiet-button" hidden>重试续播</button>
+          <div class="playback-recovery" id="playback-recovery" hidden>
+            <p role="status" aria-live="polite">歌曲已经准备好。浏览器需要你确认后才能开始播放。</p>
+            <button id="playback-recovery-start" class="listen-together" type="button">开始播放</button>
+          </div>
+          <button id="player-switch-cancel" class="quiet-button" hidden>取消等待</button>
+        </div>
+        <!-- 音乐音量：保留既有控件与偏好存储（合同 ID），本设计用混音区覆盖音量场景，常隐藏。 -->
+        <button class="player-volume shell-only-id" id="player-volume" type="button" aria-label="静音" title="静音" aria-pressed="false" tabindex="-1">
+          <svg class="volume-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM12 9.2c1.2.7 1.8 1.6 1.8 2.8s-.6 2.1-1.8 2.8M14.6 6.8c2.1 1.3 3.2 3 3.2 5.2s-1.1 3.9-3.2 5.2"/></svg>
+          <svg class="volume-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM13 9l5 6M18 9l-5 6"/></svg>
+        </button>
+        <input type="range" class="player-volume-slider shell-only-id" id="player-volume-slider" min="0" max="1" step="0.05" value="1" aria-label="音乐音量" tabindex="-1" />
+      </footer>
+    <dialog id="create-launcher" class="salon-dialog create-launcher" aria-labelledby="create-launcher-title">
+      <div class="dialog-head"><div><h2 id="create-launcher-title">想从哪里开始？</h2></div><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+      <div class="create-launcher-options">
+        <button id="create-room-option" class="create-launcher-option" type="button">
+          <span class="create-launcher-icon" aria-hidden="true">＋</span><span><strong>创建聊天</strong><small>邀请已经认识的人，一起聊或听歌</small></span>
+        </button>
+        <button id="radiohost-cast-new" class="create-launcher-option" type="button">
+          <span class="create-launcher-icon" aria-hidden="true">✦</span><span><strong>认识一位新伙伴</strong><small>设定名字、风格和声音，再决定是否聊天</small></span>
+        </button>
+      </div>
+    </dialog>
+    <dialog id="room-picker" class="salon-dialog">
+      <form id="room-picker-form"><div class="dialog-head"><h2 id="room-picker-title">新建聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+        <label class="room-name-field">聊天名称<input id="room-name" maxlength="80" required placeholder="比如：夜里的 R&B" /></label>
+        <fieldset class="person-choices"><legend>邀请谁来一起聊？</legend><div id="room-person-choices"></div></fieldset>
+        <p id="room-picker-error" role="alert"></p><button class="listen-together" id="room-picker-submit">开始聊天</button>
+      </form>
+    </dialog>
+    <dialog id="room-options" class="salon-dialog">
+      <div class="dialog-head"><h2>聊天设置</h2><button class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+      <label class="room-name-field">聊天名称<input id="room-rename" maxlength="80" /></label><button id="room-rename-save" class="listen-together">保存名称</button>
+      <label class="room-name-field">本轮会话模型（中途可改，下一轮生效）
+        <select id="room-model-select" class="boot-select"><option value="">跟随全局</option></select></label>
+      <label class="room-name-field">思考强度（本会话，跟随模型默认）
+        <select id="room-model-effort" class="boot-select"><option value="">跟随模型默认</option></select></label>
+      <button id="room-options-after" class="quiet-button">本首结束后一起听</button>
+      <div id="room-member-settings"></div><button id="room-archive" class="quiet-button">归档这个聊天</button><p>归档后仍保留每位伙伴与你的记忆。</p>
+    </dialog>
+    <!-- 行内菜单的重命名弹层：与创建表单共用同一条校验规则。 -->
+    <dialog id="room-rename-dialog" class="salon-dialog">
+      <div class="dialog-head"><h2>重命名聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+      <form id="room-rename-form">
+        <label class="room-name-field">聊天名称<input id="room-rename-input" maxlength="80" required placeholder="比如：夜里的 R&amp;B" /></label>
+        <p id="room-rename-error" role="alert"></p>
+        <button type="submit" class="listen-together">保存名称</button>
+      </form>
+    </dialog>
+    <!-- 删除不可回退：必须显式确认，失败原因在弹层内说明。 -->
+    <dialog id="room-delete-confirm" class="salon-dialog" aria-labelledby="room-delete-title">
+      <div class="dialog-head"><h2 id="room-delete-title">删除聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+      <p id="room-delete-lead"></p>
+      <p class="room-delete-note">这个聊天的消息、播放记录与成员关系会一并删除，且无法恢复。</p>
+      <p id="room-delete-error" role="alert"></p>
+      <div class="room-delete-actions">
+        <button id="room-delete-cancel" class="quiet-button" type="button">取消</button>
+        <button id="room-delete-confirm-button" class="quiet-button danger-button" type="button">删除</button>
+      </div>
+    </dialog>
+    <!-- 喜欢 / 不喜欢：只在需要提醒时弹。普通「喜欢」直接写入并给 toast；
+         云端歌单里已有这首时先解释一次，再点才真的取消云端收藏。 -->
+    <dialog id="reaction-confirm" class="salon-dialog reaction-confirm" aria-labelledby="reaction-confirm-title" aria-describedby="reaction-confirm-copy">
+      <div class="dialog-head"><h2 id="reaction-confirm-title">云端歌单里已有这首</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+      <p class="reaction-confirm-track" id="reaction-confirm-track"></p>
+      <p id="reaction-confirm-copy"></p>
+      <div class="reaction-confirm-actions">
+        <button id="reaction-confirm-cancel" class="quiet-button" type="button">保留</button>
+        <button id="reaction-confirm-ok" class="quiet-button danger-button" type="button">取消云端收藏</button>
+      </div>
+    </dialog>
+    <dialog id="person-detail" class="salon-dialog person-sheet" aria-labelledby="person-detail-name">
+      <div class="dialog-head">
+        <div class="person-sheet-title">
+          <span id="person-detail-signal" aria-hidden="true"></span><h2 id="person-detail-name" tabindex="-1"></h2>
+          <span id="person-detail-state"></span><span id="person-known-days" hidden></span>
+        </div>
+        <button id="person-detail-switch" class="quiet-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="conversation-sidebar" hidden>切换人物</button>
+        <button id="person-detail-chat" class="listen-together" type="button">去聊天</button>
+        <button class="quiet-button surface-icon-button" data-close-dialog aria-label="关闭伙伴面板">
+          <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+        </button>
+      </div>
+      <div class="person-sheet-body">
+        <!-- 左：profile，字段直接可编辑，不需要再点开一层 -->
+        <section class="person-sheet-col person-sheet-profile" aria-label="伙伴设置">
+          <form id="person-profile-form" class="person-profile-form" novalidate>
+            <!-- 字段区可滚动，操作条固定在下方：两者物理上不重叠，
+                 不会出现文字滑到按钮底下透出来的情况。 -->
+            <div class="person-profile-scroll">
+            <label class="person-field" for="person-detail-name-input">
+              <span class="person-field-h">名字</span>
+              <input class="cast-input" id="person-detail-name-input" maxlength="80" required />
+            </label>
+            <label class="person-field" for="person-detail-voice-select">
+              <span class="person-field-h">声音<span class="person-field-hint" id="person-detail-voice-hint"></span></span>
+              <select class="cast-input" id="person-detail-voice-select" aria-describedby="person-detail-voice-hint"></select>
+            </label>
+            <label class="person-field" for="person-detail-presence-select">
+              <span class="person-field-h">在场性格<span class="person-field-hint" id="person-detail-presence-hint">一起听歌时多常主动说一句</span></span>
+              <select class="cast-input" id="person-detail-presence-select" aria-describedby="person-detail-presence-hint">
+                <option value="quiet">话少：有真想说的才开口</option>
+                <option value="balanced">自然：偶尔说一句</option>
+                <option value="lively">健谈：愿意接话，但不硬聊</option>
+              </select>
+            </label>
+            <label class="person-field" for="person-detail-presence-style">
+              <span class="person-field-h">在场方式<span class="person-field-hint" id="person-detail-presence-style-hint">可选·200 字内</span></span>
+              <input class="cast-input" id="person-detail-presence-style" maxlength="200" placeholder="例如：话少，偶尔冒一句冷幽默" aria-describedby="person-detail-presence-style-hint" />
+            </label>
+            <label class="person-field" for="person-detail-persona-input">
+              <span class="person-field-h">人格<span class="person-field-hint" id="person-detail-persona-hint">原文·直接改</span><button type="button" class="person-edit-toggle" id="person-detail-edit" aria-pressed="false">编辑</button></span>
+              <textarea class="cast-textarea person-persona-source" id="person-detail-persona-input" rows="14" maxlength="4000" aria-describedby="person-detail-persona-hint"></textarea>
+            </label>
+            </div>
+            <div class="person-profile-actions">
+              <span class="cast-msg" id="person-detail-save-msg" role="status" aria-live="polite"></span>
+              <button type="submit" class="listen-together" id="person-detail-save">保存修改</button>
+            </div>
+          </form>
+          <div class="person-detail-actions">
+            <button type="button" class="quiet-button" id="person-detail-listen">声音试听</button>
+            <audio id="person-detail-preview" controls hidden preload="none"></audio>
+            <button type="button" class="quiet-button danger-button" id="person-detail-delete">删除伙伴</button>
+          </div>
+        </section>
+        <!-- 右：记忆 -->
+        <section class="person-sheet-col person-sheet-memories" aria-label="与你的记忆">
+          <div class="person-sheet-h">伙伴记得的</div>
+          <div id="person-detail-memories"></div>
+        </section>
+      </div>
+    </dialog>
+
+    <!-- 删除伙伴：不可回退，必须先列明将永久移除的内容。 -->
+    <dialog id="person-delete-confirm" class="salon-dialog" aria-labelledby="person-delete-title">
+      <div class="dialog-head"><h2 id="person-delete-title">删除这位伙伴</h2><button type="button" class="quiet-button" data-close-dialog aria-label="取消删除">✕</button></div>
+      <p id="person-delete-lead"></p>
+      <ul id="person-delete-impact"></ul>
+      <p class="danger-note">删除后无法恢复。</p>
+      <p id="person-delete-error" role="alert"></p>
+      <div class="cast-actions">
+        <button type="button" class="quiet-button" id="person-delete-cancel">取消</button>
+        <button type="button" class="danger-button" id="person-delete-confirm-button">确认删除</button>
+      </div>
+    </dialog>
+
+    <!-- 设置：壳层页面之一（与帐本并列），由侧栏导航互斥切换；
+         打开时其余页面让位，关闭后原样还原，不做浮层叠加。 -->
+    <section class="settings-panel" id="settings-panel" hidden tabindex="-1" aria-labelledby="settings-title">
+      <header class="settings-head shell-page-head">
+        <div class="settings-head-copy shell-page-copy">
+          <h2 id="settings-title" class="shell-page-title">设置</h2>
+          <p class="settings-head-sub shell-page-sub">Luna Radio · 记忆、模型、音乐源、声音和外观</p>
+        </div>
+        <button id="boot-close" class="surface-icon-button" type="button" aria-label="关闭设置">
+          <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+        </button>
+      </header>
+      <div class="settings-body">
+        <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
+          <button class="settings-nav-item" type="button" data-settings-page="general">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 4v2.2M12 17.8V20M4 12h2.2M17.8 12H20M6.6 6.6l1.6 1.6M15.8 15.8l1.6 1.6M17.4 6.6l-1.6 1.6M8.2 15.8l-1.6 1.6"/></svg><span>常规</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="appearance">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></svg><span>外观</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="memory">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h11a3 3 0 0 1 3 3V20H7a3 3 0 0 1-3-3V5.5a1 1 0 0 1 1-1zM4 16h15M8 8.5h7M8 12h5"/></svg><span>关于你的记忆</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="connection">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9.5 9.5h5v5h-5zM12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5"/></svg><span>模型与连接</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="usage">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11M9.3 20V4M14.6 20v-6M19.9 20V8"/><path d="M2 20h20"/></svg><span>使用统计</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="voice">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9.2" y="3" width="5.6" height="11" rx="2.8"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg><span>声音</span>
+          </button>
+          <button class="settings-nav-item" type="button" data-settings-page="tags">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h6.8a2 2 0 0 1 1.4.6l6.3 6.3a2 2 0 0 1 0 2.8l-4.8 4.8a2 2 0 0 1-2.8 0l-6.3-6.3a2 2 0 0 1-.6-1.4V5.5z"/><circle cx="8.9" cy="9.9" r="1.4"/></svg><span>歌曲标签</span>
+          </button>
+        </nav>
+        <div class="settings-content" id="settings-content">
+          <section class="settings-page" data-settings-page="general" hidden>
+            <h3 class="settings-page-title">常规</h3>
+            <p class="settings-page-sub">Lunara 认识你所在的地方，天气与作息才有着落。</p>
+            <section class="settings-card" aria-label="位置设置">
+              <div class="boot-h" data-tip="手动填写的城市会固定下来，IP 自动定位不会覆盖它。坐标只用于查天气，保留到城区级。">所在城市</div>
+              <div class="boot-location-row">
+                <input id="boot-location-input" type="text" autocomplete="off" maxlength="80" placeholder="如：杭州（手动覆盖自动定位）" aria-label="所在城市">
+                <button type="button" class="quiet-button" id="boot-location-save">保存位置</button>
+                <button type="button" class="quiet-button" id="boot-location-auto" data-tip="按当前网络出口定位到城市；失败时保持原来的城市不变。">自动定位</button>
+                <button type="button" class="quiet-button" id="boot-location-clear" hidden>清除</button>
+              </div>
+              <p class="boot-location-note" id="boot-location-note" role="status">默认按 IP 自动定位城市；手动填写的城市会固定下来，不会被自动结果覆盖。坐标仅用于向天气服务查询，且只保留城区级精度。</p>
+            </section>
+            <!-- 作息：生活上下文的工作日/上班时间/时区来源，即时保存，不走下方「保存设置」（fold-routine-into-general-settings）。 -->
+            <section class="settings-card" aria-label="作息">
+              <div id="routine-settings"></div>
+            </section>
+            <section class="settings-card" aria-label="音乐账号">
+              <div class="boot-h">音乐账号</div>
+              <div id="settings-source-accounts" class="source-accounts"></div>
+              <p class="weight-note" id="settings-source-account-status" role="status">正在读取登录状态…</p>
+            </section>
+            <section class="settings-card" aria-label="播放来源">
+              <div class="boot-h" data-tip="保存后用于之后的选歌；不打断当前歌曲，也不清空已有队列。">播放来源</div>
+              <fieldset class="source-mode-options">
+                <legend>播放来源模式</legend>
+                <label class="boot-opt" data-tip="只用选定来源；它不可用时不会自动换源，也不会静默换歌。"><input type="radio" name="playback-source-mode" value="single"><span>单源播放</span></label>
+                <label class="boot-opt" data-tip="按推荐比例在多个来源里选歌；具体比例在下方调整。"><input type="radio" name="playback-source-mode" value="multi"><span>多源播放</span></label>
+              </fieldset>
+              <div id="single-source-settings" hidden>
+                <label class="source-choice-label" for="boot-primary" data-tip="只列可播放的来源；目录型来源（仅跳转）不参与播放。">播放源</label>
+                <select id="boot-primary" aria-describedby="source-mode-note"></select>
+              </div>
+              <div id="multi-source-settings">
+                <div class="source-choice-label" data-tip="相对比例：调到 70% 时其余来源自动分掉 30%。只影响候选，不保证实际播放比例。">推荐来源比例</div>
+                <div class="weight-list" id="recommendation-weights"></div>
+              </div>
+              <p class="weight-note" id="source-mode-note">保存后用于之后的选歌，不打断当前歌曲，也不清空已有队列。</p>
+            </section>
+            <!-- 陪伴开关：写入成功才确认（add-companion-heartbeat / add-app-open-greeting）；保存是即时的，不走下方「保存设置」。 -->
+            <section class="settings-card" aria-label="陪伴">
+              <div class="boot-h" data-tip="只影响主动开口，不影响普通聊天与换歌串词。">陪伴</div>
+              <label class="artwork-theme-setting" data-tip="一起听歌时伙伴偶尔接一两句；关掉后只在你说话和换歌串词时开口。"><input type="checkbox" id="presence-ambient-toggle" aria-describedby="presence-ambient-note" disabled /> <span>一起听歌时伙伴会主动说话</span></label>
+              <p class="weight-note" id="presence-ambient-note" role="status"></p>
+              <label class="artwork-theme-setting" data-tip="离开一阵再打开 app 时最多说一句；你先开口或开始打字就不说。"><input type="checkbox" id="presence-greeting-toggle" aria-describedby="presence-greeting-note" disabled /> <span>打开 app 时伙伴可以打招呼</span></label>
+              <p class="weight-note" id="presence-greeting-note" role="status"></p>
+            </section>
+            <section class="settings-card" aria-label="公开联网查询">
+              <div class="boot-h" data-tip="只在你提问时联网，不逐次确认；后台反思、续播和主动开口不联网。">公开联网查询</div>
+              <p class="weight-note" id="web-access-disclosure">开启后，所有伙伴可在你提问时自动搜索，不逐次确认。Exa 会收到搜索词；读取网页时，站点会收到目标网址与网络请求信息。不会直接上传聊天，但模型仍可能把私人信息改写进搜索词，过滤无法完全避免。关闭可停止后续联网，不能撤回已发送的数据。</p>
+              <label class="artwork-theme-setting" data-tip="开启后伙伴遇到公开问题会直接搜索，不逐次确认。"><input type="checkbox" id="web-access-toggle" aria-describedby="web-access-disclosure web-access-status" disabled /> <span>允许伙伴自动查询公开问题</span></label>
+              <label class="artwork-theme-setting" data-tip="只在 Exa 不可用时启用；同样使用匿名免费入口，不转收费服务。"><input type="checkbox" id="web-access-fallback" aria-describedby="web-access-cost" disabled /> <span>Exa 不可用时，允许用 degoog 公共实例备用</span></label>
+              <p class="weight-note" id="web-access-cost">备用也会收到搜索词。仅使用匿名免费入口，限流时不会转收费服务；模型阅读与回答仍消耗现有额度。后台反思、续播和主动开口不联网。</p>
+              <p class="weight-note" id="web-access-status" role="status" aria-live="polite"></p>
+            </section>
+            <!-- 状态栏文字：只有桌面壳 + macOS 才有菜单栏文字，其他环境由 JS 隐藏。 -->
+            <section class="settings-card" id="tray-text-card" aria-label="状态栏显示" hidden>
+              <div class="boot-h">状态栏显示</div>
+              <div class="boot-options" id="tray-text-options" role="radiogroup" aria-label="状态栏文字"></div>
+              <p class="weight-note">macOS 菜单栏图标旁显示什么；没有歌词时会自动回落到曲名，不影响播放器里的歌词与播放。</p>
+            </section>
+            <div class="boot-foot">
+              <span class="boot-warn" id="boot-warn"></span>
+              <button class="boot-go" id="boot-go" disabled data-tip="保存播放来源与模型配置；不打断当前歌曲，也不清空已有队列。">保存设置</button>
+            </div>
+          </section>
+
+          <section class="settings-page" data-settings-page="appearance" hidden>
+            <h3 class="settings-page-title">外观</h3>
+            <p class="settings-page-sub">界面的底色与光，播放不受影响。</p>
+            <section class="settings-card" aria-label="外观设置">
+              <div class="boot-h">主题</div>
+              <div class="theme-choices" id="theme-choices" role="radiogroup" aria-label="界面主题"></div>
+              <fieldset id="modernist-base-setting" class="modernist-base-setting" hidden>
+                <legend id="modernist-base-label" data-tip="只在素色主题下出现；换底色不改播放与布局。">底色</legend>
+                <div class="theme-choices" role="radiogroup" aria-labelledby="modernist-base-label">
+                  <button class="theme-option" type="button" role="radio" data-modernist-base="paper" aria-checked="true" tabindex="0"><span class="theme-swatch" aria-hidden="true"></span><span>纸白</span></button>
+                  <button class="theme-option" type="button" role="radio" data-modernist-base="indigo" aria-checked="false" tabindex="-1"><span class="theme-swatch" aria-hidden="true"></span><span>靛蓝</span></button>
+                </div>
+              </fieldset>
+              <fieldset id="nocturne-material-setting" class="nocturne-material-setting">
+                <legend id="nocturne-material-label" data-tip="只改面板材质；实底更省电，玻璃更透。">材质</legend>
+                <div class="theme-choices" role="radiogroup" aria-labelledby="nocturne-material-label">
+                  <button class="theme-option" type="button" role="radio" data-material-option="flat" aria-checked="true" tabindex="0"><span class="theme-swatch" aria-hidden="true"></span><span>实底</span></button>
+                  <button class="theme-option" type="button" role="radio" data-material-option="glass" aria-checked="false" tabindex="-1"><span class="theme-swatch" aria-hidden="true"></span><span>玻璃</span></button>
+                </div>
+              </fieldset>
+              <div id="artwork-theme-controls">
+                <label class="artwork-theme-setting" data-tip="按当前歌曲封面提取底色，界面跟着封面变；关闭后固定用主题配色。"><input type="checkbox" id="artwork-theme-toggle" /> <span>随歌曲封面变色</span></label>
+              </div>
+            </section>
+          </section>
+
+          <section class="settings-page memory-settings" data-settings-page="memory" hidden aria-labelledby="memory-settings-title">
+            <h3 class="settings-page-title" id="memory-settings-title">关于你的记忆</h3>
+            <p class="settings-page-sub">这里是所有伙伴都能参考的共享记忆。你可以查看依据、修正或忘记；各伙伴与你的私人关系记忆，仍在对应的角色头像里查看。</p>
+            <div class="memory-settings-status">
+              <span class="mem-head-stats" id="mem-stats">共享记忆 0 条</span>
+              <span id="mem-status" role="status" aria-live="polite"></span>
+              <button type="button" class="quiet-button" id="mem-retry" hidden>重试加载</button>
+            </div>
+            <section class="mem-compose">
+              <textarea class="mem-input" id="mem-input" rows="2" aria-label="想让所有伙伴记住的事" placeholder="写一条想让所有伙伴都记住的事…&#10;⌘+Enter 提交"></textarea>
+              <div class="mem-compose-row">
+                <input class="mem-tags" id="mem-tags" aria-label="记忆标签" placeholder="标签，逗号分隔（如 night, ambient）" />
+                <button class="mem-add" id="mem-add">记下</button>
+              </div>
+            </section>
+
+            <section class="mem-tools">
+              <div class="mem-search-wrap">
+                <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3"/><path d="M7.5 7.5L10 10"/></svg>
+                <input class="mem-search" id="mem-search" aria-label="筛选共享记忆" placeholder="筛选标签 / 内容…" />
+              </div>
+              <button class="mem-consolidate" id="mem-consolidate" title="把零散的记忆合并整理">
+                <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 6h8M4.5 3.5L2 6l2.5 2.5M7.5 3.5L10 6l-2.5 2.5"/></svg>
+                <span>整理</span>
+              </button>
+            </section>
+
+            <section class="mem-list-wrap">
+              <div class="mem-list" id="mem-list">
+                <div class="mem-empty">还没有记忆。先记下点什么吧。</div>
+              </div>
+            </section>
+          </section>
+
+          <section class="settings-page" data-settings-page="connection" hidden>
+            <h3 class="settings-page-title">模型与连接</h3>
+            <p class="settings-page-sub">接入多家模型供应商（openai / anthropic / google 四种协议），全局选一个“使用中”，各聊天可单独覆盖且随时修改。</p>
+            <section class="settings-card" aria-label="使用中模型">
+              <div class="boot-h" data-tip="对话、串词与打标都走它；各聊天可以单独覆盖。">使用中模型（全局）</div>
+              <div id="llm-active-model-settings"></div>
+            </section>
+            <section class="settings-card" aria-label="模型接入">
+              <div class="boot-h">模型 Provider</div>
+              <div id="llm-providers-settings"></div>
+            </section>
+            <section class="settings-card" aria-label="模型故障切换">
+              <div class="boot-h" data-tip="网络超时、限流、服务异常或认证/权限失败时，按顺序尝试已授权备用；总等待上限不增加，已展示正文不重放。">故障切换</div>
+              <p class="settings-page-sub">默认关闭。网络超时、限流、服务异常或认证/权限失败时，按顺序尝试所选备用；总等待上限不增加，已展示正文不重放。跨供应商须单独授权，会话模型覆盖也遵守此限制。</p>
+              <div id="llm-failover-settings"></div>
+            </section>
+            <section class="settings-card" aria-label="歌曲打标">
+              <div class="boot-h" data-tip="只给候选池的歌补标签，供推荐与播客背景过滤；不会偷偷扫全库。">歌曲打标</div>
+              <p class="settings-page-sub">给候选池的歌补语言/人声/情绪标签，推荐与播客背景的“纯音乐底线”都读它；模型跟随上方“使用中模型”。</p>
+              <div class="boot-field"><span>自动补标</span>
+                <label class="llm-tag-inline" data-tip="只有播放到的新歌才会入队；不主动扫描整库。"><input id="song-tag-auto" type="checkbox"> 播放命中新歌时自动入队</label>
+              </div>
+              <div class="boot-foot">
+                <span class="boot-warn" id="song-tag-coverage" role="status"></span>
+                <button class="quiet-button" id="song-tag-backfill" type="button" data-tip="一次最多入队 100 首，后台串行打标，不阻塞播放。">补全候选池标签</button>
+                <button class="boot-go" id="song-tag-save" type="button" data-tip="只保存自动补标开关；已经生成的标签不会被覆盖。">保存</button>
+              </div>
+              <p class="boot-warn" id="song-tag-status" role="status"></p>
+            </section>
+          </section>
+
+          <section class="settings-page" data-settings-page="usage" hidden>
+            <h3 class="settings-page-title">使用统计</h3>
+            <p class="settings-page-sub">模型调用的 token、失败分类与按模型拆分。账本只记数值，不上传任何聊天内容；保留期由本机账本决定。</p>
+            <div id="usage-settings"></div>
+          </section>
+
+          <section class="settings-page" data-settings-page="tags" hidden>
+            <h3 class="settings-page-title">歌曲标签</h3>
+            <p class="settings-page-sub">已入库歌曲的属性标签直接影响推歌过滤；在这里查看与修正，改过的行不会再被自动覆盖。</p>
+            <section class="settings-card" aria-label="歌曲标签库">
+              <div id="song-tag-inspector"></div>
+            </section>
+          </section>
+
+          <section class="settings-page" data-settings-page="voice" hidden>
+            <h3 class="settings-page-title">声音</h3>
+            <p class="settings-page-sub">念白用的语音服务；每位伙伴的声音在创建伙伴面板单独挑选。</p>
+            <section class="settings-card" aria-label="语音服务状态">
+              <div class="boot-h" data-tip="这里只说明合成器是否就绪；实际声线在创建伙伴时按伙伴挑选。">语音服务状态</div>
+              <div class="boot-providers" id="boot-tts-providers"></div>
+            </section>
+            <section class="settings-card" aria-label="语音接口">
+              <div class="tts-custom-card">
+                <div class="boot-h" data-tip="可以接入多个语音接口；保存后在下方「声音池」获取它们的声音，创建伙伴时从声音池挑。">语音接口 <span class="boot-h-sub">每个接口单独编辑、单独保存</span></div>
+                <div class="tts-endpoints-body">
+                  <nav class="tts-endpoints-side" aria-label="已保存的接口">
+                    <ul class="tts-endpoint-items" id="tts-custom-endpoint-list"></ul>
+                    <button type="button" class="tts-endpoint-add" id="tts-custom-endpoint-add">＋ 接入新接口</button>
+                  </nav>
+                  <div class="tts-endpoint-editor" id="tts-custom-editor" aria-labelledby="tts-custom-editor-title">
+                    <div class="tts-endpoint-editor-head">
+                      <h4 class="tts-endpoint-editor-title" id="tts-custom-editor-title"></h4>
+                      <span class="tts-endpoint-state" id="tts-custom-editor-state" role="status"></span>
+                    </div>
+                    <div class="boot-endpoint tts-custom-endpoint">
+                      <label class="boot-field" data-tip="只用于在声音列表里区分来源，例如 MiniMax、Breeze。">
+                        <span>名称</span>
+                        <input id="tts-custom-name" type="text" maxlength="40" autocomplete="off" placeholder="如 MiniMax、Breeze">
+                      </label>
+                      <label class="boot-field" data-tip="不同厂商的请求和返回格式不同；不确定就选 OpenAI 兼容，接不上再试「其他」。">
+                        <span>接口协议</span>
+                        <select id="tts-custom-protocol" class="boot-select">
+                          <option value="openai">OpenAI 兼容（通用，默认）</option>
+                          <option value="breeze">ElevenLabs 兼容（Breeze 等）</option>
+                          <option value="minimax">MiniMax</option>
+                          <option value="recipe:qwen-tts">千问 TTS（阿里百炼）</option>
+                          <option value="recipe:doubao-tts">豆包语音（火山引擎）</option>
+                          <option value="recipe">其他（让助手接入）</option>
+                        </select>
+                      </label>
+                      <label class="boot-field" data-tip="OpenAI 兼容填 https://tts.example.com/v1；MiniMax、Breeze 填主域名或完整接口地址均可。">
+                        <span>接口 URL</span>
+                        <input id="tts-custom-url" type="url" autocomplete="off" placeholder="https://tts.example.com/v1">
+                      </label>
+                      <label class="boot-field" data-tip="只保存在本机配置里；留空表示沿用已保存的 key。">
+                        <span>API Key</span>
+                        <input id="tts-custom-key" type="password" autocomplete="new-password" placeholder="留空保持不变">
+                      </label>
+                      <div class="boot-field tts-custom-model-field">
+                        <label for="tts-custom-model">Model</label>
+                        <div class="tts-custom-model-row">
+                          <input id="tts-custom-model" type="text" list="tts-custom-models-list" autocomplete="off" placeholder="拉取或手填">
+                          <button type="button" class="tts-secondary" id="tts-custom-models-btn" data-tip="向这个接口查询可用的 model（会先保存连接信息）。">获取模型列表</button>
+                        </div>
+                      </div>
+                    </div>
+                    <p class="boot-location-note" id="tts-custom-note" hidden></p>
+                <datalist id="tts-custom-models-list"></datalist>
+                <section class="tts-recipe" id="tts-recipe" aria-labelledby="tts-recipe-title" hidden>
+                  <div class="boot-h"><span id="tts-recipe-title">接口格式</span> <span class="boot-h-sub">读文档 → 补齐缺项 → 试合成 → 保存接口</span></div>
+                  <p class="boot-location-note" id="tts-recipe-note"></p>
+                  <div class="tts-recipe-suggest" id="tts-recipe-suggest" hidden>
+                    <span id="tts-recipe-suggest-text"></span>
+                    <button type="button" class="tts-secondary" id="tts-recipe-suggest-use"></button>
+                  </div>
+                  <div class="tts-recipe-docs" id="tts-recipe-docs">
+                    <label class="boot-field">
+                      <span>接口文档链接</span>
+                      <input id="tts-recipe-doc-url" type="url" autocomplete="off" placeholder="https://docs.vendor.com/tts">
+                    </label>
+                    <label class="boot-field">
+                      <span>或粘贴文档正文（优先使用）</span>
+                      <textarea id="tts-recipe-doc-text" rows="5" placeholder="整节「文字转语音」文档：请求地址、鉴权、全部请求参数（含嵌套对象里的必填字段，如音色设置）和返回示例。只贴到一半，助手只能猜。"></textarea>
+                    </label>
+                    <div class="tts-custom-actions">
+                      <button type="button" class="tts-secondary" id="tts-recipe-run">读文档</button>
+                    </div>
+                  </div>
+                  <p class="boot-location-note" id="tts-recipe-status" role="status" aria-live="polite"></p>
+                  <p class="boot-location-note tts-recipe-unsupported" id="tts-recipe-unsupported" hidden></p>
+                  <dl class="tts-recipe-card" id="tts-recipe-card" aria-label="接口格式（由配方推出）" hidden></dl>
+                  <label class="boot-field tts-recipe-voice" id="tts-recipe-voice-field" hidden>
+                    <span>试合成用的音色</span>
+                    <input id="tts-recipe-voice" type="text" maxlength="200" autocomplete="off" placeholder="音色 ID，按厂商文档填写">
+                  </label>
+                  <div class="tts-custom-actions">
+                    <button type="button" class="tts-secondary" id="tts-recipe-test" aria-describedby="tts-recipe-missing" hidden>试合成</button>
+                    <button type="button" class="tts-secondary" id="tts-recipe-revise" data-tip="把上一次试合成的失败原因交给助手改配方；只调模型，不向厂商发请求。" hidden>让助手按失败原因修订</button>
+                  </div>
+                  <p class="boot-location-note" id="tts-recipe-missing" role="status"></p>
+                  <div class="tts-recipe-result" id="tts-recipe-result" hidden>
+                    <audio id="tts-recipe-audio" controls preload="auto" aria-label="试合成的声音"></audio>
+                    <p class="boot-location-note" id="tts-recipe-check"></p>
+                  </div>
+                  <details class="tts-recipe-details" id="tts-recipe-details">
+                    <summary>高级：查看或修改配方 JSON</summary>
+                    <textarea id="tts-recipe-json" rows="10" spellcheck="false" aria-label="配方 JSON" aria-describedby="tts-recipe-json-note" placeholder="读文档后这里会出现配方；也可以直接粘贴一份。"></textarea>
+                    <p class="boot-location-note" id="tts-recipe-json-note" role="status"></p>
+                  </details>
+                </section>
+                    <div class="tts-custom-remove-confirm" id="tts-custom-remove-confirm" role="alert" hidden>
+                      <span id="tts-custom-remove-text"></span>
+                      <div class="tts-custom-endpoint-actions">
+                        <button type="button" class="tts-secondary tts-custom-danger" id="tts-custom-remove-yes">确认删除</button>
+                        <button type="button" class="tts-secondary" id="tts-custom-remove-no">取消</button>
+                      </div>
+                    </div>
+                    <div class="tts-endpoint-editor-foot">
+                      <button type="button" class="tts-text-button tts-custom-danger" id="tts-custom-endpoint-remove">删除接口</button>
+                      <button type="button" class="tts-secondary" id="tts-custom-design-toggle" aria-controls="tts-custom-design" aria-expanded="false" data-tip="按一段描述让厂商生成新音色；只有支持的接口（Breeze、MiniMax）显示。" hidden>设计声音</button>
+                      <button type="button" class="boot-go" id="tts-custom-save-endpoint" data-tip="只保存这个接口的连接信息；声音池在下方单独保存。">保存接口</button>
+                    </div>
+                    <p class="tts-status" id="tts-custom-status" role="status"></p>
+                    <section class="tts-endpoint-failures" id="tts-endpoint-failures" aria-labelledby="tts-endpoint-failures-title" hidden>
+                      <div class="tts-endpoint-failures-head">
+                        <span class="tts-endpoint-failures-title" id="tts-endpoint-failures-title" data-tip="伙伴用这个接口发声失败时记在本机（最新 200 条）：原因、卡在哪一步、各花了多久。不记要念的文字。">最近发声失败</span>
+                        <button type="button" class="tts-text-button" id="tts-endpoint-failures-refresh">刷新</button>
+                      </div>
+                      <p class="tts-endpoint-failures-summary" id="tts-endpoint-failures-summary"></p>
+                      <ol class="tts-endpoint-failures-list" id="tts-endpoint-failures-list"></ol>
+                    </section>
+                <section class="tts-custom-design" id="tts-custom-design" aria-labelledby="tts-custom-design-title" hidden>
+                  <div class="tts-custom-candidates-head">
+                    <div class="boot-h"><span id="tts-custom-design-title">设计声音</span> <span class="boot-h-sub">写一段音色描述，生成的候选先进发现结果试听</span></div>
+                    <button type="button" class="tts-text-button" id="tts-custom-design-close">收起</button>
+                  </div>
+                  <div class="tts-custom-design-draft-row">
+                    <select id="tts-custom-design-person" class="boot-select" aria-label="从哪个伙伴的人设起草"><option value="">选择伙伴…</option></select>
+                    <button type="button" class="tts-secondary" id="tts-custom-design-draft" data-tip="用你配置的模型读这个伙伴的人设，起草一段音色描述；人设原文不会发给 TTS 厂商。">从人设起草</button>
+                  </div>
+                  <label class="boot-field tts-custom-design-description">
+                    <span>音色描述 <span class="tts-custom-design-chars" id="tts-custom-design-chars">0 / 500</span></span>
+                    <textarea id="tts-custom-design-description" rows="4" maxlength="500" placeholder="例如：二十岁出头的女声，音色清亮偏软，语速偏慢，说话时带一点笑意。"></textarea>
+                  </label>
+                  <div class="tts-custom-design-fields">
+                    <label class="boot-field">
+                      <span>试听文本</span>
+                      <input id="tts-custom-design-preview" type="text" maxlength="500" autocomplete="off" placeholder="你好，这里是 Lunara 电台。今晚想听点什么？">
+                    </label>
+                    <label class="boot-field">
+                      <span>名称</span>
+                      <input id="tts-custom-design-name" type="text" maxlength="40" autocomplete="off" placeholder="设计的声音">
+                    </label>
+                    <label class="boot-field">
+                      <span>候选数</span>
+                      <select id="tts-custom-design-count" class="boot-select"><option value="1">1 个</option></select>
+                    </label>
+                  </div>
+                  <p class="boot-location-note tts-custom-design-cost" id="tts-custom-design-cost"></p>
+                  <div class="tts-custom-actions">
+                    <button type="button" class="boot-go" id="tts-custom-design-run">生成候选</button>
+                  </div>
+                </section>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section class="settings-card" aria-label="声音池">
+              <div class="tts-custom-card">
+                <div class="boot-h" data-tip="所有接口保留下来的声音；创建伙伴时从这里挑。">声音池 <span class="boot-h-sub">每行标明所属接口与 model；改动点「保存声音池」后生效</span></div>
+                <div class="tts-pool-add" role="group" aria-labelledby="tts-pool-add-title">
+                  <div class="tts-pool-add-title" id="tts-pool-add-title">添加声音</div>
+                  <div class="tts-pool-add-row">
+                    <label class="boot-field tts-pool-source-field">
+                      <span>来源接口</span>
+                      <select id="tts-pool-source" class="boot-select" aria-label="把声音加到哪个已保存的接口"></select>
+                    </label>
+                    <button type="button" class="tts-secondary" id="tts-custom-voices-btn" aria-controls="tts-custom-candidates">获取声音列表</button>
+                  </div>
+                  <div class="tts-custom-voice-row tts-custom-manual-row">
+                    <input id="tts-custom-manual" type="text" autocomplete="off" placeholder="接口没有声音列表？手填 voice 名" aria-label="手填 voice 名（加入所选来源接口）">
+                    <button type="button" class="tts-secondary" id="tts-custom-manual-add">加入声音池</button>
+                  </div>
+                </div>
+                <section class="tts-free-block" id="tts-free-block" aria-labelledby="tts-free-title">
+                  <div class="boot-h" data-tip="不需要账号和 Key 的声音；默认关闭，开启前会说明它会把文字发给谁。"><span id="tts-free-title">免费声音</span> <span class="boot-h-sub">微软 Edge 朗读；不需要账号和 Key。开启后在上方「来源接口」里选它获取声音</span></div>
+                  <div class="tts-free-row">
+                    <label class="tts-free-switch">
+                      <input type="checkbox" id="tts-free-toggle" aria-controls="tts-free-consent">
+                      <span>启用免费声音</span>
+                    </label>
+                  </div>
+                  <div class="tts-free-consent" id="tts-free-consent" role="region" aria-label="免费声音说明" hidden>
+                    <p id="tts-free-disclosure"></p>
+                    <div class="tts-custom-endpoint-actions">
+                      <button type="button" class="tts-secondary tts-accent" id="tts-free-agree">同意并开启</button>
+                      <button type="button" class="tts-text-button" id="tts-free-cancel">取消</button>
+                    </div>
+                  </div>
+                  <p class="boot-location-note" id="tts-free-status" role="status"></p>
+                </section>
+                <section class="tts-custom-candidates" id="tts-custom-candidates" aria-labelledby="tts-custom-candidate-title" hidden>
+                  <div class="tts-custom-candidates-head">
+                    <div class="boot-h"><span id="tts-custom-candidate-title">发现结果</span> <span class="boot-h-sub">还没进声音池；试听、勾选后加入，再点保存生效</span></div>
+                    <button type="button" class="tts-text-button" id="tts-custom-candidate-close">收起</button>
+                  </div>
+                  <div class="tts-custom-voice-toolbar">
+                    <input id="tts-custom-candidate-filter" type="search" autocomplete="off" placeholder="筛选名称或 voice id" aria-label="筛选发现结果">
+                    <label class="tts-custom-select-all">
+                      <input type="checkbox" id="tts-custom-candidate-select-all"> 全选
+                    </label>
+                    <button type="button" class="tts-secondary" id="tts-custom-candidate-add" disabled>加入声音池</button>
+                    <span class="tts-custom-voice-count" id="tts-custom-candidate-count" role="status"></span>
+                  </div>
+                  <div id="tts-custom-candidate-list" aria-label="发现结果（可试听、可勾选）"></div>
+                </section>
+                <div class="tts-custom-voices-block">
+                  <div class="tts-custom-voice-toolbar" id="tts-custom-voice-toolbar" hidden>
+                    <input id="tts-custom-voice-filter" type="search" autocomplete="off" placeholder="筛选名称、接口或 voice id" aria-label="筛选待选声音">
+                    <label class="tts-custom-select-all">
+                      <input type="checkbox" id="tts-custom-select-all"> 全选
+                    </label>
+                    <button type="button" class="tts-secondary" id="tts-custom-remove-selected" disabled>移除所选</button>
+                    <span class="tts-custom-voice-count" id="tts-custom-voice-count" role="status"></span>
+                  </div>
+                  <div id="tts-custom-voice-editor" aria-label="待保留声音（可改名、可试听）"></div>
+                  <div class="tts-custom-actions tts-custom-pool-save">
+                    <button type="button" class="boot-go" id="tts-custom-save" data-tip="只保存声音池；不会改动伙伴已经绑定的声音。">保存声音池</button>
+                    <span class="tts-custom-dirty" id="tts-custom-dirty" role="status" hidden></span>
+                  </div>
+                </div>
+                <p class="tts-status" id="tts-pool-status" role="status"></p>
+              </div>
+            </section>
+            <section class="settings-card" aria-label="主声音失败时代读">
+              <div class="tts-fallback-card">
+                <div class="boot-h" data-tip="伙伴自己的声音出技术故障时，换一把声音把这段念完；顶部提醒会说明由谁代读。">代读</div>
+                <label class="tts-free-switch">
+                  <input type="checkbox" id="tts-fallback-toggle">
+                  <span>主声音失败时用备用声音代读</span>
+                </label>
+                <label class="boot-field tts-fallback-target">
+                  <span>代读声音</span>
+                  <select id="tts-fallback-target" class="boot-select" aria-label="代读用的声音"></select>
+                </label>
+                <p class="boot-location-note" id="tts-fallback-note"></p>
+                <p class="boot-location-note" id="tts-fallback-status" role="status"></p>
+              </div>
+            </section>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- 登录弹层 -->
+    <div class="qr-overlay" id="qr-overlay" role="dialog" aria-modal="true" aria-labelledby="qr-title" style="display:none">
+      <div class="qr-card">
+        <div class="qr-title" id="qr-title">登录</div>
+        <div id="qr-section">
+          <img class="qr-img" id="qr-img" src="" alt="QR" />
+          <div class="qr-hint" id="qr-hint">正在生成二维码…</div>
+          <button class="qr-refresh" id="qr-refresh" style="display:none">刷新二维码</button>
+        </div>
+        <details class="cookie-section" id="cookie-section">
+          <summary>无法扫码？使用 Cookie 登录</summary>
+          <div class="cookie-divider"><span>高级登录方式</span></div>
+          <input class="cookie-input" id="cookie-input" placeholder="MUSIC_U=xxx; __csrf=yyy" />
+          <button class="cookie-btn" id="cookie-btn">登录</button>
+          <div class="cookie-hint" id="cookie-hint"></div>
+        </details>
+        <button class="qr-close" id="qr-close">取消</button>
+      </div>
+    </div>
+
+    <!-- ====== 召唤新伙伴 Modal ====== -->
+    <div class="cast-overlay" id="cast-overlay" style="display:none" aria-hidden="true">
+      <div class="cast-card" role="dialog" aria-labelledby="cast-title">
+        <form id="cast-form" novalidate>
+        <button type="button" class="cast-close surface-icon-button" id="cast-close" aria-label="关闭新伙伴创建窗口">
+          <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+        </button>
+        <div class="cast-head">
+          <h2 class="cast-title" id="cast-title">选一个性格，再挑一把声音</h2>
+          <p class="cast-lead">两部分互相独立：性格决定它是谁，声音只决定它怎么念。任意顺序都可以，不选全就不能保存。</p>
+        </div>
+        <div class="cast-body">
+          <div class="cast-col cast-col-personas">
+            <div class="cast-col-h">
+              <span>性格</span>
+              <span class="cast-col-count" id="cast-persona-count">—</span>
+            </div>
+            <div class="cast-persona-grid" id="cast-persona-grid">
+              <div class="cast-voice-loading">读取人设…</div>
+            </div>
+          </div>
+          <div class="cast-col cast-col-voices">
+            <div class="cast-col-h">
+              <span>声音</span>
+              <span class="cast-col-count" id="cast-voice-count">—</span>
+            </div>
+            <div class="cast-voice-grid" id="cast-voice-grid">
+              <div class="cast-voice-loading">读取声音库…</div>
+            </div>
+          </div>
+        </div>
+        <div class="cast-compose">
+          <div class="cast-compose-fields">
+            <label class="cast-field-label" for="cast-name"><span class="cast-col-h"><span>名字</span><span class="cast-col-hint" id="cast-name-hint">必填 · 最多 80 字</span></span></label>
+            <input class="cast-input" id="cast-name" maxlength="80" required aria-describedby="cast-msg" placeholder="选定性格后会给出名字候选" />
+            <label class="cast-field-label" for="cast-persona"><span class="cast-col-h"><span>补充说明</span><span class="cast-col-hint">可选 · 最多 1000 字</span></span></label>
+            <textarea class="cast-textarea" id="cast-persona" rows="3" maxlength="1000" aria-describedby="cast-msg" placeholder="想让它更像谁？可以在这里补充，会覆盖性格设定里冲突的部分。"></textarea>
+          </div>
+          <div class="cast-compose-actions">
+            <span class="cast-msg" id="cast-msg" role="status" aria-live="polite"></span>
+            <button type="button" class="quiet-button" id="cast-preview" disabled>声音试听</button>
+            <audio id="cast-preview-audio" controls hidden preload="none"></audio>
+            <button class="cast-go" id="cast-go" type="submit" disabled>保存伙伴</button>
+          </div>
+        </div>
+        </form>
+      </div>
+    </div>
+    <dialog class="salon-dialog radiohost-created-dialog" id="radiohost-created-dialog" aria-labelledby="radiohost-created-title" aria-describedby="radiohost-created-copy">
+      <div class="dialog-head"><h2 id="radiohost-created-title">这位伙伴已保存</h2><button type="button" class="quiet-button" id="radiohost-created-done" aria-label="完成并关闭">✕</button></div>
+      <p id="radiohost-created-copy"><strong id="radiohost-created-name">新伙伴</strong> 已加入人物列表。当前聊天和播放保持不变，你可以接下来选择：</p>
+      <div class="radiohost-created-actions">
+        <button type="button" class="quiet-button" id="radiohost-created-chat">创建聊天</button>
+        <button type="button" class="listen-together" id="radiohost-created-listen">创建聊天并一起听</button>
+      </div>
+    </dialog>
+
+
+    <!-- ====== Toast ====== -->
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+    <audio id="audio" preload="auto"></audio>
+    <audio id="audioMusic" preload="auto"></audio>
+  </div>
+
+  <script type="module" src="/app.js?v=44"></script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+/* usageSettings.css — 「设置 → 使用统计」：统计卡、每日热力图、趋势与按模型拆分。
+   只消费主题变量：四档热度由 --studio-accent-ink 的 color-mix 生成，
+   所以 cike / moonlight / modernist / organic 切换时颜色自动一致，不在样式里写死颜色。
+   字阶与「模型与连接」页统一：卡标题 12px/550、说明 12.5px、数字用 Geist Mono。 */
+
+.usage { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── 统计卡 ─────────────────────────────────────────────────────────────── */
+.usage-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.usage-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--studio-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ink-0) 14%, transparent);
+}
+.usage-stat-label { font-size: 12px; line-height: 1.4; color: var(--t-mid); }
+.usage-stat-value {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  color: var(--t-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-stat-hint { font-size: 11.5px; line-height: 1.45; color: var(--t-mid); }
+
+/* ── 卡片头与范围切换 ───────────────────────────────────────────────────── */
+.usage-card { margin-top: 0; }
+.usage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.usage-card-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.usage-card-title .boot-h { margin-bottom: 0; }
+.usage-card-meta {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--t-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-range {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--studio-line);
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.usage-range-button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--t-mid);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.usage-range-button:hover { color: var(--t-hi); background: var(--glass-2); }
+.usage-range-button.is-active { color: var(--t-hi); background: var(--glass-3); }
+.usage-range-button:focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; }
+
+/* ── 热力图 ─────────────────────────────────────────────────────────────── */
+/* 窄视口横向滚动，且自身可聚焦：键盘用户也能滚动查看，不撑破设置内容区。 */
+.usage-heatmap-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 2px 8px;
+  scrollbar-width: thin;
+}
+.usage-heatmap-scroll:focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; border-radius: 8px; }
+/* 长窗口日历：周列×星期行，列宽均分整行（minmax 给窄视口留最小格宽，放不下才滚动）。
+   星期列在滚动区外：格子滑到左缘时被滚动区裁掉，不需要（玻璃面板也给不了）不透明遮挡。 */
+.usage-calendar { display: flex; align-items: flex-start; gap: 6px; }
+.usage-calendar .usage-heatmap-scroll { flex: 1; min-width: 0; }
+.usage-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: calc(var(--usage-weeks, 0) * 11px);
+}
+.usage-heatmap-months {
+  /* 月份标签按列序百分比定位；超出的标签被裁掉而不是撑大滚动区。 */
+  position: relative;
+  height: 15px;
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--t-mid);
+  white-space: nowrap;
+}
+.usage-heatmap-month { position: absolute; top: 0; }
+/* 位置与高度由 JS 按格子区实测写入（margin-top / height），这里只给首帧的近似值。 */
+.usage-heatmap-weekdays {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex-shrink: 0;
+  width: 12px;
+  height: 120px;
+  margin-top: 22px;
+  padding: 1px 0;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--t-mid);
+}
+.usage-heatmap-weeks {
+  display: grid;
+  grid-template-columns: repeat(var(--usage-weeks, 1), minmax(8px, 1fr));
+  gap: 3px;
+}
+.usage-heatmap-week { display: grid; grid-template-rows: repeat(7, auto); gap: 3px; }
+/* 格子随列宽成方形，但最高 22px：30/90 天列宽很大时变成横向长方块，不把卡片撑高。 */
+.usage-heatmap .usage-cell { width: 100%; height: auto; aspect-ratio: 1; max-height: 22px; border-radius: 3px; }
+
+/* 7 天条带：一天一格，格子均分整行宽度；刻度与格子共用同一套列。 */
+.usage-strip-cells,
+.usage-strip-axis {
+  display: grid;
+  grid-template-columns: repeat(var(--usage-days, 1), minmax(0, 1fr));
+  gap: 6px;
+}
+.usage-strip-cells .usage-cell { width: 100%; height: 40px; border-radius: 4px; }
+.usage-strip-axis {
+  margin-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--t-mid);
+  /* 每格「周几 日期」居中；窄视口在空格处折成两行。 */
+  text-align: center;
+}
+
+.usage-cell {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  /* 0 档：空格也能看出网格，但不暗示“有数据”。 */
+  background: color-mix(in srgb, var(--t-hi) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--studio-line) 45%, transparent);
+}
+.usage-cell.lv1 { background: color-mix(in srgb, var(--studio-accent-ink) 24%, transparent); box-shadow: none; }
+.usage-cell.lv2 { background: color-mix(in srgb, var(--studio-accent-ink) 44%, transparent); box-shadow: none; }
+.usage-cell.lv3 { background: color-mix(in srgb, var(--studio-accent-ink) 68%, transparent); box-shadow: none; }
+.usage-cell.lv4 { background: var(--studio-accent-ink); box-shadow: none; }
+.usage-cell.is-empty { background: transparent; box-shadow: none; }
+
+.usage-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--t-mid);
+}
+.usage-legend .usage-cell { width: 10px; height: 10px; }
+.usage-legend-total { margin-left: auto; font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ── 趋势柱 ─────────────────────────────────────────────────────────────── */
+.usage-bars-scroll { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+.usage-bars {
+  list-style: none;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--usage-bar-gap, 3px);
+  height: 96px;
+  margin: 0;
+  padding: 0;
+  min-width: min-content;
+}
+/* 柱子均分整行宽度（不设上限），最小宽度保证 365 天在窄视口里仍可滚动查看。 */
+.usage-bar-item { display: flex; align-items: flex-end; height: 100%; flex: 1 1 0; min-width: 4px; }
+.usage-bars.is-dense .usage-bar-item { min-width: 2px; }
+.usage-bars.is-dense .usage-bar { border-radius: 1px 1px 0 0; }
+.usage-bar {
+  display: block;
+  width: 100%;
+  height: var(--usage-bar, 0%);
+  min-height: 0;
+  border-radius: 3px 3px 2px 2px;
+  background: color-mix(in srgb, var(--studio-accent-ink) 62%, transparent);
+}
+.usage-bar-item:hover .usage-bar { background: var(--studio-accent-ink); }
+.usage-bars-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--t-mid);
+}
+
+/* ── 按模型 ─────────────────────────────────────────────────────────────── */
+.usage-models { list-style: none; display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; }
+.usage-model { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.usage-model-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.usage-model-name {
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--t-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-model-tokens {
+  flex-shrink: 0;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--t-hi);
+}
+.usage-model-meta { display: flex; gap: 10px; font-size: 11.5px; line-height: 1.4; color: var(--t-mid); }
+.usage-model-bar {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--t-hi) 8%, transparent);
+  overflow: hidden;
+}
+.usage-model-bar > span {
+  display: block;
+  width: var(--usage-share, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--studio-accent-ink) 72%, transparent);
+}
+
+/* ── 失败分类与状态 ─────────────────────────────────────────────────────── */
+.usage-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.usage-chip {
+  padding: 4px 9px;
+  border: 1px solid var(--studio-line);
+  border-radius: 999px;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn-ink);
+}
+.usage-chip.is-muted { color: var(--t-mid); }
+.usage-note { margin: 8px 0 0; font-size: 12.5px; line-height: 1.65; color: var(--t-mid); }
+.usage-empty-line { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--t-mid); }
+.usage-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--t-mid);
+}
+.usage-status.is-error { color: var(--warn-ink); }
+.usage-status .quiet-button { min-height: 32px; padding: 4px 10px; font-size: 12px; }
+
+/* ── 响应式：宽/中/窄 ───────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .usage-stat { padding: 10px 11px; }
+  .usage-stat-value { font-size: 17px; }
+  .usage-card-head { flex-wrap: wrap; align-items: flex-start; }
+  .usage-strip-cells .usage-cell { height: 32px; }
+  .usage-bars { height: 78px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-bar-item:hover .usage-bar { transition: none; }
+}
+
+/* ── 悬浮提示 ───────────────────────────────────────────────────────────── */
+/* 跟随指针显示「日期 / token / 调用次数」；定位由 JS 写成视口坐标（fixed），
+   不参与布局、不拦截指针，也不受热力图横向滚动容器裁剪。 */
+.usage-tooltip {
+  position: fixed;
+  z-index: 60;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 132px;
+  max-width: 260px;
+  padding: 9px 11px;
+  border: 1px solid var(--studio-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ink-0) 86%, var(--studio-panel));
+  box-shadow: 0 10px 28px -12px color-mix(in srgb, var(--ink-0) 70%, transparent);
+  color: var(--t-hi);
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+.usage-tooltip[hidden] { display: none; }
+.usage-tooltip-title {
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.4;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+.usage-tooltip-detail {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--t-mid);
+  white-space: nowrap;
+}

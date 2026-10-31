@@ -1,0 +1,74 @@
+{
+  "name": "@3bluebytes/lunara",
+  "productName": "Lunara",
+  "version": "0.1.0",
+  "description": "Lunara · Luna Radio — 本地优先的音乐伙伴：与多位有独立人格的虚拟伙伴聊天、一起听歌",
+  "author": "3bluebytes",
+  "license": "MIT",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "prestart": "node scripts/ensure-electron.mjs && npm run rebuild:electron",
+    "start": "electron .",
+    "prestart:web": "npm run rebuild:node",
+    "start:web": "node server/index.js",
+    "predev": "npm run rebuild:node",
+    "dev": "node --watch server/index.js",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:electron:legacy": "electron-rebuild --force-abi 140 -w better-sqlite3",
+    "rebuild:node": "npm rebuild better-sqlite3",
+    "pretest": "npm run rebuild:node",
+    "test": "node scripts/run-tests.mjs",
+    "smoke:cli": "node scripts/smoke-cli-launch.mjs",
+    "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
+    "dist:mac": "node scripts/dist-desktop.mjs --mac",
+    "dist:win": "node scripts/dist-desktop.mjs --win",
+    "doctor": "node scripts/doctor.mjs",
+    "setup": "bash setup.sh",
+    "ncm": "node scripts/start-music-source.mjs ncm",
+    "qq": "node scripts/qq-sdk-ready.mjs",
+    "music:ncm": "npm run ncm",
+    "all": "echo 'QQ Music is embedded. Start optional NCM with npm run ncm, then run npm start.'"
+  },
+  "engines": {
+    "node": "20.x || 22.x || 23.x || 24.x || 25.x"
+  },
+  "dependencies": {
+    "@jixun/qmweb-sign": "^2.0.3",
+    "@mozilla/readability": "0.6.0",
+    "@sansenjian/qq-music-api": "2.6.0",
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "ipaddr.js": "2.2.0",
+    "linkedom": "0.18.12",
+    "NeteaseCloudMusicApi": "^4.31.0",
+    "node-cron": "^3.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "c8": "12.0.0",
+    "electron": "^39.8.10",
+    "electron-builder": "^26.15.3",
+    "knip": "6.42.1",
+    "png2icons": "^2.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "lunara": "bin/lunara.js"
+  },
+  "files": [
+    "bin/lunara.js",
+    "server",
+    "pwa",
+    "prompts",
+    "electron",
+    "scripts/ensure-electron.mjs",
+    "user/*.example"
+  ]
+}

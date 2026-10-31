@@ -1,0 +1,50 @@
+# Lunara 桌面安装包打包配置（electron-builder）。
+# 构建入口是 npm run dist:mac / dist:win（scripts/dist-desktop.mjs 负责镜像与签名开关）。
+
+appId: com.lunara.desktop
+productName: Lunara
+
+directories:
+  output: dist-desktop
+  buildResources: build
+
+# 只打包运行必需资产；契约测试（scripts/startup-contract.test.mjs）会核对这份白名单。
+# data/、cache/、backup/、.env、真实 user/、docs/、openspec/ 一律不进包。
+files:
+  - electron/**/*
+  - server/**/*
+  - pwa/**/*
+  - prompts/**/*
+  - bin/lunara.js
+  - scripts/ensure-electron.mjs
+  - user/*.example
+  - build/licenses/**/*
+  - package.json
+
+# 原生模块与随包二进制必须落在真实文件系统，不能留在 asar 压缩包里。
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+  - node_modules/ffmpeg-static/**/*
+  - node_modules/ffprobe-static/**/*
+
+npmRebuild: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  icon: build/icon.icns
+  category: public.app-category.music
+  # 签名由 scripts/dist-desktop.mjs 决定：检测到 CSC_LINK 时自动签名，
+  # 否则设置 CSC_IDENTITY_AUTO_DISCOVERY=false 显式出未签名包（构建不得因缺证书失败）。
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # 用户数据在 ~/.lunara（数据根），卸载程序默认不触碰 home 目录内容。

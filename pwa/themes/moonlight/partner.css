@@ -1,0 +1,53 @@
+/* 月色「伙伴开口」版式（openspec theme-moonlight-partner-voice）。
+   宽屏只有一种排法：聊天流（680px 阅读列）+ 输入框在左，右边 420px 是月盘、歌名、歌词、接下来。
+   纯听交给专注聆听（focus-mode），不另设听歌态；侧栏由 sidebar.js / sidebar.css 独立管理。
+   只换排法，不换状态：播放器仍是唯一那一条，前端只订阅 runtime-state。
+   每个选择器都限定在 :root[data-theme="moonlight"][data-layout="stage"] 之下（themePlugins.test 检查）。 */
+
+/* ===== 宽屏（≥961px） ===== */
+@media (min-width: 961px) {
+  /* 列序对调：聊天门（聊天流 + 输入框）在左、聆听门（月盘）在右。
+     人物页是整页替换（stage.css 里自有两列并让 #person-detail 占第 2 列），
+     套用三列模板会把资料压进 640px 的中间列、右边留一列空门框，人格与记忆都被挤成窄条。 */
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode):not(.person-page) { grid-template-columns: var(--room-sidebar-width) minmax(0,1fr) minmax(340px,420px); }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) > .chat-door { grid-column: 2; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) > .listening-door { grid-column: 3; }
+  /* 门框把手原本是「收起左边的听歌列」；列序对调后没有对应的那条边，月色只有一种排法，把手与凸部轮廓一起隐藏。 */
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .panel-door > .chat-focus-toggle { display: none; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::before,
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::after { content: none; }
+
+  /* —— 聊天流：680px 阅读列居中；最新回复沿用共享 14px 正文尺度 —— */
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .conversation-main { padding-inline: max(24px, calc((100% - 680px) / 2)); }
+
+  /* —— 右栏月盘：居中一列，封面是圆的月亮 —— */
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-panel { border-right: 0; padding: 40px 40px 20px 8px; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-hero:not([hidden]) { display: flex; flex-direction: column; align-items: center; text-align: center; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-artwork { float: none; width: min(320px, 100%); margin: 0 auto; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-artwork figcaption { display: none; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-hero-copy { display: flex; flex-direction: column; align-items: center; width: 100%; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-wordmark h2 { display: none; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) :is(.listening-state-row, .listening-narration, .listening-reaction-hint, .cike-companionship) { display: none; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-reactions { flex-direction: row; justify-content: center; width: auto; margin-top: 14px; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-reaction span { white-space: nowrap; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-song-title { margin-top: 28px; font: 900 30px/1.2 var(--font-reading); letter-spacing: 0; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .cike-lyrics { text-align: center; padding-block: 16px 0; }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .listening-lyric { font: 400 20px/1.5 var(--font-reading); }
+  :root[data-theme="moonlight"][data-layout="stage"] #app:not(.focus-mode) .cike-next { display: block; margin-top: 28px; }
+}
+
+/* ===== 月盘：有封面显示封面并加一圈月白渐晕；没有封面时是决策稿的渐变月盘 ===== */
+/* 月盘：中段随封面色相，其余锁定。只在月色舞台版式里声明，避免漏进其他主题。 */
+:root[data-theme="moonlight"][data-layout="stage"] { --moon-disc: linear-gradient(150deg, #d9c6a0 0%, hsl(calc(var(--ambient-hue) + 84) 11% 49%) 46%, #2c3566 100%); }
+:root[data-theme="moonlight"][data-layout="stage"] .listening-artwork { aspect-ratio: 1; border-radius: 50%; background: var(--moon-disc); box-shadow: 0 0 0 1px rgba(236,230,214,.08), 0 0 70px rgba(236,230,214,.10), 0 20px 60px rgba(0,0,0,.45); overflow: hidden; }
+:root[data-theme="moonlight"][data-layout="stage"] .listening-artwork img { width: 100%; height: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 50%; box-shadow: none; }
+:root[data-theme="moonlight"][data-layout="stage"] .listening-artwork img:is([src$="/icon.png"], [src$="/cover-fallback.jpg"]) { opacity: 0; }
+
+/* ===== 谁在说：名字前一颗本人颜色的圆点，名字也用本人颜色（Lunara 琥珀，伙伴取 --partner-N）。
+   颜色来自共享视图已写好的 --person-color；不加色边，宽窄屏一致。 ===== */
+:root[data-theme="moonlight"][data-layout="stage"] .chat-msg.assistant .chat-speaker { display: flex; align-items: center; gap: 8px; padding-left: 0; color: var(--person-color, var(--partner-lunara)); font: 500 13px/1.4 var(--font-ui); }
+:root[data-theme="moonlight"][data-layout="stage"] .chat-msg.assistant .chat-speaker-signal { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--person-color, var(--partner-lunara)); box-shadow: 0 0 8px color-mix(in srgb, var(--person-color, var(--partner-lunara)) 55%, transparent); }
+:root[data-theme="moonlight"][data-layout="stage"] .chat-msg.assistant .chat-speaker-reply { color: var(--text-2); font-weight: 400; }
+
+/* ===== 去掉装饰性玻璃：侧栏与播放条不再 backdrop-filter，夜空直接透出来 ===== */
+:root[data-theme="moonlight"][data-layout="stage"] :is(.conversation-sidebar, .persistent-player) { -webkit-backdrop-filter: none; backdrop-filter: none; }

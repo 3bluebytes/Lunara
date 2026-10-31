@@ -1,0 +1,21 @@
+{
+  "id": "nocturne",
+  "name": "时间线",
+  "version": 2,
+  "scheme": "dark",
+  "swatch": "linear-gradient(135deg, #2c2925 0 62%, #d8c39a 62% 70%, #121110 70%)",
+  "fonts": [
+    "Noto Serif SC",
+    "Noto Sans SC",
+    "Bodoni Moda"
+  ],
+  "tokens": "tokens.css",
+  "overrides": "overrides.css",
+  "variants": {
+    "identity": "dot",
+    "clock": "compact",
+    "waveform": "line",
+    "decoration": "off",
+    "layout": "timeline"
+  }
+}

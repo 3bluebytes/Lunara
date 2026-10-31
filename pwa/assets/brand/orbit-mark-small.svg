@@ -1,0 +1,2 @@
+<!-- Lunara 标识「轨道点」·小尺寸加粗档（<24px：favicon、托盘）。几何源：scripts/orbitMark.mjs。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="23.1" cy="8.9" r="4" fill="var(--brand-dot, #a88a4f)"/></svg>

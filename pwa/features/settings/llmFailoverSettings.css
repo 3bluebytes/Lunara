@@ -1,0 +1,7 @@
+/* Failover policy editor: inherit the current theme; no credentials or endpoint URLs. */
+.llm-failover-form { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.llm-failover-form label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.llm-failover-form select { max-width: 100%; min-width: 0; width: 100%; color: var(--t-primary); background: var(--ink-1); border: 1px solid var(--line-strong, var(--t-secondary)); padding: 8px; font: inherit; }
+.llm-failover-form input { accent-color: var(--amber); }
+.llm-failover-form small, .llm-failover-form [role="status"] { color: var(--t-secondary, var(--t-primary)); font-size: 12px; overflow-wrap: anywhere; }
+.llm-failover-form button { align-self: flex-start; }

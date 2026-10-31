@@ -1,0 +1,59 @@
+# Lunara 桌面安装包双平台自动构建（desktop-packaging 规格的 CI 契约）。
+# - push v* tag 或手动触发：macOS 产 .dmg（含自动打包冒烟），Windows 产 NSIS .exe。
+# - 未配置任何签名 secret 时必须以未签名模式构建成功。
+# - 构建不在测试门禁上（全量测试另行运行）；macOS 冒烟是构建内的验收门。
+
+name: build-desktop
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # ffmpeg-static 的二进制随 npm 包下载；GitHub 网络内无需镜像。
+      - run: npm ci
+
+      - name: Build macOS installers (arm64 + x64) with packaged smoke
+        if: runner.os == 'macOS'
+        run: npm run dist:mac
+
+      - name: Build Windows installer (x64)
+        if: runner.os == 'Windows'
+        run: npm run dist:win
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunara-${{ runner.os }}
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.exe
+          if-no-files-found: error
+
+      - name: Attach installers to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-desktop/*.dmg
+            dist-desktop/*.exe
+          generate_release_notes: true

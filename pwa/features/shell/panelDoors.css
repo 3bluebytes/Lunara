@@ -1,0 +1,108 @@
+/* 门框包住原面板和唯一把手。滚动/裁切留在内层，凸部不再是应用级浮层。
+   窄屏和专注聆听维持原有 grid；只有桌面伴听态需要实体门框。 */
+.panel-door { display: contents; }
+/* 把手的文字标签只在时间线布局显示（timeline.css）；门框把手只用箭头。 */
+.chat-focus-label { display: none; }
+
+@media (min-width: 961px) {
+  #app:not(.focus-mode) > .panel-door {
+    --door-tab-width: 18px;
+    --door-tab-height: 64px;
+    --door-tab-radius: var(--panel-door-tab-radius, 10px);
+    --door-line-width: var(--panel-door-line-width, 1px);
+    --door-line: var(--panel-door-line, var(--line, var(--studio-line)));
+    --door-fill: var(--panel-door-fill, var(--ink-1));
+    position: relative;
+    display: grid;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    isolation: isolate;
+    z-index: 1;
+    background: var(--door-fill);
+    border-radius: var(--panel-door-radius, 0px);
+  }
+  #app:not(.focus-mode) > .listening-door { grid-column: 2; }
+  #app:not(.focus-mode) > .chat-door { grid-column: 3; }
+  /* 卷动容器与门框同尺寸；边框/底色归外壳，不再有一条旧分界线穿过凸部。 */
+  :root #app:not(.focus-mode) > .panel-door > :is(.listening-panel, .conversation-main) {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    border: 0;
+    border-radius: inherit;
+    background: none;
+    box-shadow: none;
+  }
+
+  /* 只有拥有把手的门升到相邻面板之前；整个 stacking context 始终低于歌曲整理。
+     凸部和中部断开的边线共同组成门的连续轮廓，不给按钮单独的底色/浮层。 */
+  #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle) { z-index: 2; }
+  #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::before {
+    content: '';
+    position: absolute;
+    top: calc(50% - var(--door-tab-height) / 2);
+    left: calc(0px - var(--door-tab-width));
+    /* 凸部向门框多延伸一个线宽、藏进边线下面：接缝重叠，缩放取整也不会裂开缝隙。 */
+    width: calc(var(--door-tab-width) + var(--door-line-width));
+    height: var(--door-tab-height);
+    box-sizing: border-box;
+    background: inherit;
+    border: var(--door-line-width) solid var(--door-line);
+    border-right: 0;
+    border-radius: var(--door-tab-radius) 0 0 var(--door-tab-radius);
+    pointer-events: none;
+  }
+  #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::after {
+    content: '';
+    position: absolute;
+    /* 内层 main 为 z-index:1；边线必须盖过不透明输入区，但仍留在门框内部。 */
+    z-index: 2;
+    inset: 0 auto 0 0;
+    width: var(--door-line-width);
+    background: linear-gradient(to bottom,
+      var(--door-line) 0 calc(50% - var(--door-tab-height) / 2),
+      transparent calc(50% - var(--door-tab-height) / 2) calc(50% + var(--door-tab-height) / 2),
+      var(--door-line) calc(50% + var(--door-tab-height) / 2) 100%);
+    pointer-events: none;
+  }
+  #app:not(.focus-mode) .panel-door > .chat-focus-toggle {
+    position: absolute;
+    left: calc(0px - var(--door-tab-width));
+    top: calc(50% - var(--door-tab-height) / 2);
+    width: var(--door-tab-width);
+    height: var(--door-tab-height);
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--door-tab-radius) 0 0 var(--door-tab-radius);
+    background: none;
+    color: var(--t-mid);
+    cursor: pointer;
+  }
+  .chat-focus-toggle:hover { color: var(--t-hi); }
+  .chat-focus-toggle:focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; }
+  .chat-focus-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .chat-focus-toggle .chev-expand { display: none; }
+  #app.chat-focus .chat-focus-toggle .chev-collapse { display: none; }
+  #app.chat-focus .chat-focus-toggle .chev-expand { display: block; }
+
+  /* 展开态的唯一按钮已移入聆听门：右边框中部向右凸出。
+     凸部向左多盖一个线宽焊进门框边线下，按钮仍居中在可见的 18px 内。 */
+  #app.chat-focus > .listening-door:has(> .chat-focus-toggle)::before,
+  #app.chat-focus > .listening-door > .chat-focus-toggle {
+    border-radius: 0 var(--door-tab-radius) var(--door-tab-radius) 0;
+  }
+  #app.chat-focus > .listening-door:has(> .chat-focus-toggle)::before { left: calc(100% - var(--door-line-width)); border-right: var(--door-line-width) solid var(--door-line); border-left: 0; }
+  #app.chat-focus > .listening-door > .chat-focus-toggle { left: 100%; }
+  #app.chat-focus > .listening-door:has(> .chat-focus-toggle)::after { left: auto; right: 0; }
+
+  /* 工作台/人物页一起让位，不残留空 grid 项或凸部。 */
+  #app:is(.settings-open, .today-open, .person-page) > .panel-door,
+  #app:not(.focus-mode) > .panel-door:has(> [hidden]) { display: none !important; }
+  /* 专注聆听使用 display:contents，按钮仍是子节点但不出现在专注舞台。 */
+  #app.focus-mode .chat-focus-toggle { display: none; }
+}

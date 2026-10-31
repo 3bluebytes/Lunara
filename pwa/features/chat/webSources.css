@@ -1,0 +1,22 @@
+.chat-web-sources {
+  margin-block-start: 12px;
+  max-inline-size: 100%;
+  color: var(--text);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.chat-web-sources summary { cursor: pointer; padding-block: 6px; }
+.chat-web-sources ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.chat-web-sources li { display: grid; gap: 2px; margin-block: 8px; min-inline-size: 0; }
+.chat-web-sources a {
+  color: inherit;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.chat-web-sources li span { color: var(--text-dim); }
+.chat-web-sources :is(a, summary):focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

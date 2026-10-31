@@ -1,0 +1,79 @@
+node_modules/
+node_modules
+.cache/
+.env
+# LLM 密钥默认位于 ~/.lunara/config.json。若 LUNARA_CONFIG_DIR 指向仓库内，
+# 下列规则可避免误提交；自定义为其它仓库内目录时请一并加入忽略规则。
+.lunara/
+# legacy 配置目录只用于迁移，也继续忽略
+.claudio/
+config.json
+data/*
+!data/.gitkeep
+cache/tts/*
+!cache/tts/.gitkeep
+cache/tts-models/*
+!cache/tts-models/.gitkeep
+.checkpoints/
+third_party/
+.DS_Store
+*.log
+cache/audio/*
+# /img 静态目录已注册（server/index.js）；当前无写入者，但缓存封面图后不应被提交
+cache/img/*
+
+# 覆盖率包含源码和执行路径，仅本地/CI artifact，不进版本控制
+/coverage/
+/.quality-reports/
+
+# eval 运行报告（本地留档，按需手动归档）
+server/eval/runs/
+
+# 每个伙伴实例的 persona.md（radiohost_id 随 wipe 变化，是 per-instance 运行时内容）
+# 想版本化某位伙伴的人格就手动 git add -f
+user/radiohost/
+
+# rename-dj-to-radiohost 硬切换的一次性隔离备份（legacyCutover.js）。
+# 备份含私人数据（旧库、旧 persona），绝不进仓库。
+backup/
+
+# 运行时会改写这些文件（consolidator.js 的 TASTE_PATH/NO_GO_PATH/MOOD_RULES_PATH）；
+# 下游用户的个人数据不应与上游模板冲突，因此不跟踪。
+# 种子内容以 <name>.example 随仓库分发，首次启动时按需复制。
+user/taste.md
+user/no-go.md
+user/mood-rules.md
+user/routines.md
+user/playlists.json
+# 无尾斜杠：同时覆盖备份目录与任何同名文件
+user/.history
+# 会话执行记录（私有 JSONL，默认在 ~/.lunara；数据根指向仓库内时不得提交）
+sessions/
+.zcode/
+
+# WorkBuddy 本地工作目录（截图与笔记）。2026-10-14 的工作树整合验收记录里
+# 就把它列为“主树仅有未跟踪目录”，一直不属于仓库内容。
+.workbuddy/
+
+
+# ZCode playwright-cli 本地调试产物（控制台日志与图标候选），不入库
+.playwright-cli/
+
+# 桌面安装包构建产物（dist:mac / dist:win，见 scripts/dist-desktop.mjs）
+dist-desktop/
+
+# 图标选型研究的过程产物：候选全尺寸图与二进制、原始生成图、候选评审页。
+# 2026-10-15 已从仓库移除约 78MB；重新研究时不要把这些重新提交。
+# 定稿输入、研究记录与总览图仍跟踪，背景见 docs/design/README.md。
+docs/design/icon-study-*/assets/*/candidate.icns
+docs/design/icon-study-*/assets/*/candidate.ico
+docs/design/icon-study-*/assets/*/rounded-*.png
+docs/design/icon-study-*/assets/*/square-*.png
+!docs/design/icon-study-*/assets/A01-pearl-moon/rounded-1024.png
+docs/design/icon-study-*/originals/*
+docs/design/icon-study-*/index.html
+
+# 本机启动配置与 Python 字节码，不属于共享源码或设计输入
+/.claude/launch.json
+__pycache__/
+*.py[cod]

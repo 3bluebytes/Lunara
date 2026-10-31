@@ -1,0 +1,52 @@
+/* 月色独立侧栏：共享舞台与素色仍保持常驻展开。
+   未初始化也默认图标轨，避免 HTML 的 expanded 首帧闪出会话列表。 */
+@media (min-width: 961px) {
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) #app { --room-sidebar-width: 76px; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar {
+    position: relative;
+    inset: auto;
+    width: var(--room-sidebar-width);
+    min-width: 0;
+    align-items: center;
+    padding-inline: 12px;
+    border-right: 0;
+    box-shadow: none;
+  }
+  /* 边线从红绿灯下方开始，不能穿过 native traffic lights。 */
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar::after {
+    content: '';
+    position: absolute;
+    top: var(--rail-line-top, 40px);
+    right: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
+  }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar .sb-brand-row { width: 52px; justify-content: center; padding: 0; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar :is(.sb-brand, #sidebar-close, .conversation-list-heading, .room-search-label, #room-list, #people-list, #room-archived, .sb-bottom-compact, .sb-undo-toast, .room-row-menu, .sb-resize) { display: none !important; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar .shell-nav-item {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+    margin-bottom: 6px;
+  }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar .shell-nav-item span { display: none; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) .conversation-sidebar :is(#nav-settings, #nav-account) { display: flex !important; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) #nav-settings { order: 8; margin-top: auto; }
+  :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) #nav-account { order: 9; margin-top: 0; }
+  :root[data-theme="moonlight"][data-layout="stage"][data-moonlight-sidebar="expanded"] #sidebar-close { display: grid !important; flex: 0 0 32px; width: 32px; height: 32px; }
+  :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar .shell-nav-item.active { color: var(--accent); }
+  :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar .shell-nav-item svg { flex-shrink: 0; }
+}
+/* 窄屏仍为原抽屉；收起入口不能被共享舞台的隐藏规则吃掉。 */
+@media (max-width: 960px) {
+  :root[data-theme="moonlight"][data-layout="stage"] #sidebar-close { display: grid !important; }
+}
+:root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar :is(.shell-nav-item, #sidebar-close):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar { transition: none; }
+}

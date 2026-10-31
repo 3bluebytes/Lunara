@@ -1,0 +1,22 @@
+{
+  "id": "moonlight",
+  "name": "月色",
+  "version": 3,
+  "scheme": "dark",
+  "swatch": "linear-gradient(135deg, hsl(226 55% 70%), hsl(42 75% 85%))",
+  "fonts": [
+    "Geist",
+    "Geist Mono",
+    "Noto Serif SC"
+  ],
+  "tokens": "tokens.css",
+  "overrides": "overrides.css",
+  "atmosphere": "atmosphere.js",
+  "variants": {
+    "identity": "dot",
+    "clock": "hidden",
+    "waveform": "dual",
+    "decoration": "on",
+    "layout": "stage"
+  }
+}

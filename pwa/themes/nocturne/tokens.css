@@ -1,0 +1,151 @@
+/* 夜场：低饱和的暖灰夜色、一像素线、香槟色点缀；字阶「标宋」（宋体 900 / 400 / 300 + 黑体标签 + Bodoni 数字）。 */
+:root[data-theme="nocturne"] {
+  --theme-hue: 32;
+  --theme-accent-hue-offset: 2;
+  --theme-accent-s: 42%;
+  --theme-accent-l: 72%;
+  --player-surface: #121110;
+  --player-surface-low: #121110;
+  --player-ink: #f3efe8;
+  --player-muted: #aba59c;
+  --player-accent: #d8c39a;
+  --player-control: #f3efe8;
+  --player-control-ink: #121110;
+  --player-wash-opacity: .12;
+  --player-wash-brightness: .42;
+  --player-cover-surface-l: 12%;
+  --player-cover-low-l: 8%;
+  --player-cover-ink-l: 95%;
+  --player-cover-muted-l: 81%;
+  --player-cover-accent-l: 76%;
+  --player-cover-control-l: 76%;
+  --player-cover-control-ink-l: 10%;
+  --player-cover-fallback: #1d1b18;
+  --player-cover-fallback-opacity: .65;
+  --player-cover-surface-s: 17%;
+  --player-cover-low-s: 15%;
+  --player-cover-control-s: 22%;
+  --player-cover-accent-s: 24%;
+  --sky-moon-hue-offset: -180;
+  --sky-moon-s: 32%;
+  --sky-moon-l: 96%;
+  --sky-moon-a: 0;
+  --sky-glow-1-hue-offset: 0;
+  --sky-glow-1-s: 48%;
+  --sky-glow-1-l: 44%;
+  --sky-glow-1-a: .1;
+  --sky-glow-2-s: 38%;
+  --sky-glow-2-l: 34%;
+  --sky-glow-2-a: .05;
+  --sky-base-s: 28%;
+  --sky-base-l1: 8%;
+  --sky-base-l2: 4%;
+  --sky-glow-2-hue-offset: 28;
+  --sky-base-hue-offset: 0;
+  --artwork-wash-opacity: .35;
+  --artwork-wash-blur: 72px;
+  --artwork-wash-saturate: 1.65;
+  --artwork-wash-brightness: .66;
+  --aurora-opacity: 0;
+  --aurora-1-s: 48%;
+  --aurora-1-l: 68%;
+  --aurora-1-a: .28;
+  --aurora-2-s: 40%;
+  --aurora-2-l: 62%;
+  --aurora-2-a: .22;
+  --aurora-3-s: 30%;
+  --aurora-3-l: 76%;
+  --aurora-3-a: .18;
+  --aurora-2-hue-offset: 35;
+  --aurora-3-hue-offset: -15;
+  --noise-opacity: .07;
+  --particle-saturation: 90%;
+  --particle-lightness: 80%;
+  --particle-glow: 2.4;
+  --particle-radius: .88;
+  --particle-drift: .3;
+  --particle-count: 0;
+  --particle-twinkle: .5;
+  --particle-hue-jitter: 4;
+  /* 星点画在深色画布上，screen 与普通 alpha 合成的通道差实测 ≤4/255；
+     但 screen 会让合成器每帧重新混合整张全屏 canvas（120Hz 下约多烧 0.9ms/帧）。 */
+  --particle-blend: normal;
+  --surface-s: 26%;
+  --surface-l1: 12%;
+  --surface-l2: 7%;
+  --surface-a: 94%;
+  --surface-a2: 96%;
+  --surface-panel-s: 24%;
+  --surface-panel-l: 22%;
+  --surface-panel-a: 42%;
+  --scrim-s: 25%;
+  --scrim-l: 9%;
+  --scrim-a: .50;
+  --shadow-s: 40%;
+  --shadow-l: 5%;
+  --shadow-a: .55;
+  --warn-ink: #e2a48f;
+  color-scheme: dark;
+  /* 夜色：暖灰（h≈32，饱和很低），按深浅分四层；文字是带一点暖的米白，层级只靠透明度。 */
+  --ink-0: #0f0e0d; --ink-1: #151413; --ink-2: #1d1b19; --ink-3: #26231f;
+  --t-hi: #f3efe8; --t-mid: rgba(243,239,232,.76); --t-lo: rgba(243,239,232,.64);
+  --t-xlo: rgba(243,239,232,.4); --t-placeholder: rgba(243,239,232,.64);
+  --amber: #d8c39a; --coral: #d98b78; --pulse: #b4c4a2;
+  --hair: rgba(243,239,232,.14); --hair-strong: rgba(243,239,232,.26);
+  --glass-1: rgba(243,239,232,.02); --glass-2: rgba(243,239,232,.04); --glass-3: rgba(243,239,232,.06);
+  --grad-1: #d8c39a; --grad-2: #d8c39a; --grad-3: #d8c39a; --grad-text-on: #151413;
+  /* 字阶「标宋」：一级 900、二级 400 的宋体；标签黑体 400 加宽字距；数字 Bodoni。
+     正文、旁白、歌词一律 400，不用 300：15–20px 的 300 宋体笔画只占约 1 个设备像素，
+     栅格化按亚像素位置取整，同一个字里有的笔画是 1px、有的是 2px 灰带，一段正文就会
+     「有的字粗、有的字细」（与字体、字重一致无关，也不是子集缺字回退）。
+     --weight-light / nocturne-serif-300.woff2 保留给 ≥24px 的大字号，当前正文不引用。
+     字体文件打包前先落到系统宋体 / Bodoni 72（macOS 自带），不从网络加载。
+     拉丁排在最前：浏览器逐字回退，英文（歌名、歌词、艺人）用 Newsreader，中文仍是标宋。
+     宋体自带的拉丁字形在英文歌词里发楔、字距紧，只留作 Newsreader 缺字时的兜底。 */
+  --font-display: 'Lunara Latin', 'Lunara Serif', 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --font-reading: 'Lunara Latin', 'Lunara Serif', 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --font-ui: 'Lunara Sans', 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+  --font-mono: 'Lunara Number', 'Bodoni Moda', 'Bodoni 72', Didot, 'Lunara Serif', serif;
+  --font-number: 'Lunara Number', 'Bodoni Moda', 'Bodoni 72', Didot, serif;
+  --weight-heavy: 900; --weight-regular: 400; --weight-light: 300; --weight-number: 500;
+  --tracking-label: .2em;
+
+  --shell-sidebar: pinned;
+  --shell-person: page;
+  --person-edit: toggle;
+
+  --bg-page: #0f0e0d;
+  --bg-stage: radial-gradient(70% 70% at 30% 18%, hsl(var(--ambient-hue, 32) 9% 19% / .9), transparent 70%), linear-gradient(176deg, hsl(var(--ambient-hue, 32) 8% 13%), hsl(var(--ambient-hue, 32) 7% 6%));
+  --bg-sidebar: rgba(10,9,8,.5); --bg-player: var(--player-surface); --bg-raised: #1d1b19;
+  --bg-input: rgba(0,0,0,.22); --bg-selected: rgba(243,239,232,.06); --bg-hover: rgba(243,239,232,.04);
+  --text: #f3efe8; --text-2: rgba(243,239,232,.76); --text-3: rgba(243,239,232,.64); --text-4: rgba(243,239,232,.4);
+  --text-on-accent: #151413;
+  --line: rgba(243,239,232,.14); --line-strong: rgba(243,239,232,.26); --line-control: rgba(243,239,232,.3);
+  --accent: #d8c39a; --accent-hover: #e8d7b2; --danger: #d98b78; --ok: #b4c4a2;
+  --partner-1: #cdb5c8; --partner-2: #b4c4a2; --partner-3: #cfb79f;
+  --partner-4: #a9bfcb; --partner-5: #cfc296; --partner-6: #bcb6d6;
+  --partner-1-rgb: 205 181 200; --partner-2-rgb: 180 196 162; --partner-3-rgb: 207 183 159;
+  --partner-4-rgb: 169 191 203; --partner-5-rgb: 207 194 150; --partner-6-rgb: 188 182 214;
+  --partner-lunara: #d8c39a;
+  --size-clock-hero: 46px; --size-clock: 46px; --size-title: 46px; --size-song: 46px;
+  --size-lyric-current: 20px; --size-lyric: 15px; --size-reading: 15px; --size-body: 14px;
+  --size-meta: 12px; --size-label: 11px;
+  --radius-pill: 2px; --radius-card: 3px; --radius-row: 2px; --radius-input: 2px;
+  --radius-cover: 2px; --radius-bubble: 2px;
+  --motion-breath: 3.2s; --motion-ease: ease-in-out;
+
+  /* studio 表面语言（设置、弹窗、提示共用）：一像素线、近乎直角、深一层的同色实底；
+     香槟色固定，不随封面色相转。玻璃材质的半透明在 overrides.css 里按 data-material 叠加。 */
+  --studio-line: rgba(243,239,232,.16);
+  --studio-panel: transparent;
+  --studio-accent: #d8c39a; --brand-dot: var(--studio-accent); --studio-accent-ink: #d8c39a; --studio-accent-on: #17161a;
+  --studio-surface-solid: #171614;
+  /* 写成单色渐变而不是颜色：共享样式有 `background: var(--studio-surface), var(--studio-surface-solid)`
+     这种多层写法，非最后一层只能是图像，纯颜色会让整条声明失效、面板变透明。 */
+  --studio-surface: linear-gradient(hsl(var(--ambient-hue, 32) 6% 9%), hsl(var(--ambient-hue, 32) 6% 9%));
+  --studio-scrim: rgba(6,6,8,.58);
+  --studio-shadow: 0 40px 120px rgba(0,0,0,.5);
+  --studio-radius: 3px; --studio-field-radius: 2px; --studio-card-radius: 3px;
+  --studio-primary-bg: transparent; --studio-primary-bg-hover: transparent;
+  --studio-primary-border: rgba(243,239,232,.3); --studio-primary-radius: 2px;
+}

@@ -1,0 +1,99 @@
+/* Approved B: the review belongs to a wide, manually opened side panel. */
+.recording-review {
+  position: absolute;
+  inset: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) calc(var(--player-actual-height, var(--studio-player-height, 76px)) + 22px) auto;
+  width: min(640px, calc(100% - 100px));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  z-index: 18;
+  border-radius: 18px;
+  background: var(--studio-surface), var(--studio-surface-solid);
+  box-shadow: -12px 18px 55px hsl(var(--ambient-hue) 30% 4% / .24);
+  color: var(--t-hi);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow: hidden;
+  isolation: isolate;
+}
+.recording-review[hidden] { display: none; }
+.recording-review__header { display: flex; align-items: start; justify-content: space-between; gap: 20px; padding: 28px 30px 24px; }
+.recording-review h2 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.4; letter-spacing: -.02em; }
+.recording-review h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.recording-review p { margin: 8px 0 0; }
+.recording-review__header p { margin-top: 14px; color: var(--t-mid); }
+.recording-review__body { overflow-y: auto; overscroll-behavior: contain; padding: 0 30px 22px; scrollbar-width: thin; scrollbar-color: var(--studio-line) transparent; }
+.recording-review__body, .recording-review__song, .recording-review__song > span, .recording-review__source { min-width: 0; overflow-wrap: anywhere; }
+.recording-review__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 6px 0 10px; }
+.recording-review__toolbar p { color: var(--t-mid); font-size: 12px; }
+.recording-review button { font: inherit; cursor: pointer; }
+.recording-review__link { border: 0; background: transparent; color: var(--t-mid); min-height: 36px; padding: 5px 0; text-align: left; text-underline-offset: 4px; }
+.recording-review__link:hover:not(:disabled) { color: var(--t-hi); text-decoration: underline; }
+.recording-review__confirm {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--studio-accent-ink) 45%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--studio-accent-ink) 12%, var(--studio-surface-solid));
+  color: var(--t-hi);
+  padding: 10px 16px;
+  min-height: 42px;
+}
+.recording-review__confirm:hover:not(:disabled) { background: color-mix(in srgb, var(--studio-accent-ink) 22%, var(--studio-surface-solid)); }
+.recording-review button:disabled { opacity: .45; cursor: default; }
+.recording-review :is(button, input, summary, [tabindex]):focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 3px; }
+.recording-review input { accent-color: var(--studio-accent-ink); width: 16px; height: 16px; margin: 4px 0 0; flex-shrink: 0; }
+.recording-review fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.recording-review small { display: block; font-size: 12px; color: var(--t-mid); }
+.recording-review strong { font-weight: 550; text-wrap: pretty; }
+.recording-review__selection { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin: 16px 0 10px; }
+.recording-review__selection small { margin-left: auto; }
+.recording-review__columns, .recording-review__row { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 2fr); gap: 18px; }
+.recording-review__columns { color: var(--t-mid); font-size: 12px; padding: 10px 0; border-bottom: 1px solid var(--studio-line); }
+.recording-review__row { padding: 22px 0; border-bottom: 1px solid var(--studio-line); cursor: pointer; }
+.recording-review__song { display: flex; align-items: start; gap: 16px; }
+.recording-review__song small { margin-top: 6px; }
+.recording-review__sources { display: grid; grid-template-columns: repeat(min(var(--review-sources), 2), minmax(0, 1fr)); gap: 12px 14px; }
+.recording-review__source > span:not(.recording-review__source-name) { display: block; font-size: 12px; }
+.recording-review__source small { margin-top: 6px; font-variant-numeric: tabular-nums; }
+.recording-review__source-name { display: none; }
+.recording-review__prompt { color: var(--t-mid); font-size: 12px; }
+.recording-review__prompt button { font-size: 12px; }
+.recording-review__empty { padding: 24px 0; color: var(--t-mid); }
+.recording-review__help { color: var(--t-mid); font-size: 12px; padding-top: 12px; }
+.recording-review__section-title { display: flex; align-items: center; gap: 14px; padding-top: 30px; padding-bottom: 10px; color: var(--t-mid); font-size: 13px !important; font-weight: 400 !important; }
+.recording-review__section-title::after { content: ''; flex: 1; height: 1px; background: var(--studio-line); }
+.recording-review__merged { padding: 12px 0; border-bottom: 1px solid var(--studio-line); }
+.recording-review__merged summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+.recording-review__merged summary::-webkit-details-marker { display: none; }
+.recording-review__merged summary small { margin-top: 5px; }
+.recording-review__merged-mark { flex-shrink: 0; color: var(--t-mid); font-size: 12px; text-decoration: underline; text-underline-offset: 4px; }
+.recording-review__members { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; padding: 16px 0 8px; }
+.recording-review__members .recording-review__source-name { display: block; color: var(--t-hi); }
+.recording-review__members div { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.recording-review__pages, .recording-review__footer-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; }
+.recording-review__pages { margin-top: 16px; color: var(--t-mid); font-variant-numeric: tabular-nums; }
+.recording-review__footer { padding: 12px 30px 16px; border-top: 1px solid var(--studio-line); }
+.recording-review__status p { margin: 0 0 8px; color: var(--t-mid); }
+.recording-review__footer-actions { justify-content: flex-end; }
+.recording-review ::selection { background: color-mix(in srgb, var(--studio-accent-ink) 25%, transparent); color: var(--t-hi); }
+
+@media (max-width: 960px) {
+  .recording-review { width: min(640px, calc(100% - 32px)); top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); bottom: calc(var(--player-actual-height, var(--studio-player-height, 76px)) + 16px); }
+}
+@media (max-width: 600px) {
+  .recording-review { width: calc(100% - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)); right: max(8px, env(safe-area-inset-right)); top: max(8px, env(safe-area-inset-top)); border-radius: 16px; }
+  .recording-review__header { padding: 20px 20px 16px; }
+  .recording-review__header p { margin-top: 8px; }
+  .recording-review__body { padding: 0 20px 18px; }
+  .recording-review__footer { padding: 10px 20px 12px; }
+  .recording-review__toolbar { align-items: start; flex-direction: column; gap: 12px; }
+  .recording-review__columns { display: none; }
+  .recording-review__row { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 18px 0; }
+  .recording-review__sources { padding-left: 32px; gap: 14px; }
+  .recording-review__source-name { display: block; color: var(--t-mid); font-size: 12px; margin-bottom: 4px; }
+  .recording-review__selection { gap: 12px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .recording-review:not([hidden]) { animation: recording-review-arrive 200ms cubic-bezier(.16, 1, .3, 1); }
+  @keyframes recording-review-arrive { from { transform: translateX(12px); clip-path: inset(0 0 0 3% round 18px); } to { transform: none; clip-path: inset(0 round 18px); } }
+}

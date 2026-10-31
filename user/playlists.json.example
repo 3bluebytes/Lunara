@@ -1,0 +1,47 @@
+{
+  "morning_soft": {
+    "label": "早晨 · 轻醒来",
+    "seeds": [
+      "Bread If",
+      "America Tin Man",
+      "Carpenters Close to You",
+      "Karen Carpenter Rainy Days and Mondays"
+    ]
+  },
+  "deep_work": {
+    "label": "深度工作 · 无歌词",
+    "seeds": [
+      "Nils Frahm Says",
+      "Ólafur Arnalds Near Light",
+      "GoGo Penguin Hopopono",
+      "坂本龍一 Merry Christmas Mr. Lawrence"
+    ]
+  },
+  "evening_walk": {
+    "label": "晚饭后散步",
+    "seeds": [
+      "陈鸿宇 理想三旬",
+      "程璧 晴日共剪窗",
+      "钟立风 在路旁",
+      "山下達郎 蒼氓"
+    ]
+  },
+  "late_night": {
+    "label": "深夜 · 木吉他与气流",
+    "seeds": [
+      "Nick Drake Pink Moon",
+      "Iron & Wine Naked As We Came",
+      "雷光夏 第36個故事",
+      "Sufjan Stevens Should Have Known Better"
+    ]
+  },
+  "rainy_city": {
+    "label": "雨天 · 城市便利店",
+    "seeds": [
+      "大貫妙子 都会",
+      "山下達郎 Sparkle",
+      "竹内まりや Plastic Love",
+      "杏里 悲しみがとまらない"
+    ]
+  }
+}

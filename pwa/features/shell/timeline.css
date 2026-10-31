@@ -1,0 +1,826 @@
+/* 时间线版式（data-layout="timeline"）：顶栏导航 + 「全部」浮层。
+   侧栏不再常驻，改由顶栏「全部」以浮层打开（topBarView.js 管显隐、焦点和 Esc）；
+   顶栏放在 #app 内、macOS 拖动条（28px）下方，不参与网格排布。
+   每个选择器都限定在 :root[data-layout="timeline"] 之下；颜色只读语义变量，
+   主题皮肤（夜场）写在各主题 overrides.css。
+   听歌页：上面是时间线（timelineView.js 渲染已放 / 待播 / 横线；封面、歌名、旁白是原节点换位置），
+   下面是聊天条，最底是唯一的播放器。「聊」= 现有的聊天聚焦（#app.chat-focus）：时间线收成顶上一条。
+   宽屏（≥1200px）改成左右：左边竖时间线，右边整列聊天；「聊」时分界线左移，左边仍是竖时间线、封面缩小（见文件后部）。 */
+
+:root[data-layout="timeline"] {
+  --room-sidebar-width: 0px;
+  --top-bar-offset: 28px;
+  --top-bar-row: 52px;
+  --top-bar-height: calc(var(--top-bar-offset) + var(--top-bar-row));
+  --top-bar-accent: var(--brand-dot);
+}
+
+/* ---- 网格：第一列（原侧栏）收为 0，内容从顶栏下方开始 ---- */
+:root[data-layout="timeline"] #app { padding-top: var(--top-bar-height); }
+:root[data-layout="timeline"] #room-menu { display: none !important; }
+/* 「随歌曲变色」挪进外观设置，听歌页头部不再放快捷按钮。 */
+:root[data-layout="timeline"] #artwork-theme-quick { display: none; }
+/* 舞台版式页眉的「外观」快切在这里没有位置：时间线的入口是顶栏「外观」。
+   纯图标入口那份规则带两个 ID（#app #appearance-quick），这里要压过它。 */
+:root[data-layout="timeline"] #app #appearance-quick { display: none; }
+
+/* ---- 顶栏 ---- */
+:root[data-layout="timeline"] .top-bar {
+  position: absolute; z-index: 30;
+  top: var(--top-bar-offset); left: 0; right: 0;
+  height: var(--top-bar-row);
+  display: flex; align-items: center; gap: 28px;
+  padding-inline: max(24px, env(safe-area-inset-left, 0px)) max(24px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--hair);
+  color: var(--t-mid);
+}
+:root[data-layout="timeline"] .top-bar[hidden] { display: none; }
+:root[data-layout="timeline"] .top-bar-mark { display: inline-flex; color: var(--t-hi); flex: none; }
+:root[data-layout="timeline"] .top-bar-mark-dot { fill: var(--top-bar-accent); }
+:root[data-layout="timeline"] :is(.top-bar-tabs, .top-bar-dest) { display: flex; align-items: center; gap: 22px; min-width: 0; }
+:root[data-layout="timeline"] .top-bar-tabs { flex: 1 1 auto; overflow: hidden; }
+:root[data-layout="timeline"] .top-bar-dest { margin-left: auto; flex: none; }
+:root[data-layout="timeline"] :is(.top-bar-tab, .top-bar-all, .top-bar-dest-item) {
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 32px; padding: 6px 0 5px;
+  border: 0; border-bottom: 1px solid transparent; border-radius: 0;
+  background: none; color: inherit; font: inherit; font-size: 14px; line-height: 1;
+  white-space: nowrap; cursor: pointer;
+}
+:root[data-layout="timeline"] .top-bar-tab { min-width: 0; max-width: 14em; }
+:root[data-layout="timeline"] .top-bar-sep { flex: none; width: 1px; height: 14px; background: var(--hair); }
+:root[data-layout="timeline"] .top-bar-tab-label { overflow: hidden; text-overflow: ellipsis; }
+:root[data-layout="timeline"] :is(.top-bar-all, .top-bar-dest-item) { font-size: 12px; letter-spacing: .14em; }
+:root[data-layout="timeline"] :is(.top-bar-tab, .top-bar-all, .top-bar-dest-item):hover { color: var(--t-hi); }
+:root[data-layout="timeline"] :is(.top-bar-tab, .top-bar-dest-item)[aria-current="page"],
+:root[data-layout="timeline"] .top-bar-all[aria-expanded="true"] { color: var(--t-hi); border-bottom-color: currentColor; }
+:root[data-layout="timeline"] .top-bar-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--top-bar-accent); flex: none; }
+:root[data-layout="timeline"] :is(.top-bar-current, .top-bar-menu) { display: none; }
+:root[data-layout="timeline"] .top-bar-current { align-items: center; gap: 7px; min-width: 0; color: var(--t-hi); font-size: 15px; }
+:root[data-layout="timeline"] .top-bar-menu {
+  margin-left: auto; width: 40px; height: 40px; place-items: center;
+  border: 0; background: none; color: var(--t-hi); cursor: pointer;
+}
+:root[data-layout="timeline"] .top-bar :is(button):focus-visible { outline: 1px solid var(--t-hi); outline-offset: 4px; }
+
+/* ---- 「外观」浮层：顶栏右侧下方的小面板，主题一组、夜场材质一组 ---- */
+:root[data-layout="timeline"] .top-bar-look[aria-expanded="true"] { color: var(--t-hi); border-bottom-color: currentColor; }
+:root[data-layout="timeline"] .appearance-pop:not([hidden]) {
+  position: fixed; z-index: 41;
+  top: calc(var(--top-bar-height) + 8px); right: max(24px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 8px; width: min(300px, calc(100vw - 32px)); padding: 16px;
+  border: 1px solid var(--hair-strong); border-radius: 2px;
+  background: hsl(var(--ambient-hue) var(--surface-panel-s) var(--surface-panel-l));
+  box-shadow: 0 24px 80px hsl(var(--ambient-hue) var(--shadow-s) var(--shadow-l) / .5);
+  color: var(--t-mid);
+}
+:root[data-layout="timeline"] .appearance-cap { margin: 4px 0 0; font: 400 10px/1.4 var(--font-ui); letter-spacing: .24em; color: var(--t-lo); }
+:root[data-layout="timeline"] .appearance-group { display: flex; flex-wrap: wrap; gap: 6px; }
+:root[data-layout="timeline"] .appearance-option {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px;
+  border: 0; border-radius: 2px; background: none; box-shadow: inset 0 0 0 1px var(--hair);
+  color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+}
+:root[data-layout="timeline"] .appearance-option:hover { color: var(--t-hi); }
+:root[data-layout="timeline"] .appearance-option[aria-checked="true"] { color: var(--t-hi); box-shadow: inset 0 0 0 1px var(--t-hi); }
+:root[data-layout="timeline"] .appearance-swatch { width: 10px; height: 10px; border-radius: 50%; background: var(--theme-swatch, var(--t-lo)); box-shadow: inset 0 0 0 1px var(--hair-strong); }
+:root[data-layout="timeline"] .appearance-more {
+  justify-self: start; margin-top: 6px; padding: 4px 0; border: 0; background: none;
+  color: var(--t-mid); font: inherit; font-size: 12px; letter-spacing: .08em; box-shadow: inset 0 -1px 0 var(--hair-strong); cursor: pointer;
+}
+:root[data-layout="timeline"] .appearance-more:hover { color: var(--t-hi); }
+:root[data-layout="timeline"] .appearance-pop :is(button):focus-visible { outline: 1px solid var(--t-hi); outline-offset: 2px; }
+
+/* ---- 「全部」浮层：就是原侧栏，换成浮在顶栏下方的面板 ---- */
+:root[data-layout="timeline"] .conversation-sidebar,
+:root[data-layout="timeline"] .conversation-sidebar.expanded {
+  /* 窄屏 #app 带 transform 会成为 fixed 的包含块；清掉网格位置，偏移才从 #app 顶端而不是第一行算 */
+  position: fixed; z-index: 40; grid-area: auto;
+  top: calc(var(--top-bar-height) + 8px); left: max(16px, env(safe-area-inset-left, 0px)); bottom: auto;
+  width: min(380px, calc(100vw - 32px)); min-width: 0;
+  max-height: calc(100dvh - var(--top-bar-height) - 24px);
+  padding: 18px 16px 16px; gap: 12px;
+  align-items: stretch;
+  border: 1px solid var(--hair-strong); border-radius: 2px;
+  background: color-mix(in srgb, hsl(var(--ambient-hue) var(--surface-panel-s) var(--surface-panel-l)) 97%, transparent);
+  box-shadow: 0 24px 80px hsl(var(--ambient-hue) var(--shadow-s) var(--shadow-l) / .5);
+  transform: translateY(-6px);
+  opacity: 0; visibility: hidden;
+  transition: opacity .16s ease, transform .16s ease, visibility 0s linear .16s;
+}
+:root[data-layout="timeline"] body.top-bar-all-open .conversation-sidebar {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity .16s ease, transform .16s ease, visibility 0s;
+}
+:root[data-layout="timeline"] .conversation-sidebar::after { display: none; }
+/* 浮层里不需要品牌行、收起按钮和拖宽把手：标识在顶栏上，关闭用 Esc 或点外面。 */
+:root[data-layout="timeline"] .conversation-sidebar :is(.sb-brand-row, .sb-resize) { display: none !important; }
+:root[data-layout="timeline"] .conversation-sidebar .room-list { min-height: 120px; }
+/* 浮层排布：聊天标题（带新建）→ 搜索 → 列表（自己滚动）→ 一行次要入口（已归档 · 歌曲整理 · 创建）→ 模型与音乐源。
+   宽屏顶栏已有帐本 / 人物 / 设置，浮层里的图标导航只留顶栏没有的「歌曲整理」，挪到底部那一行；
+   窄屏顶栏收成菜单，图标导航整行回到浮层最上面。 */
+:root[data-layout="timeline"] #conversation-sidebar {
+  display: grid; align-content: start;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "nav nav nav" "head head head" "search search search" "list list list" "arch . tail" "meta meta meta";
+  row-gap: 12px;
+}
+:root[data-layout="timeline"] #conversation-sidebar > .shell-navigation { grid-area: nav; margin: 0; padding: 0 0 10px; border: 0; border-bottom: 1px solid var(--hair); border-radius: 0; background: none; box-shadow: none; }
+:root[data-layout="timeline"] #conversation-sidebar > .conversation-list-heading { grid-area: head; }
+/* 人物列表和新增入口共用原侧栏；不能继承只在 stage 才启用的按钮显隐。 */
+:root[data-layout="timeline"] #people-list-create { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-left: auto; padding: 0; border: 0; background: none; color: var(--timeline-ink); cursor: pointer; }
+:root[data-layout="timeline"] #people-list-create svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+:root[data-layout="timeline"] #people-list-create:is(:hover, :focus-visible) { background: color-mix(in srgb, var(--timeline-ink) 8%, transparent); }
+:root[data-layout="timeline"] #people-list-create:focus-visible { outline: 1px solid var(--timeline-ink); outline-offset: 2px; }
+:root[data-layout="timeline"] #people-list .person-row > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+:root[data-layout="timeline"] #conversation-sidebar.people-mode > :is(.room-search-label, #room-archived) { display: none; }
+:root[data-layout="timeline"] #conversation-sidebar > .room-search-label { grid-area: search; }
+:root[data-layout="timeline"] #conversation-sidebar > :is(.room-list, .people-list) { grid-area: list; min-height: 0; overflow-y: auto; }
+:root[data-layout="timeline"] #conversation-sidebar > #room-archived { grid-area: arch; justify-self: start; align-self: center; }
+:root[data-layout="timeline"] #conversation-sidebar > .shell-nav-tail { grid-area: tail; display: flex; flex-direction: row; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; }
+:root[data-layout="timeline"] #conversation-sidebar > .sb-bottom { grid-area: meta; margin: 0; padding-top: 10px; border-top: 1px solid var(--hair); }
+:root[data-layout="timeline"] #conversation-sidebar > .nav-account-launcher { display: none; }
+/* 音乐源浮窗向上展开，盖住整条底部入口行，不露半个字。 */
+:root[data-layout="timeline"] #conversation-sidebar .sb-source-pop { left: 0; right: 0; width: auto; }
+@media (min-width: 768px) {
+  :root[data-layout="timeline"] #conversation-sidebar { grid-template-areas: "head head head" "search search search" "list list list" "arch nav tail" "meta meta meta"; grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
+  :root[data-layout="timeline"] #conversation-sidebar > .shell-navigation { justify-self: end; display: flex; flex-direction: row; width: auto; min-width: 0; padding: 0; border-bottom: 0; }
+  /* 只剩一个入口时用文字，和「已归档」同一个分量；图标单独出现认不出来。 */
+  :root[data-layout="timeline"] #conversation-sidebar #recording-review-open { width: auto; min-width: 0; height: 44px; padding: 0 10px; gap: 0; background: none; color: var(--t-mid); font-size: 13px; }
+  :root[data-layout="timeline"] #conversation-sidebar #recording-review-open:hover { color: var(--t-hi); }
+  :root[data-layout="timeline"] #conversation-sidebar #recording-review-open svg { display: none; }
+  :root[data-layout="timeline"] #conversation-sidebar #recording-review-open > span { display: inline; position: static; width: auto; height: auto; clip: auto; margin: 0; opacity: 1; }
+  :root[data-layout="timeline"] #conversation-sidebar > .shell-navigation > :not(#recording-review-open),
+  :root[data-layout="timeline"] #conversation-sidebar #nav-today { display: none; }
+}
+
+/* 歌曲整理是手动打开的侧面板：在顶栏下方展开，不压住顶栏的去处。 */
+:root[data-layout="timeline"] #app > .recording-review { top: calc(var(--top-bar-height) + 8px); }
+
+/* ---- 窄屏：标识 + 正在看的聊天名 + 菜单（菜单打开同一个浮层，里面有去处与全部聊天） ---- */
+@media (max-width: 767px) {
+  /* 窄屏顶栏位于 y=0；桌面拖动条不能继续盖住人物菜单的点按区域。 */
+  :root[data-layout="timeline"] #drag-bar { display: none; }
+  :root[data-layout="timeline"] .top-bar { gap: 14px; }
+  /* 去处收进菜单；「外观」留在顶栏，紧挨菜单按钮。 */
+  :root[data-layout="timeline"] .top-bar-tabs,
+  :root[data-layout="timeline"] .top-bar-dest-item:not(.top-bar-look) { display: none; }
+  :root[data-layout="timeline"] .top-bar-current { display: inline-flex; }
+  :root[data-layout="timeline"] .top-bar-menu { display: grid; margin-left: 0; }
+  :root[data-layout="timeline"] .appearance-pop:not([hidden]) { left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px)); width: auto; }
+  :root[data-layout="timeline"] .conversation-sidebar,
+  :root[data-layout="timeline"] .conversation-sidebar.expanded {
+    left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px));
+    width: auto; max-height: calc(100dvh - var(--top-bar-height) - 16px - env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ======================================================================
+   听歌页：时间线 + 聊天条（桌面 ≥961px；更窄由 mobile-pane-switch 分页）
+   ====================================================================== */
+:root[data-layout="timeline"] {
+  --timeline-edge: clamp(24px, 4vw, 48px);
+  --timeline-cover: clamp(150px, min(19vw, 26vh), 282px);
+  --timeline-tile: 44px;
+  --timeline-ink: var(--t-hi);
+  --timeline-ink-2: var(--t-mid);
+  --timeline-ink-3: var(--t-lo);
+  --timeline-line: var(--hair);
+  --timeline-accent: var(--top-bar-accent);
+  --panel-door-fill: transparent;
+}
+@media (min-width: 961px) {
+  :root[data-layout="timeline"] #app:not(.focus-mode) {
+    grid-template-columns: 0px minmax(0, 1fr);
+    /* 聊天条至少这么高；右栏（会话操作 + 推荐卡）放不下时再长高，不压到输入框上。 */
+    grid-template-rows: minmax(0, 1fr) minmax(clamp(230px, 32vh, 320px), auto) auto;
+  }
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) { grid-template-columns: 0px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .listening-door { grid-column: 2; grid-row: 1; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .chat-door {
+    grid-column: 2; grid-row: 2;
+    margin: 6px var(--timeline-edge) 14px;
+    background: color-mix(in srgb, var(--ink-0) 55%, transparent);
+    box-shadow: inset 0 0 0 1px var(--timeline-line);
+    border-radius: var(--radius-card, 3px);
+  }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .persistent-player { grid-row: 3; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > :is(#today-panel, #settings-panel) { grid-column: 2; grid-row: 1 / 3; }
+  /* 门框凸部是左右分栏的把手；上下排时改成聊天条右上角的一个小按钮。 */
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::before,
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::after { content: none; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) .panel-door > .chat-focus-toggle {
+    z-index: 3; left: auto; right: 12px; top: 10px; width: auto; height: 30px; padding: 0 10px 0 6px; gap: 4px;
+    display: inline-flex; align-items: center;
+    border-radius: var(--radius-row, 2px); box-shadow: inset 0 0 0 1px var(--timeline-line);
+    color: var(--timeline-ink-2);
+  }
+  :root[data-layout="timeline"] #app:not(.focus-mode) .panel-door > .chat-focus-toggle:hover { color: var(--timeline-ink); }
+  :root[data-layout="timeline"] .chat-focus-toggle svg { width: 14px; height: 14px; }
+  :root[data-layout="timeline"] .chat-focus-label { display: inline; font: 400 11px/1 var(--font-ui); letter-spacing: .16em; white-space: nowrap; }
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) > .listening-door > .chat-focus-toggle { left: auto; right: var(--timeline-edge); top: auto; bottom: 12px; }
+  /* 「听」态聊天条分两栏，右上角归会话操作；「展开看全部」放在左栏顶上，压在消息上方。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) > .chat-door > .chat-focus-toggle { left: 14px; right: auto; top: 8px; height: 24px; box-shadow: none; }
+  :root[data-layout="timeline"] .chat-focus-toggle svg { transform: rotate(90deg); }
+}
+
+/* ---- 听歌列：去掉旧的页眉时钟、陪伴语、「接下来」列表，它们由时间线代替 ---- */
+:root[data-layout="timeline"] #app .listening-panel {
+  padding: 14px var(--timeline-edge) 10px; border: 0; background: none;
+}
+:root[data-layout="timeline"] #app .listening-panel { position: relative; }
+/* 天气和「专注聆听」贴右上角，不占一行。 */
+:root[data-layout="timeline"] #app .listening-panel-header { position: absolute; z-index: 2; top: 10px; right: var(--timeline-edge); min-height: 0; padding: 0; border: 0; justify-content: flex-end; gap: 14px; }
+:root[data-layout="timeline"] #app :is(#listening-title, #listening-clock) { display: none; }
+:root[data-layout="timeline"] #app .listening-weather { margin: 0; font-size: 12px; letter-spacing: .08em; color: var(--timeline-ink-2); }
+:root[data-layout="timeline"] #app .listening-toolbar-actions .quiet-button { min-height: 32px; padding: 4px 8px; font-size: 11px; letter-spacing: .14em; color: var(--timeline-ink-3); }
+:root[data-layout="timeline"] #app .listening-toolbar-actions .quiet-button svg { width: 14px; height: 14px; }
+:root[data-layout="timeline"] #app :is(.cike-companionship, .cike-next, .listening-strip-queue, .listening-state-row, .listening-artwork figcaption, .listening-reaction-hint, .cike-lyric-near) { display: none !important; }
+:root[data-layout="timeline"] #app .cike-lyrics { margin: 8px 0 0; padding: 0; }
+:root[data-layout="timeline"] #app .listening-lyric { margin: 0; font: var(--weight-regular, 400) 15px/1.6 var(--font-reading); color: var(--timeline-ink-2); text-align: left; }
+
+/* ---- 时间线主体：已放 | 封面 | 歌名与待播，横线贯穿，下面是旁白 ---- */
+:root[data-layout="timeline"] #app .listening-hero:not([hidden]) {
+  display: grid; flex: 0 0 auto;
+  grid-template-columns: clamp(150px, 17vw, 250px) var(--timeline-cover) minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto 64px auto;
+  grid-template-areas:
+    "past cover cap"
+    "past cover title"
+    "past cover meta"
+    "past cover react"
+    "past cover ."
+    "past cover next"
+    "rail rail  rail"
+    ".    say   say";
+  column-gap: clamp(28px, 3.4vw, 48px);
+  padding-top: 12px;
+  overflow: visible;
+}
+:root[data-layout="timeline"] #app .listening-hero-copy { display: contents; }
+:root[data-layout="timeline"] #app .listening-artwork {
+  grid-area: 1 / 2 / 7 / 3; align-self: end;
+  float: none; width: var(--timeline-cover); margin: 0; order: 0;
+}
+:root[data-layout="timeline"] #app .listening-artwork img {
+  display: block; width: 100%; aspect-ratio: 1; object-fit: cover;
+  border-radius: var(--radius-cover, 2px);
+  box-shadow: 0 40px 80px color-mix(in srgb, var(--ink-0) 70%, transparent);
+}
+:root[data-layout="timeline"] #app :is(.timeline-now-cap, .timeline-cap) {
+  margin: 0; font: var(--weight-regular, 400) 11px/1.4 var(--font-ui);
+  letter-spacing: var(--tracking-label, .2em); color: var(--timeline-ink-3);
+}
+:root[data-layout="timeline"] #app .timeline-now-cap { grid-area: cap; align-self: end; margin-top: 4px; }
+:root[data-layout="timeline"] #app .listening-song-title {
+  grid-area: title; margin: 14px 0 0;
+  font: var(--weight-heavy, 700) clamp(32px, 4.2vw, 62px)/1.08 var(--font-display);
+  letter-spacing: .02em; color: var(--timeline-ink);
+  background: none; -webkit-text-fill-color: currentColor;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+:root[data-layout="timeline"] #app .listening-song-meta {
+  grid-area: meta; margin: 12px 0 0;
+  font: var(--weight-regular, 400) 13px/1.5 var(--font-ui); letter-spacing: .24em; color: var(--timeline-ink-2);
+}
+:root[data-layout="timeline"] #app .listening-reactions { grid-area: react; display: flex; align-items: center; gap: 10px; margin: 18px 0 0; padding: 0; border: 0; }
+:root[data-layout="timeline"] #app .listening-reaction {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 12px;
+  border: 0; border-radius: var(--radius-row, 2px); background: none;
+  box-shadow: inset 0 0 0 1px var(--timeline-line);
+  font: 400 11px/1 var(--font-ui); letter-spacing: .16em; color: var(--timeline-ink-2);
+}
+:root[data-layout="timeline"] #app .listening-reaction svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+:root[data-layout="timeline"] #app .listening-reaction[aria-pressed="true"] { color: var(--timeline-accent); box-shadow: inset 0 0 0 1px var(--timeline-accent); }
+
+:root[data-layout="timeline"] #app .timeline-past:not([hidden]) { grid-area: 1 / 1 / 7 / 2; align-self: end; display: grid; gap: 12px; justify-items: start; padding-bottom: 14px; }
+:root[data-layout="timeline"] #app .timeline-next:not([hidden]) { grid-area: next; align-self: end; padding: 22px 0 14px; }
+:root[data-layout="timeline"] #app .timeline-stops { display: flex; gap: 14px; margin: 0; padding: 0; list-style: none; }
+:root[data-layout="timeline"] #app .timeline-next .timeline-stops { gap: 24px; }
+:root[data-layout="timeline"] #app .timeline-stop { position: relative; display: grid; gap: 8px; width: var(--timeline-tile); }
+:root[data-layout="timeline"] #app .timeline-stop.is-next { width: 96px; }
+:root[data-layout="timeline"] #app .timeline-tile {
+  display: grid; place-items: center; width: var(--timeline-tile); height: var(--timeline-tile); overflow: hidden;
+  border-radius: 1px; background: hsl(32 8% 22%);
+  font: var(--weight-regular, 400) 18px/1 var(--font-display); color: var(--timeline-ink-2);
+}
+:root[data-layout="timeline"] #app .timeline-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+:root[data-layout="timeline"] #app .is-past .timeline-tile { opacity: .42; transition: opacity .2s ease; }
+:root[data-layout="timeline"] #app .timeline-jump { display: grid; gap: 8px; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; }
+:root[data-layout="timeline"] #app .is-past > .timeline-jump:is(:hover, :focus-visible) .timeline-tile { opacity: .9; }
+:root[data-layout="timeline"] #app .is-next > .timeline-jump:is(:hover, :focus-visible) .timeline-tile { box-shadow: 0 0 0 1px var(--timeline-ink-3); }
+:root[data-layout="timeline"] #app .timeline-jump:focus-visible { outline: 1px solid var(--timeline-ink); outline-offset: 3px; }
+/* 待确认（点了一次）：提示只落在这首自己身上——封面描边 + 暗罩上的播放符号，
+   歌名位置（竖排可见时）换成强调色「再点一次播放」。不起浮层，不盖相邻的歌和标题。 */
+:root[data-layout="timeline"] #app .timeline-stop:has(> [data-armed="true"]) { opacity: 1; }
+:root[data-layout="timeline"] #app .timeline-jump[data-armed="true"] .timeline-tile {
+  position: relative; opacity: 1; box-shadow: 0 0 0 1.5px var(--timeline-accent);
+}
+:root[data-layout="timeline"] #app .timeline-jump[data-armed="true"] .timeline-tile::after {
+  content: '\25B6\FE0E'; position: absolute; inset: 0; display: grid; place-items: center;
+  background: hsl(30 10% 8% / .55); color: var(--timeline-accent);
+  font: 400 calc(var(--timeline-tile) * .34)/1 var(--font-ui);
+}
+:root[data-layout="timeline"] #app .timeline-jump[data-armed="true"] :is(.timeline-title, strong) { color: var(--timeline-accent); }
+:root[data-layout="timeline"] #app :is(.timeline-order, .timeline-at) { font: var(--weight-number, 500) 11px/1 var(--font-number, var(--font-ui)); letter-spacing: .04em; color: var(--timeline-ink-3); font-variant-numeric: tabular-nums; }
+:root[data-layout="timeline"] #app .timeline-stop.is-next strong {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: var(--weight-regular, 400) 14px/1.25 var(--font-reading); color: var(--timeline-ink);
+}
+:root[data-layout="timeline"] #app :is(.timeline-title, .timeline-artist) { display: none; }
+:root[data-layout="timeline"] #app .timeline-empty { margin: 0; font-size: 12px; letter-spacing: .14em; color: var(--timeline-ink-3); }
+
+/* 横线：整行一像素；当前歌那一段在封面正下方加粗为进度，播放头下面是此刻的本机时间。
+   时间跟着播放头走，但锚点从左齐（开头）滑到右齐（结尾），始终落在封面宽度内，
+   歌刚开始时不会探进左边的「已放」。 */
+:root[data-layout="timeline"] #app .timeline-rail:not([hidden]) {
+  grid-area: rail; position: relative;
+  display: grid; grid-template-columns: subgrid; align-items: start;
+}
+:root[data-layout="timeline"] #app .timeline-rail::before { content: ''; position: absolute; left: calc(0px - var(--timeline-edge)); right: calc(0px - var(--timeline-edge)); top: 0; height: 1px; background: var(--timeline-line); }
+:root[data-layout="timeline"] #app .timeline-seg { grid-column: 2; position: relative; height: 3px; margin-top: -1px; background: color-mix(in srgb, var(--timeline-ink) 18%, transparent); }
+:root[data-layout="timeline"] #app .timeline-seg > i { position: absolute; inset: 0 auto 0 0; width: var(--timeline-p, 0%); background: var(--timeline-ink); }
+:root[data-layout="timeline"] #app .timeline-head { position: absolute; left: var(--timeline-p, 0%); top: -3px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--timeline-ink); }
+:root[data-layout="timeline"] #app .timeline-clock {
+  position: absolute; left: var(--timeline-p, 0%); top: 14px; transform: translateX(calc(-1 * var(--timeline-p, 0%)));
+  font: var(--weight-number, 500) clamp(30px, 3vw, 42px)/1 var(--font-number, var(--font-display)); letter-spacing: -.01em; white-space: nowrap; font-variant-numeric: tabular-nums;
+  color: var(--timeline-ink); font-variant-numeric: tabular-nums;
+}
+:root[data-layout="timeline"] #app .timeline-clock small { margin-left: 4px; font: 400 11px var(--font-ui); letter-spacing: .1em; color: var(--timeline-ink-3); vertical-align: 1.6em; }
+
+/* 旁白：在封面下方左齐，宋体细字；「Lunara 正在说」用香槟色标签。 */
+:root[data-layout="timeline"] #app .listening-narration { grid-area: say; margin: 10px 0 0; padding: 0; border: 0; }
+:root[data-layout="timeline"] #app .listening-narration-label { display: block; font: 400 11px/1.4 var(--font-ui); letter-spacing: var(--tracking-label, .2em); color: var(--timeline-accent); }
+:root[data-layout="timeline"] #app .listening-intro { margin: 8px 0 0; padding: 0; border: 0; background: none; box-shadow: none; }
+:root[data-layout="timeline"] #app .listening-intro p {
+  max-width: 40em; margin: 0;
+  font: var(--weight-regular, 400) clamp(16px, 1.5vw, 20px)/1.75 var(--font-reading); color: var(--timeline-ink);
+  -webkit-line-clamp: 2; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+}
+:root[data-layout="timeline"] #app .listening-narration-rule { display: none; }
+:root[data-layout="timeline"] #app .listening-intro cite { display: block; margin-top: 6px; font: 400 11px var(--font-ui); letter-spacing: .12em; color: var(--timeline-ink-3); }
+
+/* 矮屏：横线行收紧、旁白只留一行；仍放不下时听歌区自己滚动，不压到聊天条下面。 */
+@media (min-width: 961px) and (max-width: 1199px) and (max-height: 820px) {
+  :root[data-layout="timeline"] #app:not(.chat-focus) .listening-hero:not([hidden]) { grid-template-rows: auto auto auto auto minmax(0, 1fr) auto 52px auto; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .listening-intro p { -webkit-line-clamp: 1; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .listening-panel { overflow-y: auto; }
+}
+
+/* ---- 聊天条（「听」态，961–1199px）：左栏最近几条，右栏会话操作 + 最近一张推荐，输入横跨底部（quantao .t-chat） ---- */
+:root[data-layout="timeline"] .conversation-main { background: none; border: 0; }
+@media (min-width: 961px) and (max-width: 1199px) {
+  /* 聊天名已在顶栏标签里，这里不再重复。右栏宽度跟着窗口走，但不挤占左栏到一行装不下一句话。
+     行间距为 0：隐藏的状态行（正在输入、安静、思考、更早消息、回应中）不留空隙。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .conversation-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(260px, 30%, 380px);
+    grid-template-rows: auto auto auto minmax(0, 1fr) repeat(5, auto) auto;
+    grid-template-areas:
+      "mismatch mismatch"
+      "log head"
+      "log crumbs"
+      "log aside"
+      "composing aside"
+      "quiet aside"
+      "thinking aside"
+      "history aside"
+      "hint aside"
+      "compose compose";
+    column-gap: 28px;
+    padding: 12px 20px 0;
+    box-sizing: border-box;
+  }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .source-mismatch { grid-area: mismatch; }
+  /* 左栏顶上留一行给「展开看全部」（聊天条的门把手），右栏顶上是会话操作，两者不再挤在同一个角。 */
+  /* contain: size：消息再多也不撑高聊天条，左栏只占右栏与输入框留下的高度，多出来的在里面滚。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-scroll { grid-area: log; min-height: 0; padding: 28px 0 6px; contain: size; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .room-composing { grid-area: composing; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .room-quiet { grid-area: quiet; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .thinking { grid-area: thinking; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .history-button { grid-area: history; justify-self: start; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .compose-hint { grid-area: hint; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .compose { grid-area: compose; margin-inline: 0; }
+  /* 右栏：成员与按钮一行，会话事实（一起听 / 伙伴 / 自动续播 / 陪伴）折行排开，下面是推荐卡。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-header {
+    grid-area: head; position: static; min-height: 0; padding: 0 0 4px; border: 0; background: none; justify-content: flex-start;
+  }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-header-copy { display: none; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-header .listen-together { min-height: 28px; padding: 3px 12px; font-size: 12px; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-header .person-avatar { width: 26px; height: 26px; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-header .room-actions > button { min-height: 28px; height: 28px; padding-block: 0; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .session-breadcrumb {
+    grid-area: crumbs; min-height: 0; margin: 0; padding: 0 0 8px; flex-wrap: wrap; gap: 4px 14px; overflow: visible;
+  }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .session-breadcrumb .breadcrumb-sep { display: none; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .session-breadcrumb .companion-mode-control { padding-block: 0; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .session-breadcrumb #companion-mode { min-height: 0; height: 24px; padding-block: 0; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-aside:not([hidden]) {
+    grid-area: aside; display: flex; flex-direction: column; gap: 4px; align-self: start; min-width: 0;
+  }
+  :root[data-layout="timeline"] .chat-aside-card {
+    display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: var(--radius-card, 2px);
+    box-shadow: inset 0 0 0 1px var(--timeline-line);
+  }
+  :root[data-layout="timeline"] .chat-aside-song { display: grid; flex: 1; min-width: 0; }
+  :root[data-layout="timeline"] .chat-aside-title { overflow: hidden; color: var(--timeline-ink); font: 400 16px/1.3 var(--font-display); white-space: nowrap; text-overflow: ellipsis; }
+  :root[data-layout="timeline"] .chat-aside-artist { overflow: hidden; color: var(--timeline-ink-2); font-size: 11px; letter-spacing: .06em; white-space: nowrap; text-overflow: ellipsis; }
+  :root[data-layout="timeline"] .chat-aside-accept {
+    flex: none; padding: 2px 0; border: 0; background: none; color: var(--top-bar-accent, var(--timeline-ink));
+    font: 400 12px/1.4 var(--font-ui); letter-spacing: .14em; box-shadow: inset 0 -1px 0 currentColor; cursor: pointer;
+  }
+  :root[data-layout="timeline"] .chat-aside-accept[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+  :root[data-layout="timeline"] .chat-aside-accept[aria-busy="true"] { cursor: progress; }
+  :root[data-layout="timeline"] .chat-aside-note { margin: 0; color: var(--timeline-ink-2); font-size: 11px; letter-spacing: .06em; }
+  :root[data-layout="timeline"] .chat-aside-note:empty { display: none; }
+  /* 右栏已经显示最近一张推荐；消息里的卡片收起，展开看全部时再出现。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg .chat-recommendation { display: none; }
+  /* 「听」态聊天条：每条只露首行，长回复不撑开、不自动展开；看全文走「展开看全部」。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg :is(.chat-text, .chat-segment) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg .chat-segment ~ .chat-segment { display: none; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-list { gap: 10px; max-width: none; }
+  /* 条里的消息是一行字，不是气泡：去底色和内边距，省出高度让最近两条都露出来。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg { max-width: 100%; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg .chat-speaker { display: none; }
+  /* 群聊（有 Lunara 以外的伙伴发过言）时，行首补上发言人名字，颜色取本人的 --person-color；单聊仍不显示。 */
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-list:has(.chat-msg[data-speaker-id]:not([data-speaker-id="lunara"])) .chat-msg.assistant[data-speaker-id] { display: flex; flex-direction: row; align-items: baseline; gap: 8px; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-list:has(.chat-msg[data-speaker-id]:not([data-speaker-id="lunara"])) .chat-msg.assistant[data-speaker-id] .chat-speaker { display: inline-flex; flex: 0 0 auto; max-width: 7em; margin: 0; color: var(--person-color); }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-list:has(.chat-msg[data-speaker-id]:not([data-speaker-id="lunara"])) .chat-msg.assistant[data-speaker-id] :is(.chat-speaker-signal, .chat-speaker-reply) { display: none; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-list:has(.chat-msg[data-speaker-id]:not([data-speaker-id="lunara"])) .chat-msg.assistant[data-speaker-id] > :not(.chat-speaker) { flex: 1 1 auto; min-width: 0; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg .chat-bubble {
+    padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+    font-size: 13px; line-height: 1.6; font-weight: 400;
+  }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg.assistant .chat-bubble { color: var(--timeline-ink-2); }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .chat-msg.user .chat-bubble { color: var(--timeline-ink); }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .compose { margin-block: 2px 10px; padding: 4px; border-radius: 16px; }
+  :root[data-layout="timeline"] #app:not(.chat-focus) .compose textarea { padding: 7px 14px; }
+}
+:root[data-layout="timeline"] .chat-heading { font: var(--weight-regular, 400) 15px/1.3 var(--font-display); letter-spacing: .04em; }
+
+/* ======================================================================
+   「聊」态（961–1199px）：时间线收成顶上一条（小封面 + 歌名 + 两侧小方块 + 横线与小时钟）
+   ====================================================================== */
+@media (min-width: 961px) and (max-width: 1199px) {
+  :root[data-layout="timeline"] #app.chat-focus .listening-artwork { grid-area: cover; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-past:not([hidden]) { grid-area: past; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-panel { padding: 10px var(--timeline-edge) 4px; overflow: visible; }
+  :root[data-layout="timeline"] #app.chat-focus :is(.listening-panel-header, .listening-welcome, .listening-narration, .listening-reactions, .cike-lyrics, .timeline-past .timeline-cap, .timeline-order, .timeline-stop.is-next strong) { display: none !important; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-hero:not([hidden]) {
+    --timeline-cover: 72px; --timeline-tile: 30px;
+    grid-template-columns: minmax(0, 1fr) var(--timeline-cover) minmax(0, 1.1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) 40px;
+    grid-template-areas:
+      "past cover cap   next"
+      "past cover title next"
+      "past cover meta  next"
+      "rail rail  rail  rail";
+    column-gap: 22px; padding-top: 4px;
+  }
+  :root[data-layout="timeline"] #app.chat-focus .listening-artwork { width: var(--timeline-cover); }
+  :root[data-layout="timeline"] #app.chat-focus .listening-artwork img { width: 100%; border-radius: var(--radius-cover, 2px); box-shadow: none; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-song-title { margin: 4px 0 0; font-size: clamp(20px, 2vw, 28px); -webkit-line-clamp: 1; font-style: normal; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-song-meta { margin: 4px 0 0; font-size: 11px; letter-spacing: .22em; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-past:not([hidden]) { padding-bottom: 10px; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-next:not([hidden]) { align-self: end; padding: 0 0 10px; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-stops { gap: 10px; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-stop.is-next { width: var(--timeline-tile); }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-at { display: none; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-stop.is-next:first-child .timeline-at { display: block; position: absolute; right: calc(100% + 12px); bottom: 8px; white-space: nowrap; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-clock { top: 10px; font-size: 20px; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-clock small { vertical-align: .9em; }
+  :root[data-layout="timeline"] #app.chat-focus > .chat-door { margin-top: 0; }
+}
+
+/* ======================================================================
+   窄屏（≤960px，一起听 / 聊一聊分页）：横线保留，当前居中，左右各露一张
+   ====================================================================== */
+@media (max-width: 960px) {
+  :root[data-layout="timeline"] #app .listening-artwork { grid-area: cover; }
+  :root[data-layout="timeline"] #app .timeline-past:not([hidden]) { grid-area: past; }
+  :root[data-layout="timeline"] { --timeline-cover: min(52vw, 260px); --timeline-edge: 20px; }
+  :root[data-layout="timeline"] #app .listening-panel { padding: 10px 20px 12px; }
+  :root[data-layout="timeline"] #app .listening-panel-header { position: static; padding-bottom: 6px; }
+  :root[data-layout="timeline"] #app .listening-hero:not([hidden]) {
+    grid-template-columns: minmax(0, 1fr) var(--timeline-cover) minmax(0, 1fr);
+    grid-template-rows: auto 64px auto auto auto auto auto auto;
+    grid-template-areas:
+      "past  cover next"
+      "rail  rail  rail"
+      "cap   cap   cap"
+      "title title title"
+      "meta  meta  meta"
+      "react react react"
+      "say   say   say";
+    column-gap: 14px;
+  }
+  :root[data-layout="timeline"] #app .timeline-past:not([hidden]) { justify-items: end; padding-bottom: 12px; }
+  :root[data-layout="timeline"] #app .timeline-past .timeline-cap { display: none; }
+  :root[data-layout="timeline"] #app .timeline-next:not([hidden]) { padding: 0 0 12px; }
+  :root[data-layout="timeline"] #app .timeline-past .timeline-stop:not(:last-child),
+  :root[data-layout="timeline"] #app .timeline-next .timeline-stop:not(:first-child),
+  :root[data-layout="timeline"] #app .timeline-next .timeline-stop strong { display: none; }
+  :root[data-layout="timeline"] #app .timeline-stop.is-next { width: var(--timeline-tile); }
+  :root[data-layout="timeline"] #app .timeline-now-cap { margin-top: 10px; }
+  :root[data-layout="timeline"] #app .listening-song-title { font-size: clamp(26px, 7vw, 36px); }
+  :root[data-layout="timeline"] #app .timeline-clock { font-size: 28px; }
+}
+
+/* ======================================================================
+   宽屏（≥1200px）：左右两半（docs/design/theme-redo/zuoyou.html「听 · 竖时间线」与「聊」）
+   左边竖时间线：时刻在线左，歌在线右；已放在上（最近两首），正在放在中间，待播在下。
+   播放头沿封面旁那段竖线往下走，此刻的时间跟着它。封面下面一格歌词与旁白轮流：
+   唱到歌词时显示上一句 / 这一句 / 下一句；没有歌词时显示旁白。
+   右边整列聊天，消息不截断，推荐卡留在消息里。「聊」时分界线左移：左边还是竖时间线，封面与歌名缩小。
+   ====================================================================== */
+@media (min-width: 1200px) {
+  :root[data-layout="timeline"] {
+    --timeline-chat-width: clamp(420px, 38vw, 620px);
+    --timeline-rail-time: 64px;
+    --timeline-rail-gap: 18px;
+    --timeline-rail-indent: calc(var(--timeline-rail-time) + 2 * var(--timeline-rail-gap) + 1px);
+  }
+  :root[data-layout="timeline"] #app:not(.focus-mode) {
+    grid-template-columns: 0px minmax(0, 1fr) var(--timeline-chat-width);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) {
+    grid-template-columns: 0px clamp(380px, 32vw, 500px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .listening-door { grid-column: 2; grid-row: 1; min-height: 0; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .chat-door { grid-column: 3; grid-row: 1; min-height: 0; margin: 12px var(--timeline-edge) 14px 0; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .persistent-player { grid-column: 1 / -1; grid-row: 2; }
+  /* 左右分栏时把手回到其他主题的门框凸部（panelDoors.css）：「听」时在聊天列左边框中部向左凸，
+     「聊」时移进听歌列、在它右边框中部向右凸；只有箭头。边线由门框 ::after 画，凸部处断开。 */
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door { --panel-door-line: var(--timeline-line); }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::before,
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door:has(> .chat-focus-toggle)::after { content: ''; }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) > .chat-door > .chat-focus-toggle,
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) > .listening-door > .chat-focus-toggle {
+    display: grid; place-items: center; padding: 0; box-shadow: none; background: none;
+    width: var(--door-tab-width); height: var(--door-tab-height);
+    top: calc(50% - var(--door-tab-height) / 2); bottom: auto;
+  }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) > .chat-door > .chat-focus-toggle { left: calc(0px - var(--door-tab-width)); right: auto; border-radius: var(--door-tab-radius) 0 0 var(--door-tab-radius); }
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) > .listening-door > .chat-focus-toggle { left: 100%; right: auto; border-radius: 0 var(--door-tab-radius) var(--door-tab-radius) 0; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door > .chat-focus-toggle .chat-focus-label { display: none; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .panel-door > .chat-focus-toggle svg { transform: none; }
+  /* 聊天列：标题与会话操作同一行。
+     面包屑里的「一起听 X / 伙伴 Y」与标题、介绍行重复，只在正在浏览别的聊天（音乐来源不同）时露出。 */
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .chat-door { --page-edge: 24px; }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) .chat-header { flex-wrap: wrap; align-items: center; row-gap: 10px; column-gap: 16px; padding-inline: var(--page-edge); }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) .chat-header-copy { flex: 1 1 140px; min-width: 0; }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) .chat-sub { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) .chat-header-actions { flex: 0 1 auto; margin-left: auto; }
+  :root[data-layout="timeline"] #app:not(.focus-mode) .conversation-main:not(:has(#source-mismatch:not([hidden]))) .session-breadcrumb > :is(.source-fact, .source-divider) { display: none; }
+  :root[data-layout="timeline"] #app:not(.chat-focus):not(.focus-mode) .session-breadcrumb { flex-wrap: wrap; row-gap: 8px; }
+  /* ---- 听与聊：听歌列是一张网格，时间线（subgrid 行）与歌词共用同一组行，歌词落在旁白那一格 ---- */
+  :root[data-layout="timeline"] #app .listening-panel {
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(7, auto) minmax(0, 1fr);
+    align-content: start; height: 100%; box-sizing: border-box; overflow-y: auto;
+  }
+  :root[data-layout="timeline"] #app .listening-welcome { grid-row: 1 / -1; grid-column: 1; }
+  :root[data-layout="timeline"] #app .listening-hero:not([hidden]) {
+    --timeline-cover: clamp(150px, min(15vw, 24vh), 220px);
+    --timeline-tile: 26px;
+    position: relative; grid-row: 1 / -1; grid-column: 1;
+    grid-template-columns: var(--timeline-rail-time) 1px var(--timeline-cover) minmax(0, 1fr);
+    grid-template-rows: subgrid;
+    grid-template-areas:
+      "past past past  past"
+      ".    rail cover cap"
+      ".    rail cover title"
+      ".    rail cover meta"
+      ".    rail cover react"
+      ".    .    say   say"
+      "next next next  next"
+      ".    .    .     .";
+    column-gap: var(--timeline-rail-gap);
+    padding-top: 6px;
+  }
+  /* 竖线：从已放一直穿到待播。 */
+  :root[data-layout="timeline"] #app .listening-hero:not([hidden])::before {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 1px;
+    left: calc(var(--timeline-rail-time) + var(--timeline-rail-gap));
+    background: var(--timeline-line);
+  }
+  :root[data-layout="timeline"] #app .listening-artwork { grid-area: cover; align-self: start; margin-top: 4px; }
+  :root[data-layout="timeline"] #app .timeline-now-cap { align-self: start; margin-top: 8px; }
+  :root[data-layout="timeline"] #app .listening-song-title { margin-top: 10px; font-size: clamp(30px, 3.2vw, 48px); }
+  :root[data-layout="timeline"] #app .listening-reactions { align-self: start; margin-top: 16px; }
+
+  :root[data-layout="timeline"] #app .timeline-rail:not([hidden]) { grid-area: rail; display: block; position: relative; margin-top: 4px; }
+  :root[data-layout="timeline"] #app .timeline-rail::before { content: none; }
+  :root[data-layout="timeline"] #app .timeline-seg { position: absolute; left: -1px; top: 0; width: 3px; height: var(--timeline-cover); margin: 0; }
+  :root[data-layout="timeline"] #app .timeline-seg > i { inset: 0 0 auto 0; width: auto; height: var(--timeline-p, 0%); }
+  :root[data-layout="timeline"] #app .timeline-head { left: 50%; top: var(--timeline-p, 0%); margin: -4.5px 0 0 -4.5px; }
+  :root[data-layout="timeline"] #app .timeline-clock {
+    left: auto; right: calc(100% + var(--timeline-rail-gap) - 6px); top: var(--timeline-p, 0%);
+    transform: translateY(-50%); font-size: 22px;
+  }
+  :root[data-layout="timeline"] #app .timeline-clock small { margin-left: 2px; vertical-align: 1em; }
+
+  /* 已放 / 待播：一行一首，序号或「约 hh:mm」在竖线左边右齐，方块贴着竖线右边。 */
+  :root[data-layout="timeline"] #app .timeline-past:not([hidden]) { grid-area: past; align-self: start; display: grid; gap: 6px; justify-items: stretch; padding: 0 0 18px; }
+  :root[data-layout="timeline"] #app .timeline-next:not([hidden]) { grid-area: next; align-self: start; padding: 18px 0 8px; }
+  :root[data-layout="timeline"] #app .timeline-past .timeline-cap { margin-left: var(--timeline-rail-indent); }
+  :root[data-layout="timeline"] #app .timeline-stops,
+  :root[data-layout="timeline"] #app .timeline-next .timeline-stops { display: grid; gap: 4px; }
+  /* 已放：全部列在封面上方，整列听歌面板就是可以往回拖的时间线（timelineView 接鼠标拖动，滚轮原生）。
+     默认滚到「现在」：最近两首已放贴着顶部。滚动锚定关掉，位置由 timelineView 自己补偿。 */
+  :root[data-layout="timeline"] #app .listening-panel { overflow-anchor: none; overscroll-behavior: contain; scrollbar-width: none; }
+  /* 右上角天气与专注聆听不随时间线滚走：定位参照改成门框（门框本身是 relative）。 */
+  :root[data-layout="timeline"] #app .listening-panel:has(> .listening-hero:not([hidden])) { position: static; }
+  :root[data-layout="timeline"] #app .listening-panel[data-timeline-draggable="true"] { cursor: grab; }
+  :root[data-layout="timeline"] #app .listening-panel.is-dragging { cursor: grabbing; user-select: none; }
+  :root[data-layout="timeline"] #app .listening-panel.is-dragging * { cursor: grabbing; }
+  /* 往回翻过之后上沿渐隐，表示上面还有更早的歌。
+     遮罩在可拖时一直挂着、只改渐隐长度：遮罩挂上 / 摘下会增减合成层，玻璃材质旁边的聊天门框
+     （背景模糊）会跟着重新合成，拖动时看起来一闪。 */
+  :root[data-layout="timeline"] #app .listening-panel[data-timeline-draggable="true"] {
+    --timeline-fade: 0px;
+    /* 只淡左边时间线那 60%；右上角是不动的天气与专注聆听，不能跟着淡。 */
+    -webkit-mask: linear-gradient(to bottom, transparent 0, #000 var(--timeline-fade)) left top / 60% 100% no-repeat, linear-gradient(#000, #000) right top / 40% 100% no-repeat;
+    mask: linear-gradient(to bottom, transparent 0, #000 var(--timeline-fade)) left top / 60% 100% no-repeat, linear-gradient(#000, #000) right top / 40% 100% no-repeat;
+  }
+  :root[data-layout="timeline"] #app .listening-panel[data-timeline-draggable="true"][data-timeline-above="true"] { --timeline-fade: 36px; }
+  /* 拖过头的阻尼位移与松手回弹：只在拖 / 回弹时给子元素加 translate，平时不建合成层。 */
+  :root[data-layout="timeline"] #app .listening-panel:is(.is-pulling, .is-settling) > :not(.timeline-return) { translate: 0 var(--timeline-pull, 0px); }
+  :root[data-layout="timeline"] #app .listening-panel.is-settling > :not(.timeline-return) { transition: translate .5s cubic-bezier(.2, .9, .25, 1.15); }
+  :root[data-layout="timeline"] #app .timeline-past .timeline-stop.is-entering { animation: timeline-past-enter .6s cubic-bezier(.2, .7, .2, 1) both; }
+  /* 回到正在播放：浮在听歌列底部中间，不随时间线滚动（面板 static，定位参照是门框，不在滚动内容里）。 */
+  :root[data-layout="timeline"] #app .timeline-return:not([hidden]) {
+    position: absolute; left: 50%; bottom: 18px; z-index: 3; translate: -50% 0;
+    display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 14px;
+    border: 0; border-radius: 999px; cursor: pointer;
+    background: color-mix(in srgb, var(--ink-1, #1b1a19) 92%, transparent);
+    box-shadow: inset 0 0 0 1px var(--timeline-line), 0 10px 30px color-mix(in srgb, var(--ink-0, #000) 60%, transparent);
+    font: 400 12px/1 var(--font-ui); letter-spacing: .14em; color: var(--timeline-ink);
+    animation: timeline-return-in .32s cubic-bezier(.2, .8, .2, 1) both;
+  }
+  :root[data-layout="timeline"] #app .timeline-return svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  :root[data-layout="timeline"] #app .timeline-return:hover { color: var(--timeline-accent); }
+  :root[data-layout="timeline"] #app .timeline-return:focus-visible { outline: 1px solid var(--timeline-accent); outline-offset: 3px; }
+  :root[data-layout="timeline"] #app :is(.timeline-stop, .timeline-stop.is-next) { width: auto; }
+  :root[data-layout="timeline"] #app .timeline-stop:has(> .timeline-jump) { display: block; }
+  :root[data-layout="timeline"] #app :is(.timeline-stop:not(:has(> .timeline-jump)), .timeline-jump) {
+    display: grid; grid-template-columns: var(--timeline-rail-time) auto minmax(0, max-content) minmax(0, 1fr);
+    align-items: center; column-gap: var(--timeline-rail-gap); width: 100%; min-height: 34px; text-align: left;
+  }
+  :root[data-layout="timeline"] #app .timeline-stop.is-next { min-height: 46px; }
+  :root[data-layout="timeline"] #app .timeline-next .timeline-stop { --timeline-tile: 34px; }
+  :root[data-layout="timeline"] #app :is(.timeline-order, .timeline-at) { order: -1; justify-self: end; white-space: nowrap; }
+  :root[data-layout="timeline"] #app .timeline-tile { margin-left: calc(var(--timeline-rail-gap) + 1px); }
+  :root[data-layout="timeline"] #app :is(.timeline-title, .timeline-artist) { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  :root[data-layout="timeline"] #app .timeline-title { font: var(--weight-regular, 400) 14px/1.3 var(--font-reading); color: var(--timeline-ink-2); }
+  :root[data-layout="timeline"] #app .is-past { opacity: .72; }
+  :root[data-layout="timeline"] #app .timeline-stop.is-next strong { font-size: 15px; }
+  :root[data-layout="timeline"] #app .timeline-artist { font-size: 11px; letter-spacing: .14em; color: var(--timeline-ink-3); }
+
+  /* 封面下面一格：旁白（grid-area: say）与歌词（.cike-lyrics，同一行）叠在一起，只露一个。 */
+  :root[data-layout="timeline"] #app .listening-narration { margin-top: 22px; }
+  :root[data-layout="timeline"] #app .listening-panel > .cike-lyrics {
+    grid-row: 6; grid-column: 1; align-self: start; display: grid; gap: 2px; min-width: 0;
+    margin: 22px 0 0 var(--timeline-rail-indent);
+  }
+  :root[data-layout="timeline"] #app .listening-panel > .cike-lyrics > .cike-lyric-near:not([hidden]) {
+    display: block !important; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font: var(--weight-regular, 400) 15px/1.6 var(--font-reading); color: var(--timeline-ink-3);
+  }
+  :root[data-layout="timeline"] #app .listening-panel > .cike-lyrics > .listening-lyric { min-height: 0; font-size: clamp(19px, 1.7vw, 24px); line-height: 1.45; color: var(--timeline-ink); }
+  :root[data-layout="timeline"] #app .listening-panel > .cike-lyrics > .cike-interlude { margin: 0; font-size: 12px; letter-spacing: .12em; color: var(--timeline-ink-3); }
+  :root[data-layout="timeline"] #app .listening-panel:has(#listening-lyric:not([hidden])) .listening-narration,
+  :root[data-layout="timeline"] #app .listening-panel:not(:has(#listening-lyric:not([hidden]))) > .cike-lyrics { visibility: hidden; }
+
+  /* ---- 右边整列聊天：去掉 961–1199 聊天条的截断和右栏，回到普通消息排版 ---- */
+  :root[data-layout="timeline"] #app:not(.focus-mode) > .chat-door {
+    background: color-mix(in srgb, var(--ink-0) 55%, transparent);
+    /* 左边线归门框 ::after（凸部处断开），这里只画上、右、下三边。 */
+    box-shadow: inset 0 1px 0 var(--timeline-line), inset -1px 0 0 var(--timeline-line), inset 0 -1px 0 var(--timeline-line);
+    border-radius: var(--radius-card, 3px);
+  }
+  :root[data-layout="timeline"] #app:not(.focus-mode) .conversation-main { height: 100%; min-height: 0; }
+
+  /* ---- 聊：分界线左移，左边仍是同一条竖时间线，只把封面和歌名缩小、反应按钮收起 ---- */
+  :root[data-layout="timeline"] #app.chat-focus:not(.focus-mode) > .chat-door { margin-left: 0; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-panel { padding-right: 20px; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-hero:not([hidden]) { --timeline-cover: clamp(96px, 8vw, 124px); }
+  :root[data-layout="timeline"] #app.chat-focus .listening-song-title { font-size: clamp(20px, 1.8vw, 28px); -webkit-line-clamp: 2; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-song-meta { font-size: 11px; letter-spacing: .16em; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-reactions { display: none; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-clock { font-size: 18px; }
+  :root[data-layout="timeline"] #app.chat-focus .timeline-artist { display: none; }
+  :root[data-layout="timeline"] #app.chat-focus .listening-panel > .cike-lyrics > .listening-lyric { font-size: 18px; }
+}
+
+/* ======================================================================
+   非听歌页（今天 / 人物 / 设置）：同一个 persistent-player 收成底部窄条
+   封面、歌名与一句说明、上/播/下、时刻，顶端一像素进度；不克隆节点，不新建状态。
+   ====================================================================== */
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page):not(.focus-mode) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page):not(.focus-mode) > :is(#today-panel, #settings-panel, #person-detail[open]) {
+  grid-column: 1 / -1; grid-row: 1; min-height: 0;
+}
+/* 人物在 timeline 下是与帐本同级的页面，不是浮层：复用 --shell-person: page 已有的
+   dialog.show() 分支，这里只把 <dialog> 的居中弹窗外观拿掉。没有关闭按钮，离开靠顶栏。 */
+:root[data-layout="timeline"] #app.person-page > #person-detail[open] {
+  position: relative; inset: auto; z-index: auto; margin: 0;
+  width: auto; height: auto; max-width: none; max-height: none;
+  border: 0; border-radius: 0; box-shadow: none; background: transparent;
+  padding: 0 var(--timeline-edge);
+}
+:root[data-layout="timeline"] #app.person-page > #person-detail [data-close-dialog] { display: none; }
+:root[data-layout="timeline"] #person-detail .dialog-head > button { flex-shrink: 0; white-space: nowrap; min-height: 44px; }
+@media (max-width: 767px) {
+  :root[data-layout="timeline"] #person-detail .dialog-head { flex-wrap: wrap; }
+  :root[data-layout="timeline"] #person-detail .person-sheet-title { flex-basis: 100%; min-width: 0; }
+}
+/* 今日等工作页由 JS 给听歌列与聊天加 hidden；人物页不走那条路，这里按 stage 的做法让位（窄屏下听歌列会透出来）。 */
+:root[data-layout="timeline"] #app.person-page :is(.listening-panel, .conversation-main, .mobile-pane-switch) { display: none !important; }
+/* 窄屏两列叠放：左列原本是「字段区滚动 + 操作条固定」的 flex 列，叠放后会被压扁，
+   人格文本框溢出到操作条底下。改成普通块流，整页一起滚。 */
+@media (max-width: 860px) {
+  :root[data-layout="timeline"] #app.person-page > #person-detail .person-sheet-body { display: block; }
+  :root[data-layout="timeline"] #app.person-page > #person-detail :is(.person-sheet-profile, .person-profile-form) { display: block; }
+  :root[data-layout="timeline"] #app.person-page > #person-detail .person-profile-actions { margin-top: 8px; }
+}
+:root[data-layout="timeline"] #app.person-page > #person-detail .dialog-head { padding: 28px 0 22px; }
+:root[data-layout="timeline"] #app.person-page > #person-detail .person-sheet-profile { padding-left: 0; }
+:root[data-layout="timeline"] #app.person-page > #person-detail .person-sheet-memories { padding-right: 0; }
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page):not(.focus-mode) > .persistent-player {
+  display: flex; grid-column: 1 / -1; grid-row: 2;
+  align-items: center; gap: 16px; min-height: 56px; margin: 0;
+  padding: 8px var(--timeline-edge) max(8px, env(safe-area-inset-bottom, 0px));
+  position: relative; border-radius: 0;
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .cike-player-meta {
+  display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 12px; order: -1;
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .cike-player-meta img {
+  width: 36px; height: 36px; flex: none; object-fit: cover; border-radius: var(--radius-row, 2px);
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .cike-player-meta > div { min-width: 0; }
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .cike-player-meta strong {
+  display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: var(--weight-regular, 400) 14px/1.3 var(--font-display); color: var(--timeline-ink);
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player #cike-player-caption {
+  display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  margin-top: 2px; font-size: 11px; color: var(--timeline-ink-3);
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player :is(.player-waveform, .episode-mixer, .player-mobile-np, .sb-status-row, .np-duration) { display: none; }
+/* 进度滑块收成顶边一条线：可见 1px，点按区域仍有 9px，键盘照常可调。 */
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .progress {
+  position: absolute; left: 0; right: 0; top: -4px; height: 9px; flex: none; margin: 0; padding: 0;
+  overflow: visible; border-radius: 0;
+  background: linear-gradient(var(--timeline-line), var(--timeline-line)) 0 4px / 100% 1px no-repeat;
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .progress > i {
+  position: absolute; left: 0; top: 4px; height: 1px; border-radius: 0; box-shadow: none; background: var(--timeline-accent);
+}
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .play-btn { width: 36px; height: 36px; min-height: 0; align-self: center; }
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .player-transport { align-items: center; min-height: 0; height: auto; }
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .play-btn svg { width: 16px; height: 16px; }
+:root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player .np-time {
+  font-variant-numeric: tabular-nums; color: var(--timeline-ink-2);
+}
+@media (max-width: 960px) {
+  :root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player { gap: 10px; padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); }
+  :root[data-layout="timeline"] #app:is(.today-open, .settings-open, .person-page) > .persistent-player :is(.np-time, .player-upcoming, .previous-btn) { display: none; }
+}
+
+/* ---- 窄屏（只会是浏览器 / 手机；Electron 窗口最窄 1024）：safe area 与软键盘 ---- */
+@media (max-width: 960px) {
+  /* 没有 macOS 拖动条，顶栏只让出刘海 / 状态栏。 */
+  :root[data-layout="timeline"] { --top-bar-offset: env(safe-area-inset-top, 0px); }
+  :root[data-layout="timeline"] #app:not(:is(.today-open, .settings-open, .person-page)) > .persistent-player {
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  }
+  /* 软键盘弹出时 #app 已跟随可视区变矮；再收起播放条和分页切换，把高度留给输入和最近的消息。 */
+  :root[data-layout="timeline"] #app.keyboard-open > :is(.persistent-player, .mobile-pane-switch) { display: none; }
+}
+
+/* 竖排时间线：新放完的一首淡入（位移由整列平滑滚动给出）；「回到正在播放」从下面浮上来。 */
+@keyframes timeline-past-enter {
+  from { opacity: 0; filter: blur(3px); }
+}
+@keyframes timeline-return-in {
+  from { opacity: 0; translate: -50% 10px; }
+}
+/* 横排（<1200px）已放露最近四首、待播露前四首（≤960px 各一首）；竖排整列滚动。 */
+@media (max-width: 1199px) {
+  :root[data-layout="timeline"] #app .timeline-past .timeline-stop:nth-last-child(n+5),
+  :root[data-layout="timeline"] #app .timeline-next .timeline-stop:nth-child(n+5) { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-layout="timeline"] #app :is(.timeline-past .timeline-stop.is-entering, .timeline-return) { animation: none; }
+  :root[data-layout="timeline"] #app .listening-panel.is-settling > * { transition: none; }
+  :root[data-layout="timeline"] .conversation-sidebar,
+  :root[data-layout="timeline"] body.top-bar-all-open .conversation-sidebar { transition: none; transform: none; }
+}

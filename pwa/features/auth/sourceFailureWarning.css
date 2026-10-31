@@ -1,0 +1,36 @@
+/* In-flow warning rail: no backdrop, focus capture or overlap with navigation/player. */
+.source-failure-warnings[hidden] { display: none; }
+.source-failure-warnings {
+  position: relative;
+  z-index: 35;
+  flex: 0 0 auto;
+  max-height: 32dvh;
+  overflow: auto;
+  padding: max(28px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) 0 max(20px, env(safe-area-inset-left, 0px));
+  background: var(--studio-surface, var(--ink-0));
+  color: var(--t-hi);
+  border-bottom: 1px solid var(--studio-line);
+  font: 400 14px/1.55 var(--font-ui, sans-serif);
+  overscroll-behavior: contain;
+}
+body:has(> .source-failure-warnings:not([hidden])) { display: flex; flex-direction: column; }
+body:has(> .source-failure-warnings:not([hidden])) > #app { height: auto; min-height: 0; flex: 1 1 0; }
+.source-failure-warning { display: flex; align-items: center; gap: 20px; padding: 12px 0; }
+.source-failure-warning + .source-failure-warning { border-top: 1px solid var(--studio-line); }
+.source-warning-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.source-warning-message strong { display: block; color: var(--warn-ink, var(--t-hi)); font-weight: 600; }
+.source-warning-message span { display: block; }
+.source-warning-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.source-warning-actions button {
+  min-height: 36px; padding: 6px 12px; border: 1px solid var(--studio-line);
+  border-radius: var(--studio-radius, 4px); background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.source-warning-actions button:hover { background: var(--studio-hover, var(--ink-1)); }
+.source-warning-actions button:focus-visible { outline: 2px solid var(--t-hi); outline-offset: 2px; }
+.source-warning-actions .source-warning-close { width: 36px; padding: 8px; display: inline-grid; place-items: center; border-color: transparent; }
+@media (max-width: 680px) {
+  .source-failure-warnings { padding-inline: max(14px, env(safe-area-inset-left, 0px)); }
+  .source-failure-warning { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+  .source-warning-message { flex-basis: 100%; }
+  .source-warning-actions { margin-inline-start: auto; }
+}

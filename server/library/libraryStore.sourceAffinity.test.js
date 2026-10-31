@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LibraryStore } from './libraryStore.js';
+test('collection projection survives reopen and excludes deleted playlist membership', t => {
+ const dir = mkdtempSync(join(tmpdir(), 'lunara-affinity-'));
+ const path = join(dir, 'db.sqlite');
+ let store = new LibraryStore({dbPath:path, artworkStore:()=>null}).initialize();
+ t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
+ store.ensureSource('qq','test-account');
+ const playlist = {id:'p',name:'测试歌单',trackCount:1};
+ store.reconcilePlaylistSet('qq','test-account',[playlist],{complete:true});
+ store.reconcileTracks('qq','test-account',playlist,[{song_id:'mid',title:'飞花',artist:'歌手'}],{complete:true});
+ store.close();
+ store = new LibraryStore({dbPath:path,artworkStore:()=>null}).initialize();
+ assert.equal(store.listCollectionTracks()[0].source,'qq:library');
+ assert.equal(store.listCollectionTracks()[0].song_id,'mid');
+ assert.equal(store.listCollectionTracks()[0].collectionKind,'playlist');
+ const favorites={id:'favorites',name:'我喜欢的音乐',trackCount:1};
+ store.reconcilePlaylistSet('qq','test-account',[playlist,favorites],{complete:true});
+ store.reconcileTracks('qq','test-account',favorites,[{song_id:'mid',title:'飞花',artist:'歌手'}],{complete:true});
+ assert.equal(store.listCollectionTracks()[0].collectionKind,'liked');
+ assert.equal('playlist_name' in store.listCollectionTracks()[0],false);
+ store.reconcilePlaylistSet('qq','test-account',[],{complete:true});
+ assert.deepEqual(store.listCollectionTracks(),[]);
+});

@@ -1,0 +1,20 @@
+{
+  "id": "modernist",
+  "name": "素色",
+  "version": 1,
+  "scheme": "light",
+  "swatch": "linear-gradient(135deg, #f2f0eb 0 62%, #d42a1c 62% 74%, #111111 74%)",
+  "fonts": [
+    "Helvetica Neue",
+    "Geist Mono"
+  ],
+  "tokens": "tokens.css",
+  "overrides": "overrides.css",
+  "variants": {
+    "identity": "name",
+    "clock": "hidden",
+    "waveform": "line",
+    "decoration": "off",
+    "layout": "stage"
+  }
+}

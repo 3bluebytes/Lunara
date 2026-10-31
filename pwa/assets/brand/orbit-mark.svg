@@ -1,0 +1,2 @@
+<!-- Lunara 标识「轨道点」·常规档（≥24px）。几何源：scripts/orbitMark.mjs。环用 currentColor，点用 --brand-dot。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="10" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="23.1" cy="8.9" r="3" fill="var(--brand-dot, #a88a4f)"/></svg>

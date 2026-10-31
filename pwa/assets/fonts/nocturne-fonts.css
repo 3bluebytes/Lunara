@@ -1,0 +1,18 @@
+/* 夜场「标宋」字阶（theme-nocturne-timeline 4.2）。全部同源，不从外网加载；由 scripts/build-nocturne-fonts.py 生成子集。
+   族名与此刻主题的 'Noto Serif SC' 分开，新增字重不影响其他主题。只有夜场 tokens 引用这些族名，
+   其他主题下浏览器不会去下载这些文件。子集缺字时按 tokens.css 的回退栈落到系统宋体 / 苹方。 */
+@font-face { font-family: 'Lunara Serif'; font-style: normal; font-weight: 900; font-display: swap; src: url(/assets/fonts/nocturne-serif-900.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Serif'; font-style: normal; font-weight: 400; font-display: swap; src: url(/assets/fonts/noto-sc-0.woff2) format('woff2'); }
+/* 500–800（加粗、strong）用此刻主题已有的完整 500，不让它们按就近规则跳到 900。 */
+@font-face { font-family: 'Lunara Serif'; font-style: normal; font-weight: 500 800; font-display: swap; src: url(/assets/fonts/noto-sc-1.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Serif'; font-style: normal; font-weight: 300; font-display: swap; src: url(/assets/fonts/nocturne-serif-300.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url(/assets/fonts/nocturne-sans-400.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Number'; font-style: normal; font-weight: 500; font-display: swap; src: url(/assets/fonts/nocturne-number.woff2) format('woff2'); }
+/* 拉丁：Newsreader（OFL 1.1），只含拉丁字符，中文继续由 'Lunara Serif' 承接。
+   宋体自带的拉丁字形在英文歌词与英文歌名上发楔、字距紧，所以夜场把 'Lunara Latin' 排在字族最前面，
+   浏览器逐字回退：英文走 Newsreader、中文走标宋。opsz 轴保留可变（font-optical-sizing 默认开）：
+   62px 歌名拿标题字形，15px 歌词拿正文字形。Newsreader 最高 800，700–900 档统一用 800 的实例。 */
+@font-face { font-family: 'Lunara Latin'; font-style: normal; font-weight: 300; font-display: swap; src: url(/assets/fonts/nocturne-latin-300.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Latin'; font-style: normal; font-weight: 400; font-display: swap; src: url(/assets/fonts/nocturne-latin-400.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Latin'; font-style: normal; font-weight: 500 600; font-display: swap; src: url(/assets/fonts/nocturne-latin-500.woff2) format('woff2'); }
+@font-face { font-family: 'Lunara Latin'; font-style: normal; font-weight: 700 900; font-display: swap; src: url(/assets/fonts/nocturne-latin-800.woff2) format('woff2'); }

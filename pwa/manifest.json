@@ -1,0 +1,17 @@
+{
+  "name": "Lunara — Luna Radio",
+  "short_name": "Lunara",
+  "description": "你的本地 AI 电台 Luna Radio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07050c",
+  "theme_color": "#07050c",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

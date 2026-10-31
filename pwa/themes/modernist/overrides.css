@@ -1,0 +1,132 @@
+/* 方案 B「素色」皮肤。版式骨架在 features/shell/stage.css，这里只写 B 的语言：
+   直角、无阴影、2px 结构线、超粗无衬线标题、封面保留原色彩；红色只给正在发生的事——
+   当前歌词、已播进度、选中项，以及专注模式里的歌词海报。
+   每个选择器都限定在 :root[data-theme="modernist"] 之下（测试检查）。 */
+:root[data-theme="modernist"] :is(*,*::before,*::after) { border-radius: 0 !important; box-shadow: none !important; text-shadow: none !important; }
+:root[data-theme="modernist"] :is(button,a,input,textarea,select,summary,[tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-theme="modernist"] :is(.room-row-playing,.chat-date-divider,.today-now em,.listening-wordmark h2,.focus-wordmark-title,#app.focus-mode .np-title) { font-style: normal; }
+
+/* 结构线：侧栏、聆听列之后各一条 2px 实线，播放条上缘 2px 实线。 */
+:root[data-theme="modernist"] .conversation-sidebar { border-right: 2px solid var(--line-strong); }
+:root[data-theme="modernist"] .listening-panel { border-right: 2px solid var(--line-strong); }
+:root[data-theme="modernist"] .panel-door { --panel-door-fill: var(--bg-page); --panel-door-line-width: 2px; --panel-door-line: var(--line-strong); --panel-door-tab-radius: 0px; }
+:root[data-theme="modernist"] .sb-bottom-compact { border-top: 2px solid var(--line-strong); }
+:root[data-theme="modernist"] .session-breadcrumb { border-bottom: 2px solid var(--line-strong); }
+
+/* 品牌：标识用通用的「轨道点」（styles.css），这里只把字标改成大写。 */
+:root[data-theme="modernist"] .conversation-sidebar .sb-brand { font: 800 20px var(--font-display); letter-spacing: -.02em; text-transform: uppercase; background: none; -webkit-text-fill-color: currentColor; color: var(--text); }
+:root[data-theme="modernist"] .room-group-heading { font: 800 11px var(--font-ui); letter-spacing: .08em; }
+:root[data-theme="modernist"] .room-row strong { font-weight: 800; }
+:root[data-theme="modernist"] .room-row.selected { background: var(--bg-selected); }
+:root[data-theme="modernist"] .room-row.selected strong { color: var(--accent-hover); }
+/* 选中底是 8% 红，正红字在上面只有 3.95:1；选中名与「此刻」用深一档的红（5.3:1），计数去掉半透明。 */
+:root[data-theme="modernist"] .room-row-playing { color: var(--accent-hover); font-size: 11px; }
+:root[data-theme="modernist"] .room-group-count { color: var(--text-2); opacity: 1; }
+:root[data-theme="modernist"] .sb-source-open::before { border-radius: 0; background: var(--text-3); }
+:root[data-theme="modernist"] .sb-source-open[data-connected="true"]::before { background: var(--text); }
+
+/* 聆听列：标签式小标题、60px 超粗歌名、封面保持真实色彩、红色超粗当前歌词。 */
+:root[data-theme="modernist"] .listening-wordmark h2 { font: 800 12px var(--font-display); letter-spacing: .08em; color: var(--text); }
+:root[data-theme="modernist"] .listening-song-title { font: 800 clamp(36px,4.2vw,60px)/.95 var(--font-display); letter-spacing: -.035em; }
+:root[data-theme="modernist"] .cike-lyrics { border-top: 2px solid var(--line-strong); border-bottom: 2px solid var(--line-strong); margin-top: 24px; padding-block: 20px; }
+:root[data-theme="modernist"] .listening-lyric { border-left: 0; padding-left: 0; color: var(--accent); font: 800 var(--size-lyric-current)/1.2 var(--font-display); letter-spacing: -.01em; }
+:root[data-theme="modernist"] .cike-lyric-near { margin-left: 0; font: 400 var(--size-lyric)/1.5 var(--font-reading); color: var(--text-2); }
+:root[data-theme="modernist"] .cike-next { border-top: 0; }
+:root[data-theme="modernist"] .cike-next h3 { font: 800 12px var(--font-ui); letter-spacing: .08em; color: var(--text); }
+:root[data-theme="modernist"] .cike-queue-row { border-top: 1px solid var(--line); }
+/* 没有歌词时整块收起：两条 2px 结构线夹着空白，看起来像坏掉的框。 */
+:root[data-theme="modernist"] .cike-lyrics:not(:has(> :not([hidden]))) { min-height: 0; margin-top: 0; padding-block: 0; border: 0; }
+/* 小字下限 11px：队列时刻、播放条读数与标签。带 #app 压过 stage.css 里更长的选择器。 */
+:root[data-theme="modernist"] #app :is(.cike-queue-row time, #cike-player-caption, .np-time, .np-duration, .mixer-label, .upcoming-label) { font-size: 11px; }
+:root[data-theme="modernist"] :is(.focus-mode-enter,#focus-mode-chat) { border: 1px solid var(--line-strong); color: var(--text); }
+
+/* 聊天列。 */
+:root[data-theme="modernist"] .chat-heading { font: 800 22px/1.2 var(--font-display); letter-spacing: -.02em; }
+:root[data-theme="modernist"] .listen-together { background: var(--text); color: var(--bg-page); }
+:root[data-theme="modernist"] .listen-together:hover { background: var(--accent); color: var(--text-on-accent); }
+:root[data-theme="modernist"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial) { font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); }
+:root[data-theme="modernist"] .chat-msg.user .chat-bubble { background: none; border: 0; border-left: 2px solid var(--line-strong); font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-ui); }
+:root[data-theme="modernist"] .chat-date-divider { font: 400 11px var(--font-ui); letter-spacing: .08em; }
+:root[data-theme="modernist"] .compose { margin: 0; padding: 16px 24px; border: 0; border-top: 2px solid var(--line-strong); background: var(--bg-page); }
+:root[data-theme="modernist"] .compose:focus-within { border-color: var(--line-strong); }
+:root[data-theme="modernist"] #compose-send { background: var(--text); color: var(--bg-page); }
+:root[data-theme="modernist"] #compose-send:hover { background: var(--accent-hover); color: var(--text-on-accent); }
+
+/* 播放条继承本主题 --player-*：纸白仍是原值，靛蓝由同一主题的底色块覆盖；两者都不随封面变色。 */
+:root[data-theme="modernist"] .persistent-player {
+  background: var(--bg-player); border-top: 2px solid var(--line-strong);
+}
+:root[data-theme="modernist"] .persistent-player::before { display: none; }
+:root[data-theme="modernist"] .cike-player-meta strong { font: 800 14px var(--font-display); }
+
+/* 专注聆听：当前歌词成为整块红色海报——这是稿里唯一一处大面积红色。 */
+:root[data-theme="modernist"] #app.focus-mode .player-line-viewport:has(.lyric):not(.next) { border-left: 0; padding: 32px 36px; background: var(--accent); }
+:root[data-theme="modernist"] #app.focus-mode .player-line-text.lyric:not(.next) { color: var(--text-on-accent); font: 800 clamp(36px,5vw,72px)/1 var(--font-display); letter-spacing: -.04em; }
+:root[data-theme="modernist"] #app.focus-mode .player-line-text.next { color: var(--text-2); font: 400 20px/1.5 var(--font-reading); }
+:root[data-theme="modernist"] #app.focus-mode .np-title { font: 800 48px/1 var(--font-display); letter-spacing: -.03em; }
+:root[data-theme="modernist"] #app.focus-mode .focus-player-recommendation:not([hidden]) { padding: 20px 0 0; background: none; border: 0; border-top: 2px solid var(--line-strong); }
+:root[data-theme="modernist"] #app.focus-mode .focus-player-recommendation::before { content: none; }
+
+/* 今日 / 人物：标题超粗，主按钮墨色。 */
+:root[data-theme="modernist"] :is(.shell-page-title,#person-detail-name,.today-panel .today-input-seamless-title) { font-weight: 800; letter-spacing: -.03em; }
+:root[data-theme="modernist"] .today-panel .today-btn-primary { background: var(--text); color: var(--bg-page); }
+:root[data-theme="modernist"] .today-panel .today-btn-primary:hover { background: var(--accent); color: var(--text-on-accent); }
+
+/* 同一素色主题的夜间纸墨；原纸白块保持不变。两属性共同限定，其他主题不继承。 */
+:root[data-theme="modernist"][data-modernist-base="indigo"] {
+  color-scheme: dark;
+  --theme-hue: 220;
+  --theme-accent-hue-offset: -176;
+  --theme-accent-s: 77%; --theme-accent-l: 74%;
+  --studio-accent-ink: #f0d889; --studio-accent-on: #26344b;
+  --studio-surface-solid: #24334e;
+  --amber: #f0d889;
+  --player-surface: #24334e; --player-surface-low: #24334e;
+  --player-ink: #e9eced; --player-muted: #c4cdd9;
+  --player-accent: #f0d889; --player-control: #f0d889; --player-control-ink: #26344b;
+  --ink-0: #24334e; --ink-1: #24334e; --ink-2: #2e405c; --ink-3: #3b4a64;
+  --t-hi: #e9eced; --t-mid: #c4cdd9; --t-lo: #b0bdcf; --t-xlo: #9faec2;
+  --t-placeholder: #b0bdcf;
+  --glass-1: rgba(233,236,237,.03); --glass-2: rgba(233,236,237,.05); --glass-3: rgba(233,236,237,.08);
+  --hair: rgba(233,236,237,.24); --hair-strong: rgba(233,236,237,.55); --hair-warm: rgba(240,216,137,.4);
+  --inset: rgba(233,236,237,.04); --inset-strong: rgba(233,236,237,.07); --inset-focus: rgba(233,236,237,.10);
+  --bubble-bg: rgba(233,236,237,.05); --track-bg: rgba(233,236,237,.06); --track-bg-hover: rgba(233,236,237,.10);
+  --compose-bg: #2e405c; --compose-bg-focus: #3b4a64;
+  --surface-s: 36%; --surface-l1: 23%; --surface-l2: 17%;
+  --surface-panel-s: 35%; --surface-panel-l: 25%; --surface-panel-a: 55%;
+  --scrim-s: 35%; --scrim-l: 9%; --scrim-a: .62;
+  --shadow-l: 5%;
+  --warn-ink: #f2a397;
+  --bg-page: #24334e; --bg-stage: #24334e; --bg-sidebar: #24334e;
+  --bg-player: #24334e; --bg-raised: #2e405c; --bg-input: #2e405c;
+  --bg-selected: #3b4a64; --bg-hover: rgba(233,236,237,.07);
+  --text: #e9eced; --text-2: #c4cdd9; --text-3: #b0bdcf; --text-4: #9faec2;
+  --text-on-accent: #26344b;
+  --line: rgba(233,236,237,.24); --line-strong: #e9eced; --line-control: #b0bdcf;
+  --accent: #f0d889; --accent-hover: #f7e6b1; --danger: #f2a397; --ok: #b2dbc4;
+  --partner-1: #d9b8d6; --partner-2: #b9d3a6; --partner-3: #d9b79b;
+  --partner-4: #a8c8d8; --partner-5: #d6c891; --partner-6: #c1b9e2;
+  --partner-1-rgb: 217 184 214; --partner-2-rgb: 185 211 166; --partner-3-rgb: 217 183 155;
+  --partner-4-rgb: 168 200 216; --partner-5-rgb: 214 200 145; --partner-6-rgb: 193 185 226;
+  --partner-lunara: #e9eced;
+}
+
+/* 靛蓝只改变纸墨：同一箭头形状用继承色，避免固定深棕 fill 在浅色控件上混色。
+   专注歌词仍保留原海报排版，但黄只作文字高亮，不把整块背景铺黄。 */
+:root[data-theme="modernist"][data-modernist-base="indigo"] .compose #compose-send::after {
+  background: currentColor;
+  mask: center / 17px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3.4 20.4 20.9 12 3.4 3.6l-.01 6.53L14 12 3.39 13.87z'/%3E%3C/svg%3E");
+}
+:root[data-theme="modernist"][data-modernist-base="indigo"] #app.focus-mode .player-line-viewport:has(.lyric):not(.next) { background: transparent; }
+:root[data-theme="modernist"][data-modernist-base="indigo"] #app.focus-mode .player-line-text.lyric:not(.next) { color: var(--accent); }
+
+@media (max-width: 960px) {
+  /* 窄屏单栏：聆听列不再与聊天列并排，去掉列间结构线。 */
+  :root[data-theme="modernist"] .listening-panel { border-right: 0; }
+}
+
+/* 群聊谁在说：名字前一枚本人颜色的小方块（伙伴取 --partner-N，Lunara 为墨黑），名字仍是黑色大写标签。
+   identity: name 的共享规则不画色点；这里只在素色里补回一枚方块，不加色线。 */
+:root[data-theme="modernist"][data-layout="stage"] .chat-msg.assistant .chat-speaker { display: flex; align-items: center; gap: 8px; }
+:root[data-theme="modernist"][data-layout="stage"] .chat-msg.assistant .chat-speaker-signal { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border: 0; border-radius: 0; background: var(--person-color, var(--partner-lunara)); box-shadow: none; }
+:root[data-theme="modernist"][data-layout="stage"] .chat-msg.assistant .chat-speaker-signal::before { content: none; }

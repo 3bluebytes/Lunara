@@ -1,0 +1,185 @@
+/* 夜场皮肤：只写颜色、字体、材质。排法在 features/shell/timeline.css（layout: timeline）。
+   笔触：一像素线、线框按钮、几乎不圆角、香槟色只点在「正在听」「正在说」与主操作上。
+   每个选择器都限定在 :root[data-theme="nocturne"] 之下（测试检查）。 */
+
+:root[data-theme="nocturne"] body { background: var(--bg-page); font-family: var(--font-ui); }
+:root[data-theme="nocturne"] #app { background: var(--bg-stage); }
+/* 颗粒：一层很细的噪点叠在夜色上，不吃点击。 */
+:root[data-theme="nocturne"] #app::after {
+  content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: .5; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+:root[data-theme="nocturne"] :is(.aurora, .noise) { display: none; }
+
+/* ---- 控件：线框、不圆角、不发光 ---- */
+:root[data-theme="nocturne"] :is(.quiet-button, .listen-together) { border-radius: 2px; box-shadow: none; letter-spacing: .08em; }
+:root[data-theme="nocturne"] .listen-together { border: 1px solid var(--line-control); background: transparent; color: var(--text); font-weight: 400; }
+:root[data-theme="nocturne"] .listen-together:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+:root[data-theme="nocturne"] .persistent-player { background: color-mix(in srgb, var(--ink-0) 82%, transparent); border-top: 1px solid var(--line); box-shadow: none; }
+:root[data-theme="nocturne"] .persistent-player .play-btn { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--line-control); }
+:root[data-theme="nocturne"] .persistent-player .play-btn:hover { background: transparent; box-shadow: inset 0 0 0 1px var(--text); }
+:root[data-theme="nocturne"] :is(.np-time, .np-duration, .upcoming-count) { font-family: var(--font-number); letter-spacing: .02em; }
+
+/* ---- 聊天：你说的用宋体，Lunara 说的用黑体；不用气泡也分得清 ---- */
+:root[data-theme="nocturne"] .chat-msg.user .chat-bubble {
+  border: 0; border-radius: 0; background: transparent; box-shadow: none; padding: 0;
+  font-family: var(--font-reading); font-size: 16px; line-height: 1.75; color: var(--text);
+  font-weight: var(--weight-regular);
+}
+:root[data-theme="nocturne"] .chat-msg.assistant .chat-bubble { font-size: 15px; line-height: 1.85; color: var(--text); font-weight: var(--weight-regular); }
+/* 你说的那一行没有气泡了，时间戳不能再沿用渐变气泡上的反白色（深底上看不见）。 */
+:root[data-theme="nocturne"] .chat-msg.user .chat-time { color: var(--t-lo); }
+/* 小字下限 11px：共享样式里 9–10.5px 的标签（时间、来源、续播、播放条读数）在宋体/黑体混排的夜场里糊成一团。
+   带 #app 是为了压过 conversations.css / styles.css 里更长的类选择器。 */
+:root[data-theme="nocturne"] #app :is(.chat-time, .chat-date-divider, .chat-speaker-name, .source-label, .radio-label, .np-time, .np-duration, .mixer-title, .mixer-label, .upcoming-label) { font-size: 11px; }
+/* 正文、旁白、歌词一律 400，不用 300：原因见 tokens.css 的「标宋字阶」注释（细字在 15–20px 无法
+   均匀栅格化，同一段会出现有的字粗、有的字细）。以前窄屏才退回 400，现在基准就是 400。 */
+:root[data-theme="nocturne"] .compose { border: 0; border-bottom: 1px solid var(--line-strong); border-radius: 0; background: transparent; box-shadow: none; }
+:root[data-theme="nocturne"] .compose :is(textarea, input) { font-family: var(--font-reading); }
+
+/* ---- 浮层与面板：更深一层的同色 + 一圈细边 ---- */
+:root[data-theme="nocturne"] .conversation-sidebar { background: color-mix(in srgb, var(--ink-1) 97%, transparent); }
+/* 顶栏「外观」浮层与「全部」浮层同一块底；不进玻璃层，理由同侧栏浮层（#app 外的 fixed 层模糊不可靠时会透字）。 */
+:root[data-theme="nocturne"] .appearance-pop { background: var(--ink-1); }
+:root[data-theme="nocturne"] :is(.room-row, .people-row).selected { background: var(--bg-selected); box-shadow: inset 1px 0 0 var(--accent); }
+
+/* ---- 没有封面（或加载失败）：中性暖灰底上一个歌名首字，不猜颜色 ---- */
+:root[data-theme="nocturne"] .listening-artwork:has(> img[data-cover-fallback="1"]) { position: relative; container-type: inline-size; }
+:root[data-theme="nocturne"] .listening-artwork:has(> img[data-cover-fallback="1"]):not([data-initial=""])::before {
+  content: attr(data-initial); position: absolute; inset: 0; z-index: 1;
+  display: grid; place-items: center;
+  background: hsl(32 10% 20%); color: var(--t-mid); border-radius: var(--radius-cover);
+  font: var(--weight-regular) 34cqi/1 var(--font-display);
+  pointer-events: none;
+}
+
+/* 封面取色可用时：夜色换成封面色相，饱和压到 ≤40%、亮度 8–27%，仍是夜里的颜色；
+   取不到色（无封面 / 跨域 / 失败）时控制器移除 --ambient-hue，回到上面的中性暖灰。
+   背景渐变本身不做过渡，换歌即换色，reduced motion 下也不会有动画。 */
+:root[data-theme="nocturne"][data-artwork-hue="active"] {
+  --bg-stage: radial-gradient(70% 70% at 30% 18%, hsl(var(--ambient-hue) 40% 27% / .5), transparent 70%), radial-gradient(60% 60% at 90% 100%, hsl(var(--ambient-hue-2, var(--ambient-hue)) 32% 18% / .45), transparent 72%), linear-gradient(176deg, hsl(var(--ambient-hue) 24% 13%), hsl(var(--ambient-hue) 18% 8%));
+}
+
+/* ---- 设置、帐本、歌曲整理、伙伴、新伙伴、音乐源、弹窗、提示（quantao.html「面板 / 控件」）----
+   表面颜色走 tokens.css 里的 --studio-*；这里只改笔触：去掉卡片、改成分节横线，
+   控件全是细线，选中变香槟色，危险操作暖红文字 + 细边。 */
+:root[data-theme="nocturne"] :is(.settings-panel, .salon-dialog, .today-panel, .recording-review, .cast-card, .qr-card)
+  :is(button, select, input, textarea, [class*="card"], [class*="chip"], [class*="pill"], details, [class*="-row"], [class*="status"]):not([type="checkbox"]):not([type="radio"]):not([role="switch"]) { border-radius: 2px; }
+:root[data-theme="nocturne"] :is(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--accent); }
+
+/* 设置：左栏是纯文字，当前项前一道 14px 香槟线；右栏标题宋体，分节用一像素横线。 */
+:root[data-theme="nocturne"] .settings-nav { background: transparent; border-right-color: var(--line); }
+:root[data-theme="nocturne"] .settings-nav-item { border-radius: 0; background: transparent; color: var(--t-mid); font-size: 14px; }
+:root[data-theme="nocturne"] .settings-nav-item svg { display: none; }
+:root[data-theme="nocturne"] .settings-nav-item:hover { background: transparent; color: var(--text); }
+:root[data-theme="nocturne"] .settings-nav-item.active { background: transparent; color: var(--text); }
+:root[data-theme="nocturne"] .settings-nav-item.active::before { content: ''; flex: 0 0 14px; height: 1px; background: var(--accent); }
+:root[data-theme="nocturne"] .settings-page-title { font: var(--weight-heavy) 28px/1.25 var(--font-display); letter-spacing: .02em; }
+:root[data-theme="nocturne"] .settings-page-sub { font-size: 13px; color: var(--t-mid); }
+:root[data-theme="nocturne"] .settings-card { margin-top: 0; padding: 18px 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+:root[data-theme="nocturne"] .settings-page-sub + .settings-card,
+:root[data-theme="nocturne"] .settings-page-sub + .settings-two-col { margin-top: 20px; }
+:root[data-theme="nocturne"] .boot-h { font: var(--weight-regular) var(--size-label)/1.5 var(--font-ui); letter-spacing: var(--tracking-label); color: var(--t-lo); padding-left: 0; }
+:root[data-theme="nocturne"] .theme-option { border-radius: 2px; background: transparent; }
+:root[data-theme="nocturne"] .theme-option[aria-checked="true"] { border-color: var(--accent); background: transparent; }
+
+/* 页面标题（帐本 / 设置页眉）是一级，宋体 900。 */
+:root[data-theme="nocturne"] .shell-page-title { font-family: var(--font-display); font-weight: var(--weight-heavy); letter-spacing: .02em; }
+:root[data-theme="nocturne"] .today-date-strip { border-radius: 2px; background: transparent; }
+:root[data-theme="nocturne"] .today-filter-tab { border: 0; border-radius: 0; background: transparent; color: var(--t-lo); }
+:root[data-theme="nocturne"] .today-filter-tab.is-active { background: transparent; color: var(--text); box-shadow: inset 0 -1px 0 var(--text); }
+
+/* 输入：只有一道下划线；多行文本保留一圈细边。聚焦时线变香槟色并加粗一像素。 */
+:root[data-theme="nocturne"] :is(.settings-panel, .salon-dialog, .cast-card, .qr-card, .today-panel)
+  :is(input:not([type]), input[type="text"], input[type="password"], input[type="url"], input[type="number"], input[type="search"], input[type="date"], input[type="time"], select) {
+  border: 0; border-bottom: 1px solid var(--line-control); border-radius: 0;
+  background: transparent; box-shadow: none; color: var(--text);
+}
+:root[data-theme="nocturne"] :is(.settings-panel, .salon-dialog, .cast-card, .qr-card, .today-panel) textarea {
+  border: 1px solid var(--line); background: transparent; box-shadow: none; color: var(--text);
+}
+:root[data-theme="nocturne"] :is(.settings-panel, .salon-dialog, .cast-card, .qr-card, .today-panel) :is(input, select, textarea):focus {
+  border-color: var(--accent); box-shadow: 0 1px 0 var(--accent); outline: none;
+}
+:root[data-theme="nocturne"] :is(input, textarea)::placeholder { color: var(--t-placeholder); }
+
+/* 开关：细线小胶囊，开时线和圆点都是香槟色。 */
+:root[data-theme="nocturne"] .llm-switch-track { width: 30px; height: 16px; background: transparent; border-color: var(--line-control); }
+:root[data-theme="nocturne"] .llm-switch-thumb { top: 2px; left: 2px; width: 10px; height: 10px; background: var(--t-lo); }
+:root[data-theme="nocturne"] .llm-switch[aria-checked="true"] .llm-switch-track { background: transparent; border-color: var(--accent); }
+:root[data-theme="nocturne"] .llm-switch[aria-checked="true"] .llm-switch-thumb { background: var(--accent); }
+
+/* 按钮：线框；弹窗里的主按钮是米白实心（不是香槟色），危险操作暖红字 + 半透明暖红细边。 */
+:root[data-theme="nocturne"] .salon-dialog .quiet-button { border-radius: 2px; border-color: var(--line-control); }
+:root[data-theme="nocturne"] .salon-dialog .listen-together { border-radius: 2px; background: var(--text); color: var(--studio-accent-on); font-weight: 400; letter-spacing: .12em; }
+:root[data-theme="nocturne"] .salon-dialog .listen-together:hover { background: var(--accent); }
+:root[data-theme="nocturne"] .danger-button { border-radius: 2px; border-color: color-mix(in srgb, var(--warn-ink) 50%, transparent); color: var(--warn-ink); letter-spacing: .08em; }
+:root[data-theme="nocturne"] .danger-button:hover { border-color: var(--warn-ink); background: transparent; }
+
+/* 弹窗：同一种深色面板，背后压暗；不模糊（玻璃材质下见下文）。 */
+:root[data-theme="nocturne"] :is(.salon-dialog, .cast-card, .qr-card) { -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="nocturne"] .salon-dialog::backdrop { background: rgba(6,6,8,.58); -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="nocturne"] :is(.cast-overlay, .qr-overlay) { -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="nocturne"] :is(.salon-dialog h2, .cast-title) { font: var(--weight-regular) 22px/1.3 var(--font-display); letter-spacing: .02em; }
+:root[data-theme="nocturne"] .salon-dialog h3 { font: var(--weight-regular) var(--size-label)/1.5 var(--font-ui); letter-spacing: var(--tracking-label); color: var(--t-lo); }
+
+/* 出错提示：不发光的小圆点，标题按语义着色；面板同弹窗。 */
+:root[data-theme="nocturne"] .toast { border-radius: 3px; background: var(--studio-surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="nocturne"] .toast-status { width: 6px; height: 6px; box-shadow: none; }
+:root[data-theme="nocturne"] .toast.error .toast-status { background: var(--warn-ink); box-shadow: none; }
+:root[data-theme="nocturne"] .toast.success .toast-status { background: var(--ok); }
+:root[data-theme="nocturne"] .toast.info .toast-status { background: var(--t-lo); }
+:root[data-theme="nocturne"] .toast-title { font-weight: 400; letter-spacing: .04em; }
+:root[data-theme="nocturne"] .toast-count { font-family: var(--font-number); }
+:root[data-theme="nocturne"] .toast-close { border-radius: 2px; }
+
+/* ---- 材质：玻璃（data-material="glass"）。实底是默认，不写额外规则。
+   玻璃：#app 透明，露出 body 上的夜色与模糊封面洗底；固定面板半透明 + 背景模糊。
+   滚动容器里的消息不加模糊（长聊天滚动掉帧）。不支持 backdrop-filter 时整段不生效；
+   系统开了「减少透明度」时在下面退回实底。 ---- */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-theme="nocturne"][data-material="glass"] body { background: var(--bg-stage); }
+  :root[data-theme="nocturne"][data-material="glass"] #app { background: transparent; }
+  :root[data-theme="nocturne"][data-material="glass"][data-artwork-theme="on"] body::before { opacity: .42; }
+  :root[data-theme="nocturne"][data-material="glass"] :is(.chat-door, .persistent-player, .conversation-sidebar, dialog, .queue-pop, .cast-card, .qr-card, .toast) {
+    background: color-mix(in srgb, var(--ink-1) 58%, transparent);
+    -webkit-backdrop-filter: blur(28px) saturate(1.15);
+    backdrop-filter: blur(28px) saturate(1.15);
+  }
+  /* 贴边的聊天条、播放条不再自己做背景模糊：它们背后只有 body::before 已经模糊过（86px）的封面洗底，
+     再模糊一遍几乎看不出来，反而在 Electron 里随左侧听歌列的局部重绘出问题——拖动时一闪、悬停一行时
+     同一水平线上出现一条变深的带子（2026-10-21 用户反馈）。半透明底色照旧。
+     will-change: transform 保住原来 backdrop-filter 给 fixed 后代提供的包含块，弹层定位不变。 */
+  :root[data-theme="nocturne"][data-material="glass"] :is(.chat-door, .persistent-player) {
+    -webkit-backdrop-filter: none; backdrop-filter: none; will-change: transform;
+  }
+  /* 浮在内容上的层（弹窗、队列、提示）几乎不透：底下是文字和封面，不是夜色洗底，58% 会让两层字叠在一起。
+     贴边的聊天条与播放条仍是 58%。 */
+  :root[data-theme="nocturne"][data-material="glass"] :is(.conversation-sidebar, dialog, .queue-pop, .cast-card, .qr-card, .toast) {
+    background: color-mix(in srgb, var(--ink-1) 96%, transparent);
+  }
+  /* 「全部」浮层是 #app 里的固定层：Chromium 在这里不做模糊，反而把背后的字原样叠上来（2026-10 实测），
+     所以它用实底、不加模糊。 */
+  :root[data-theme="nocturne"][data-material="glass"] .conversation-sidebar {
+    background: var(--ink-1); -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  :root[data-theme="nocturne"][data-material="glass"] .salon-dialog::backdrop { background: rgba(6,6,8,.4); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  :root[data-theme="nocturne"][data-material="glass"] :is(.cast-overlay, .qr-overlay) { background: rgba(6,6,8,.4); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme="nocturne"][data-material="glass"] body { background: var(--bg-page); }
+  :root[data-theme="nocturne"][data-material="glass"] #app { background: var(--bg-stage); }
+  :root[data-theme="nocturne"][data-material="glass"] body::before { opacity: 0; }
+  :root[data-theme="nocturne"][data-material="glass"] :is(.chat-door, .persistent-player, .conversation-sidebar, dialog, .queue-pop, .cast-card, .qr-card, .toast) {
+    background: var(--ink-1); -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  :root[data-theme="nocturne"][data-material="glass"] .salon-dialog::backdrop,
+  :root[data-theme="nocturne"][data-material="glass"] :is(.cast-overlay, .qr-overlay) { background: rgba(6,6,8,.58); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+/* 群聊谁在说：头像圈与名字取本人颜色（--person-color 由共享视图按发言人写好）。
+   「☾」是 Lunara 的记号，只留给她；其他伙伴圈里是一颗本人颜色的圆点。 */
+:root[data-theme="nocturne"] .chat-msg[data-speaker-id] .chat-speaker-signal { border-color: color-mix(in srgb, var(--person-color) 60%, transparent); color: var(--person-color); }
+:root[data-theme="nocturne"] .chat-msg[data-speaker-id]:not([data-speaker-id="lunara"]) .chat-speaker-signal::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--person-color); }
+:root[data-theme="nocturne"] .chat-msg[data-speaker-id] .chat-speaker-name { color: var(--person-color); }

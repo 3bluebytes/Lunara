@@ -1,0 +1,122 @@
+/* ============================================================
+   主题：月色（方案 A 修订版，舞台版式；无 data-theme 时的回退主题）
+
+   场景色只在这里定义。新增主题 = 在 pwa/themes/ 下按 registry.js 的说明
+   建一个插件文件夹（tokens.css 照这一块写），组件规则不需要跟着改：天空 / 极光 / 表面 / 强调色 / 星点都读这些 token。
+   色相仍来自 --ambient-hue（默认 = --theme-hue），所以封面取色开启时
+   整套配色仍会跟着封面走。
+   ============================================================ */
+:root,
+:root[data-theme="moonlight"] {
+  /* —— Moon Pearl & Platinum 月晕冷银珍珠
+     核心：深邃清澈但不发灰、透亮静谧有光。
+     夜空底色采用清澈深邃的午夜靛青（告别死灰与泥色），
+     月晕带有月光金与青银辉光，营造真正浪漫纯净的月夜。 —— */
+  --theme-hue: 226;
+  --theme-accent-hue-offset: -184;
+  --theme-accent-s: 70%;
+  --theme-accent-l: 85%;
+
+  /* 播放栏 · 月色（方案 A）：近黑半透明底、琥珀色主播放键与进度。 */
+  --player-surface: #0a0f22;
+  --player-surface-low: #070b1a;
+  --player-ink: #ece6d6;
+  --player-muted: rgba(236,230,214,.74);
+  --player-accent: #f2c46d;
+  --player-control: #f2c46d;
+  --player-control-ink: #1a1208;
+  --player-wash-opacity: .12;
+  --player-wash-brightness: .42;
+  /* 开启随曲变色后，封面拥有色相；主题只约束明暗与对比。 */
+  --player-cover-surface-l: 21%;
+  --player-cover-low-l: 16%;
+  --player-cover-ink-l: 95%;
+  --player-cover-muted-l: 81%;
+  --player-cover-accent-l: 86%;
+  --player-cover-control-l: 94%;
+  --player-cover-control-ink-l: 17%;
+  --player-cover-fallback: #241d21;
+  --player-cover-fallback-opacity: .65;
+  --player-cover-surface-s: 48%;
+  --player-cover-low-s: 44%;
+  --player-cover-control-s: 28%;
+  --player-cover-accent-s: 36%;
+
+  /* —— 天空：铂银月盘 + 澄澈午夜蓝深场 —— */
+  --sky-moon-hue-offset: -180;                                /* → 46 奶白微暖月华 */
+  --sky-moon-s: 32%; --sky-moon-l: 96%; --sky-moon-a: .80;    /* 月盘：清澈明净 */
+  --sky-glow-1-hue-offset: 0;
+  --sky-glow-1-s: 48%; --sky-glow-1-l: 44%; --sky-glow-1-a: .90;
+  --sky-glow-2-s: 38%; --sky-glow-2-l: 34%; --sky-glow-2-a: .65;
+  --sky-base-s: 32%;   --sky-base-l1: 22%;  --sky-base-l2: 12%;
+  --sky-glow-2-hue-offset: 28;
+  --sky-base-hue-offset: 0;
+
+  /* —— 封面玻璃洗底（所有主题共享 body::before，强度各主题自调） —— */
+  /* 伙伴开口版（theme-moonlight-partner-voice D6）：封面只改 --sky-glow 与月盘中段，不再整片洗底。 */
+  --artwork-wash-opacity: 0;
+  --artwork-wash-blur: 72px;
+  --artwork-wash-saturate: 1.65;
+  --artwork-wash-brightness: .66;
+
+  /* —— 极光三团：清朗的月晕微光薄雾 —— */
+  --aurora-opacity: 0;
+  --aurora-1-s: 48%; --aurora-1-l: 68%; --aurora-1-a: .28;
+  --aurora-2-s: 40%; --aurora-2-l: 62%; --aurora-2-a: .22;
+  --aurora-3-s: 30%; --aurora-3-l: 76%; --aurora-3-a: .18;
+  --aurora-2-hue-offset: 35;
+  --aurora-3-hue-offset: -15;
+
+  /* 颗粒改画在夜空图层里（--bg-stage 第一层），不再用盖住文字的全屏 .noise。 */
+  --noise-opacity: 0;
+
+  /* —— 星点：晶莹冷银白、柔和光晕 —— */
+  --particle-saturation: 25%;
+  --particle-lightness: 98%;
+  --particle-glow: 4.8;      /* 光晕大而柔 */
+  --particle-radius: .88;
+  --particle-drift: .25;     /* 缓慢漂移增加静谧感 */
+  --particle-count: 52;      /* 伙伴开口版减半：夜空留给月盘 */
+  --particle-twinkle: 0.9;
+  --particle-hue-jitter: 8;
+
+  --surface-s: 26%; --surface-l1: 19%; --surface-l2: 11%;
+  --surface-a: 94%; --surface-a2: 96%;
+  --surface-panel-s: 24%; --surface-panel-l: 22%; --surface-panel-a: 42%;
+  --scrim-s: 25%; --scrim-l: 9%; --scrim-a: .50;
+  --shadow-s: 40%; --shadow-l: 5%; --shadow-a: .55;
+  --warn-ink: var(--coral);
+
+  /* 语义变量：方案 A「月色修订版」的取值（docs/design/handoff-theme-d/themes/A 月色）。
+     舞台骨架（features/shell/stage.css）只读这些变量；文字阶梯叫 --text*，
+     因为 --ink-0..3 已经是背景色阶。--bg-stage 是稿子里的夜空，色相跟着 --ambient-hue，
+     开启封面取色时整片夜空随封面变。 */
+  /* 伙伴开口版取值（openspec theme-moonlight-partner-voice D6）：靛蓝夜空 + 右上一团随封面色相的月晕，
+     饱和度/亮度锁定；夜空最上面贴一层很淡的暖白颗粒，打掉渐变的塑料感（只是背景图层，不盖文字）。 */
+  --bg-page: #070b1a;
+  --bg-stage:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .84 .12 0 0 0 -.035'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E"),
+    radial-gradient(700px 520px at 78% 26%, hsl(var(--ambient-hue) 42% 35%), transparent 72%),
+    linear-gradient(180deg, #121a3a, #070b1a 62%);
+  --bg-sidebar: rgba(7,11,26,.4); --bg-player: rgba(7,10,24,.9); --bg-raised: #0e1533;
+  --bg-input: rgba(7,10,24,.45); --bg-selected: rgba(236,230,214,.09); --bg-hover: rgba(236,230,214,.05);
+  --text: #ece6d6; --text-2: rgba(236,230,214,.74); --text-3: rgba(236,230,214,.6); --text-4: rgba(236,230,214,.42);
+  --text-on-accent: #1a1208;
+  --line: rgba(236,230,214,.07); --line-strong: rgba(236,230,214,.12); --line-control: rgba(236,230,214,.16);
+  --accent: #f2c46d; --accent-hover: #f7d590; --danger: #ff9f80; --ok: #7ef0c5;
+  --partner-1: #d9b8d6; --partner-2: #b9d3a6; --partner-3: #d9b79b;
+  --partner-4: #a8c8d8; --partner-5: #d6c891; --partner-6: #c1b9e2;
+  --partner-1-rgb: 217 184 214; --partner-2-rgb: 185 211 166; --partner-3-rgb: 217 183 155;
+  --partner-4-rgb: 168 200 216; --partner-5-rgb: 214 200 145; --partner-6-rgb: 193 185 226;
+  --partner-lunara: #f2c46d;
+  --font-display: 'Geist', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  --font-reading: 'Noto Serif SC', 'Songti SC', serif;
+  --font-ui: 'Geist', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  --font-mono: 'Geist Mono', monospace;
+  --size-clock-hero: 96px; --size-clock: 64px; --size-title: 40px; --size-song: 38px;
+  --size-lyric-current: 28px; --size-lyric: 17px; --size-reading: 16px; --size-body: 14px;
+  --size-meta: 12px; --size-label: 11px;
+  --radius-pill: 999px; --radius-card: 16px; --radius-row: 10px; --radius-input: 16px;
+  --radius-cover: 14px; --radius-bubble: 16px;
+  --motion-breath: 3.2s; --motion-ease: ease-in-out;
+}

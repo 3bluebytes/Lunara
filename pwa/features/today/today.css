@@ -1,0 +1,561 @@
+/* 生活手记与日程：柔和夜色书写台。
+   同一套主题 token 上做三件事：暖化深色基底、通透玻璃、柔和发丝边，
+   并加大留白与行距，让「想写」这件事发生在灯下的纸面感而不刺眼。
+   强调色仍用 --studio-accent，与全局主题保持一致；暖色只用于氛围与表面。 */
+#app.today-open .today-panel {
+  --today-muted: var(--t-mid);
+  --today-danger: color-mix(in srgb, var(--coral, #f87171) 78%, var(--t-hi));
+  /* 书桌暖光只保留在局部（筛选 chip、选中态、徽标）；页面基底、卡片、
+     页眉与设置页同一套 studio 语言。 */
+  --today-line: color-mix(in srgb, hsl(34 74% 64% / .18), var(--studio-line));
+  --today-line-soft: color-mix(in srgb, hsl(34 64% 62% / .10), var(--studio-line));
+  --today-glass: color-mix(in srgb, hsl(34 42% 58% / .05), var(--glass-2));
+  --today-lift: color-mix(in srgb, hsl(34 40% 57% / .115), var(--ink-3));
+  --today-field-bg: color-mix(in srgb, hsl(34 34% 54% / .07), var(--glass-1));
+  overflow: hidden;
+  gap: 22px;
+  /* 页边距、上沿留白与底色均与其他壳层页面同一 token。 */
+  padding: var(--page-top, 20px) var(--page-edge, 34px) max(26px, env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--ink-1) 20%, transparent);
+}
+
+.today-panel .today-workspace-header { margin: 0; flex: 0 0 auto; }
+.today-panel .today-header-info { min-width: 0; }
+.today-panel .today-workspace-sub { max-width: 62ch; line-height: 1.75; }
+.today-panel .today-header-actions { justify-content: flex-end; gap: 8px; }
+.today-panel button {
+  box-sizing: border-box;
+  font-family: inherit;
+  min-height: 36px;
+  border-radius: 10px;
+  line-height: 1.4;
+  transition: background-color .16s ease-out, border-color .16s ease-out, color .16s ease-out, box-shadow .16s ease-out;
+}
+.today-panel button:hover { transform: none; }
+.today-panel button:disabled,
+.today-panel input:disabled,
+.today-panel select:disabled,
+.today-panel textarea:disabled { opacity: .55; cursor: not-allowed; }
+.today-panel .today-btn-primary {
+  /* 页面级主按钮：与聊天页「一起听」同一处理（--studio-primary-* token）。 */
+  background: var(--studio-primary-bg);
+  color: var(--t-hi);
+  border: 1px solid var(--studio-primary-border);
+  box-shadow: 0 2px 12px -4px color-mix(in srgb, var(--studio-accent) 20%, transparent);
+  padding: 8px 15px;
+}
+.today-panel .today-btn-primary:hover:not(:disabled) {
+  border-color: var(--studio-accent-ink);
+  background: var(--studio-primary-bg-hover);
+  color: var(--t-hi);
+  box-shadow: 0 4px 18px -2px color-mix(in srgb, var(--studio-accent) 32%, transparent);
+}
+.today-panel .today-badge-pulse { color: var(--studio-accent-ink); }
+
+/* 三轨：列表 | 可拖动分隔线 12px | 编辑器。--today-list-width 由 todaySplit.js 写入，
+   min() 保证编辑器始终留有保底宽度。 */
+.today-panel .today-workspace-body,
+.today-panel .today-workspace-body.is-detail-open {
+  grid-template-columns: min(var(--today-list-width, 344px), calc(100% - 380px)) 12px minmax(0, 1fr);
+  gap: 22px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+/* 列表栏：同一页面卡材质（studio 面板 + 发丝边），暖玻璃只留给条目 hover。 */
+.today-panel .today-notes-sidebar {
+  border-radius: var(--studio-card-radius);
+  border: 1px solid var(--studio-line);
+  background: var(--studio-panel);
+  padding: 16px;
+  gap: 14px;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.today-panel .today-filter-tabs {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  overflow: visible;
+  gap: 3px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--today-line-soft);
+}
+.today-panel .today-filter-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 5px 8px;
+  color: var(--today-muted);
+  font-size: 11.5px;
+  border-color: transparent;
+  border-radius: 999px;
+  background: transparent;
+}
+.today-panel .today-filter-tab:hover { color: var(--t-hi); background: var(--today-glass); }
+.today-panel .today-filter-tab.is-active,
+.today-panel :is(.today-task-filter, [data-action="task-filter"]).is-active {
+  color: var(--t-hi);
+  background: color-mix(in srgb, var(--studio-accent) 15%, var(--today-lift));
+  border-color: color-mix(in srgb, var(--studio-accent) 34%, var(--today-line-soft));
+  font-weight: 600;
+}
+.today-panel .today-category-count {
+  color: var(--today-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.today-panel .today-list-controls { display: flex; flex-direction: column; gap: 10px; }
+.today-panel .today-task-filters { display: flex; flex-wrap: wrap; gap: 5px; }
+.today-panel :is(.today-task-filter, [data-action="task-filter"]) {
+  min-height: 32px;
+  padding: 4px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--today-muted);
+  font-size: 12px;
+  border-color: transparent;
+  border-radius: 999px;
+  background: transparent;
+}
+.today-panel :is(.today-task-filter, [data-action="task-filter"]) .count { font-variant-numeric: tabular-nums; }
+.today-panel :is(.today-list-tools, .today-search-sort) { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.today-panel .today-search-field,
+.today-panel .today-search-sort input { flex: 1 1 100%; min-width: 0; width: 100%; }
+.today-panel :is(.today-list-tools, .today-search-sort) input,
+.today-panel :is(.today-list-tools, .today-search-sort) select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 11px;
+  font-size: 13px;
+  border-radius: var(--studio-field-radius);
+  border: 1px solid var(--today-line-soft);
+  background: var(--today-field-bg);
+}
+.today-panel :is(.today-list-tools, .today-search-sort) select { flex: 1 1 130px; width: auto; }
+.today-panel .today-list-summary,
+.today-panel .today-quick-add-status {
+  margin: 0;
+  color: var(--today-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.today-panel .today-date-strip {
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--today-line-soft);
+  background: var(--today-field-bg);
+}
+.today-panel .today-strip-nav { flex-wrap: wrap; min-width: 0; gap: 3px; }
+.today-panel .today-strip-date-text { font-size: 12px; font-weight: 500; }
+.today-panel .today-strip-picker-wrap { flex: 0 0 36px; min-height: 36px; justify-content: center; }
+.today-panel .today-strip-picker-wrap:focus-within { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; border-radius: 10px; }
+.today-panel .today-icon-btn { min-width: 36px; min-height: 36px; padding: 4px; border-radius: 10px; }
+.today-panel .today-quick-add { padding: 0; gap: 9px; align-items: stretch; flex-direction: column; }
+.today-panel .today-quick-add-date { margin: 0; color: var(--today-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+/* 快速添加是一行输入：框高必须容得下一行，否则内容会溢出并露出内部滚动条。 */
+.today-panel .today-quick-add textarea {
+  min-height: 44px;
+  max-height: 148px;
+  font-size: 13px;
+  line-height: 1.6;
+  border-style: solid;
+  border-color: var(--today-line-soft);
+  background: var(--today-field-bg);
+  border-radius: 10px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.today-panel .today-quick-add textarea:focus-visible { border-color: color-mix(in srgb, var(--studio-accent) 45%, var(--today-line)); }
+.today-panel .today-quick-add-btn { align-self: flex-end; min-height: 36px; padding: 7px 12px; }
+.today-panel :is(input, textarea)::placeholder {
+  color: color-mix(in srgb, hsl(34 45% 72% / .42), var(--t-placeholder, var(--t-mid)));
+  opacity: 1;
+}
+
+/* 列表采用连续条目，选中与完成互不依赖透明度。 */
+.today-panel .today-notes-list {
+  gap: 2px;
+  flex: 1 0 140px;
+  min-height: 140px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px;
+  scroll-padding-block: 10px;
+  scrollbar-gutter: stable;
+}
+.today-panel .today-notes-list .today-entry {
+  flex: 0 0 auto;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 9px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--today-line-soft);
+  border-radius: 10px;
+  background: transparent;
+  cursor: default;
+  box-shadow: none;
+  transition: background-color .16s ease-out, border-color .16s ease-out;
+}
+.today-panel .today-notes-list .today-entry:hover { transform: none; background: var(--today-glass); }
+.today-panel .today-notes-list .today-entry.is-selected {
+  background: color-mix(in srgb, var(--studio-accent) 10%, var(--today-lift));
+  border-color: color-mix(in srgb, var(--studio-accent) 34%, var(--today-line-soft));
+  border-radius: 12px;
+  box-shadow: none;
+}
+.today-panel .today-entry.done { opacity: 1; }
+.today-panel .today-entry.done .today-entry-title { color: var(--today-muted); }
+.today-panel .today-entry-main { align-items: flex-start; flex-wrap: nowrap; width: 100%; gap: 7px; }
+.today-panel .today-entry-checkbox-wrap { width: 36px; height: 36px; margin-top: -4px; }
+.today-panel .today-custom-check { border-color: color-mix(in srgb, hsl(34 50% 66% / .5), var(--today-muted)); border-radius: 5px; }
+.today-panel .today-entry-checkbox-wrap input:focus-visible + .today-custom-check {
+  outline: 2px solid var(--studio-accent-ink);
+  outline-offset: 4px;
+}
+.today-panel .today-entry-dot { margin: 11px 12px 0; box-shadow: 0 0 0 3px var(--today-glass); }
+.today-panel button.today-entry-content {
+  flex: 1 1 auto;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  padding: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: start;
+}
+.today-panel button.today-entry-content:hover { background: transparent; }
+.today-panel .today-entry-title-row { gap: 6px; }
+.today-panel .today-entry-title { font-size: 14px; font-weight: 500; line-height: 1.55; overflow-wrap: anywhere; }
+.today-panel .today-entry-snippet { margin: 0; font-size: 12px; line-height: 1.6; color: var(--today-muted); overflow-wrap: anywhere; -webkit-line-clamp: 1; }
+.today-panel .today-entry-meta { gap: 5px 8px; font-size: 11.5px; color: var(--today-muted); overflow-wrap: anywhere; }
+.today-panel .today-entry-meta > * { max-width: 100%; }
+.today-panel .today-entry-scope { font-size: 10.5px; }
+.today-panel .today-overdue-badge { color: var(--today-danger); }
+.today-panel .today-entry-actions { opacity: 1; flex-wrap: wrap; gap: 5px; padding-inline-start: 42px; }
+.today-panel .today-action-btn { min-height: 32px; font-size: 12px; padding: 5px 9px; border-radius: 10px; }
+.today-panel .today-reschedule-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.today-panel .today-delete-confirm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.today-panel .today-delete-confirm p,
+.today-panel .today-delete-confirm > span { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.today-panel .today-delete-confirm [data-action="confirm-delete"] { border-color: var(--today-danger); color: var(--today-danger); }
+.today-panel .today-entry.is-busy { cursor: progress; }
+.today-panel .today-empty-item { padding: 30px 14px; line-height: 1.7; }
+.today-panel .today-empty-item .today-empty-title { font-size: 14px; color: var(--t-hi); }
+.today-panel .today-empty-item .today-empty-sub { font-size: 12px; color: var(--today-muted); }
+
+/* 中央书写区：同一页面卡材质；暖色只留在正文光晕与边框 tint。 */
+.today-panel .today-notes-editor-pane { overflow-x: hidden; overflow-y: auto; scroll-padding: 14px; scrollbar-gutter: stable; }
+.today-panel .today-editor-card {
+  min-width: 0;
+  min-height: 100%;
+  padding: 26px;
+  border-radius: var(--studio-card-radius);
+  border: 1px solid var(--studio-line);
+  background: var(--studio-panel);
+}
+.today-panel .today-editor-topbar { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--today-line-soft); }
+.today-panel .today-editor-date-pill { display: inline-flex; align-items: center; }
+.today-panel .today-back-to-list { display: none; }
+.today-panel .today-editor-status { min-width: 0; }
+.today-panel .today-save-feedback,
+.today-panel .today-save-indicator { color: var(--today-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.today-panel .today-save-feedback[data-state="error"],
+.today-panel .today-save-feedback[data-state="conflict"],
+.today-panel .today-save-feedback[data-state="authorization"] { color: var(--today-danger); }
+.today-panel .today-editor-surface { min-width: 0; gap: 22px; }
+.today-panel input.today-input-seamless-title {
+  font-family: 'Songti SC', 'Fraunces', var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  /* 写作优先：标题只比正文高一级，不再用展示级大字挤掉书写区。 */
+  font-size: 18px;
+  line-height: 1.45;
+  letter-spacing: .01em;
+  font-weight: 600;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 10px;
+  padding: 4px 2px;
+}
+.today-panel input.today-input-seamless-title:focus-visible { background: color-mix(in srgb, hsl(34 50% 60% / .06), transparent); }
+.today-panel .today-textarea-seamless-body {
+  min-height: 200px;
+  max-height: 62dvh;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 4px;
+  font-size: 14.5px;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.today-panel .today-textarea-seamless-body:focus-visible { background: color-mix(in srgb, hsl(34 50% 60% / .05), transparent); }
+.today-panel .today-field-label,
+.today-panel .today-attr-label,
+.today-panel .today-hint { color: var(--today-muted); font-size: 12px; line-height: 1.65; }
+.today-panel .today-field-label,
+.today-panel .today-attr-label { font-weight: 500; letter-spacing: .02em; }
+.today-panel .today-attrs-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; padding-top: 18px; border-top: 1px solid var(--today-line-soft); }
+.today-panel .today-attr-item { display: flex; flex-direction: column; align-items: stretch; min-width: 0; gap: 7px; font-size: 12px; }
+.today-panel .today-time-range-group { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; }
+.today-panel .today-attr-item input,
+.today-panel .today-attr-item select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border-radius: var(--studio-field-radius);
+  border: 1px solid var(--today-line-soft);
+  background: var(--today-field-bg);
+}
+.today-panel .today-attr-pill { min-height: 38px; align-self: end; }
+.today-panel .today-companion-box { background: transparent; border-radius: 10px; padding: 14px 0; }
+.today-panel .today-companion-toggle { align-items: flex-start; }
+.today-panel .today-toggle-text { min-width: 0; overflow-wrap: anywhere; }
+.today-panel .today-toggle-text span { color: var(--today-muted); }
+.today-panel .today-person-chip { min-width: 0; max-width: 100%; }
+.today-panel .today-chip-text { overflow-wrap: anywhere; }
+.today-panel .today-editor-actions,
+.today-panel .today-editor-actions-left,
+.today-panel .today-editor-actions-right { flex-wrap: wrap; gap: 8px; }
+.today-panel .today-editor-actions { border-top: 1px solid var(--today-line-soft); padding-top: 16px; }
+.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery),
+.today-panel :is(.today-conflict-panel, .today-conflict) {
+  border: 1px solid color-mix(in srgb, var(--today-danger) 46%, var(--today-line-soft));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--today-danger) 7%, var(--today-lift));
+  padding: 13px;
+  color: var(--t-hi);
+  font-size: 13px;
+  line-height: 1.65;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) p,
+.today-panel :is(.today-conflict-panel, .today-conflict) p { margin: 0 0 8px; }
+.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) p { flex: 1 1 240px; margin: 0; }
+.today-panel :is(.today-conflict-panel, .today-conflict) pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 180px; overflow-y: auto; }
+.today-panel :is(.today-conflict-panel, .today-conflict) button { margin-block-start: 6px; margin-inline-end: 6px; max-width: 100%; white-space: normal; }
+.today-panel .today-loading-bar { margin: 0; font-size: 13px; color: var(--today-muted); }
+.today-panel :is(button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--studio-accent-ink);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+@media (min-width: 1280px) {
+  .today-panel .today-workspace-body { grid-template-columns: min(var(--today-list-width, 356px), calc(100% - 380px)) 12px minmax(0, 1fr); }
+}
+
+@media (max-width: 1200px) {
+  .today-panel .today-workspace-header { flex-wrap: wrap; gap: 12px; }
+  .today-panel .today-header-actions { justify-content: flex-start; }
+  .today-panel .today-workspace-body,
+  .today-panel .today-workspace-body.is-detail-open { grid-template-columns: min(var(--today-list-width, 314px), calc(100% - 360px)) 12px minmax(0, 1fr); gap: 16px; }
+  .today-panel .today-editor-card { padding: 20px; }
+  .today-panel .today-attrs-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 列表 | 编辑器之间的可拖动分隔线（≥961px）。平时只有一条细线，
+   悬停、聚焦或拖动时才显色，不抢内容注意力。 */
+.today-panel .today-split {
+  grid-column: 2;
+  align-self: stretch;
+  position: relative;
+  width: 12px;
+  min-width: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.today-panel .today-split::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  border-radius: 1px;
+  /* 静息态也要看得见：这是用户唯一的拖拽提示，不能淡到几乎消失。
+     深色主题里半透明发丝线会被面板底色再压暗，所以这里用高光色、足够高的不透明度。 */
+  background: color-mix(in srgb, var(--t-hi, var(--studio-line)) 48%, transparent);
+  transition: background-color .15s ease;
+}
+.today-panel .today-split:hover::after,
+.today-panel .today-split:focus-visible::after { background: color-mix(in srgb, var(--studio-accent) 62%, transparent); }
+.today-panel .today-split:focus-visible::after { background: var(--studio-accent-ink); }
+:root.today-splitting { cursor: col-resize; user-select: none; }
+:root.today-splitting .today-panel .today-split::after { background: var(--studio-accent-ink); }
+
+@media (max-width: 960px) {
+  #app.today-open .today-panel {
+    padding: max(18px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    gap: 16px;
+  }
+  .today-panel .today-workspace-body,
+  .today-panel .today-workspace-body.is-detail-open { grid-template-columns: minmax(0, 1fr); flex: 1 1 0; gap: 0; }
+  .today-panel .today-split { display: none; }
+  .today-panel .today-notes-editor-pane { display: none; }
+  .today-panel .today-workspace-body.is-detail-open .today-notes-sidebar { display: none; }
+  .today-panel .today-workspace-body.is-detail-open .today-notes-editor-pane { display: block; }
+  .today-panel .today-back-to-list { display: inline-flex; align-items: center; min-height: 40px; }
+  .today-panel .today-notes-sidebar { max-height: none; }
+  .today-panel .today-attrs-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .today-panel .today-filter-tabs { gap: 6px; }
+  .today-panel .today-filter-tab { padding-inline: 11px; }
+  .today-panel :is(.today-list-tools, .today-search-sort) { flex-wrap: nowrap; }
+  .today-panel .today-search-field { flex: 1 1 auto; }
+  .today-panel :is(.today-list-tools, .today-search-sort) select { flex: 0 1 140px; }
+  .today-panel .today-entry-actions { padding-inline-start: 42px; }
+}
+
+@media (max-width: 520px) {
+  .today-panel .today-workspace-sub { font-size: 12px; }
+  .today-panel .today-header-actions { width: 100%; gap: 6px; }
+  .today-panel .today-header-actions button { padding-inline: 10px; font-size: 12px; }
+  .today-panel .today-filter-tab { flex: 1 1 auto; padding-inline: 7px; }
+  .today-panel :is(.today-task-filter, [data-action="task-filter"]) { min-height: 36px; }
+  .today-panel .today-notes-sidebar { padding: 12px; gap: 12px; }
+  .today-panel :is(.today-list-tools, .today-search-sort) { flex-wrap: wrap; }
+  .today-panel :is(.today-list-tools, .today-search-sort) select { flex: 1 1 120px; }
+  .today-panel .today-search-field { flex-basis: 100%; }
+  .today-panel .today-attrs-row { grid-template-columns: minmax(0, 1fr); }
+  .today-panel .today-editor-card { padding: 16px; }
+  .today-panel input.today-input-seamless-title { font-size: 16px; }
+  .today-panel .today-textarea-seamless-body { min-height: 160px; }
+  .today-panel :is(.today-list-tools, .today-search-sort) input,
+  .today-panel .today-quick-add textarea,
+  .today-panel .today-editor-card input,
+  .today-panel .today-editor-card textarea,
+  .today-panel .today-editor-card select { font-size: 16px; }
+  .today-panel .today-editor-topbar { align-items: flex-start; }
+  .today-panel .today-editor-status { flex-basis: 100%; }
+  .today-panel .today-editor-actions-right { flex: 1 1 100%; }
+  .today-panel .today-editor-actions-right > button { flex: 1 1 auto; }
+  .today-panel .today-action-btn { min-height: 36px; }
+}
+
+/* 缩短视口时允许栏内完整滚动，保留返回与恢复入口。 */
+@media (max-height: 600px) {
+  #app.today-open .today-panel { padding-top: max(12px, env(safe-area-inset-top)); gap: 12px; }
+  .today-panel .today-workspace-sub { display: none; }
+  .today-panel .today-workspace-header { gap: 8px; }
+  .today-panel .today-notes-list { flex-basis: 160px; min-height: 160px; }
+  .today-panel .today-textarea-seamless-body { min-height: 110px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .today-panel *, .today-panel *::before, .today-panel *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+@media (forced-colors: active) {
+  .today-panel .today-filter-tab.is-active,
+  .today-panel :is(.today-task-filter, [data-action="task-filter"]).is-active,
+  .today-panel .today-notes-list .today-entry.is-selected { outline: 1px solid Highlight; outline-offset: -1px; }
+  .today-panel .today-custom-check { forced-color-adjust: none; background: Canvas; border-color: ButtonText; }
+  .today-panel .today-entry-checkbox-wrap input:checked + .today-custom-check { background: Highlight; border-color: Highlight; }
+  .today-panel .today-entry-checkbox-wrap input:checked + .today-custom-check::after { border-color: HighlightText; }
+}
+
+/* 装饰复选框不截获真实 input 的点击。 */
+.today-panel .today-custom-check { pointer-events: none; }
+.today-panel .today-editor-empty {
+  min-height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 16px;
+  padding: 36px;
+  color: var(--today-muted);
+}
+.today-panel .today-editor-empty h2 { margin: 0; color: var(--t-hi); font: 500 18px/1.45 'Songti SC', 'Fraunces', serif; letter-spacing: .02em; }
+.today-panel .today-editor-empty p { margin: 0; max-width: 46ch; font-size: 14px; line-height: 1.85; }
+.today-panel .is-task-editor .today-textarea-seamless-body { min-height: 96px; max-height: 36dvh; }
+.today-panel details.today-companion-box { border: 0; border-top: 1px solid var(--today-line-soft); padding: 14px 0 0; }
+.today-panel details.today-companion-box summary { color: var(--today-muted); font-size: 13px; cursor: pointer; line-height: 1.65; padding: 6px 2px; }
+.today-panel details.today-companion-box[open] summary { margin-bottom: 12px; color: var(--t-hi); }
+.today-panel details.today-companion-box > [data-action="revoke"] { margin-bottom: 12px; }
+/* 重复规则是整条事项的属性；星期选择保持真实复选框与可见焦点。 */
+.today-panel .today-repeat-weekdays {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--today-line-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.today-panel .today-repeat-weekdays[hidden] { display: none; }
+.today-panel .today-repeat-weekdays legend { padding: 0 8px 0 0; color: var(--today-muted); font-size: 12px; line-height: 1.65; }
+.today-panel .today-repeat-weekdays label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 5px 10px;
+  border: 1px solid var(--today-line-soft);
+  border-radius: 10px;
+  color: var(--t-mid);
+  cursor: pointer;
+  font-size: 13px;
+}
+.today-panel .today-repeat-weekdays label:has(input:checked) { background: color-mix(in srgb, var(--studio-accent) 12%, var(--today-lift)); border-color: var(--studio-accent-ink); color: var(--t-hi); }
+.today-panel .today-repeat-weekdays label:has(input:focus-visible) { outline: 2px solid var(--studio-accent-ink); outline-offset: 3px; }
+.today-panel .today-repeat-weekdays input[type="checkbox"] { appearance: auto; position: static; opacity: 1; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--studio-accent-ink); }
+.today-panel .today-repeat-hint { grid-column: 1 / -1; margin: 0; color: var(--today-muted); font-size: 12px; line-height: 1.75; }
+@media (max-width: 520px) {
+  .today-panel .today-editor-empty { padding: 22px; }
+  .today-panel .is-task-editor .today-textarea-seamless-body { min-height: 88px; }
+}
+
+/* ==========================================================================
+   暖化表面层
+   conversations.css 里的通用 pill / chip / badge 仍带冷灰底；
+   这里只统一表面与边框的暖度，交互语义色（选中/主按钮）仍用 --studio-accent。
+   ========================================================================== */
+.today-panel .today-meta-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, hsl(34 45% 60% / .12), var(--glass-1));
+  color: var(--today-muted);
+}
+.today-panel .today-date-badge { color: var(--today-muted); font-variant-numeric: tabular-nums; }
+.today-panel .today-time-badge { color: color-mix(in srgb, var(--t-hi) 90%, transparent); }
+.today-panel .today-repeat-badge { color: var(--studio-accent-ink); }
+.today-panel .today-custom-check { background: var(--today-field-bg); }
+.today-panel .today-entry-checkbox-wrap:hover .today-custom-check { border-color: var(--studio-accent-ink); }
+.today-panel .today-person-chip {
+  background: var(--today-field-bg);
+  border-color: var(--today-line-soft);
+}
+.today-panel .today-icon-btn:hover { background: var(--today-glass); }
+.today-panel .today-pill-btn {
+  border: 1px solid color-mix(in srgb, var(--studio-accent) 26%, var(--today-line-soft));
+}
+.today-panel .today-strip-picker-wrap input[type="date"] { color: var(--today-muted); }
+.today-panel .today-btn-sub {
+  border: 1px solid var(--today-line-soft);
+  background: var(--today-field-bg);
+}
+.today-panel .today-error-banner,
+.today-panel .today-load-error { border-radius: 10px; }
+
+/* 时间线辅助节点默认不显示，由需要它的主题在 overrides 里打开。 */
+.today-timeline-time, .today-timeline-heading, .today-now { display: none; }
