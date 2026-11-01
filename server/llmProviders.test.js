@@ -38,7 +38,7 @@ test('legacy llm 三元组自动迁移为第一个 provider 并成为使用中�
   const active = await getActiveModel();
   assert.deepEqual(active, { providerId: 'legacy', model: 'deepseek-v4-flash' });
   const mode = statSync(join(dir, 'config.json')).mode & 0o777;
-  assert.equal(mode, 0o600);
+  if (process.platform !== 'win32') assert.equal(mode, 0o600); // POSIX 权限位,Windows NTFS 固定 0o666
 });
 
 test('resolve 链：activeModel 生效；显式 endpoint 覆盖一切', async t => {
@@ -733,7 +733,7 @@ test('故障切换策略：缺省关闭、保存两个以内启用目标并保�
   const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   assert.deepEqual(raw.modelFailover, saved);
   assert.equal(typeof raw.llm, 'object', 'legacy llm 键仍保留');
-  assert.equal(statSync(join(dir, 'config.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(statSync(join(dir, 'config.json')).mode & 0o777, 0o600); // POSIX 权限位
 
   // 只有显式 true 才启用；字符串/缺省都回到关闭。
   assert.equal((await saveModelFailoverPolicy({ enabled: 'yes', targets: [] })).enabled, false);

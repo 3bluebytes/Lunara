@@ -64,7 +64,9 @@ function harness({ memories = {}, legacyHosts = [], resolveVoiceProfile = null, 
       mkdirSync(join(personaRoot, id), { recursive: true });
       writeFileSync(join(personaRoot, id, 'persona.md'), text);
     },
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => { registry.close();
+      // Windows 无法删除仍被打开的 SQLite 文件，先关库再清目录。
+      rmSync(dir, { recursive: true, force: true }); },
   };
 }
 

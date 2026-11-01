@@ -13,11 +13,13 @@ import test from 'node:test';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MemoryService } from './MemoryService.js';
 import { TasteSchemaService, stationMemoryTarget, collectStationTasteSchemas } from './TasteSchemaService.js';
 import { revokeMemory } from './memoryProvenance.js';
 
-const repoRoot = resolve(new URL('.', import.meta.url).pathname, '..', '..');
+// Windows 下 new URL().pathname 返回 "/D:/..."，path.resolve 会解析出错误盘符路径；fileURLToPath 才是正确写法。
+const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
 const repoPrompt = resolve(repoRoot, 'prompts', 'taste-schema.md');
 
 const workdir = mkdtempSync(resolve(tmpdir(), 'lunara-taste-schema-test-'));

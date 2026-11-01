@@ -25,6 +25,8 @@ async function withService(run) {
   try {
     return await run(service);
   } finally {
+    // Windows 无法删除仍被打开的 SQLite 文件，必须先关库再清目录。
+    await service.shutdown();
     if (previous === undefined) delete process.env.LUNARA_DB_PATH;
     else process.env.LUNARA_DB_PATH = previous;
     rmSync(dir, { recursive: true, force: true });

@@ -1,5 +1,6 @@
+import { statSync } from 'node:fs';
 import { access, copyFile, mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { resolveDataRoot, resolvePackageRoot } from './runtimePaths.js';
 
 /**
@@ -50,7 +51,11 @@ export async function ensureUserDataFiles({
       await copyFile(template, target);
       created.push(name);
     } catch (error) {
-      if (error?.code !== 'ENOENT') {
+      // Windows 没有 ENOTDIR：路径分量被普通文件占位时 copyFile 同样报 ENOENT。
+      // 用「模板目录是否真的是目录」区分「模板缺失（容忍）」与「路径被堵死（告警）」。
+      const templateDirBlocked = error?.code === 'ENOENT'
+        && statSync(dirname(template), { throwIfNoEntry: false })?.isDirectory() === false;
+      if (error?.code !== 'ENOENT' || templateDirBlocked) {
         logger?.warn?.(`[user-data] could not create user/${name} from its template (${error?.code || 'error'})`);
       }
     }

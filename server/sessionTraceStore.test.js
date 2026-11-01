@@ -176,10 +176,13 @@ test('path-like identities cannot escape root and all managed paths are private'
   assert.ok(file);
   assert.equal((await rows(file))[0].sessionId, id);
   assert.deepEqual(await readdir(f.temp), ['sessions']);
-  for (const dir of [f.root, path.dirname(path.dirname(file)), path.dirname(file)]) {
-    assert.equal((await lstat(dir)).mode & 0o777, 0o700);
+  // POSIX 权限位：Windows/NTFS 不实现 0o700/0o600 语义（固定报 0o666），跳过权限位断言但保留路径逃逸防护验证。
+  if (process.platform !== 'win32') {
+    for (const dir of [f.root, path.dirname(path.dirname(file)), path.dirname(file)]) {
+      assert.equal((await lstat(dir)).mode & 0o777, 0o700);
+    }
+    assert.equal((await lstat(file)).mode & 0o777, 0o600);
   }
-  assert.equal((await lstat(file)).mode & 0o777, 0o600);
 });
 
 test('sanitization removes nested credentials, URLs, raw payloads and exception details, preserving token usage', async t => {
@@ -430,7 +433,7 @@ test('delete works in a fresh instance without resolver metadata and preserves o
   await assert.rejects(lstat(file), { code: 'ENOENT' });
 });
 
-test('cleanup failures are reported safely and the deletion tombstone remains effective', async t => {
+test('cleanup failures are reported safely and the deletion tombstone remains effective', { skip: process.platform === 'win32' ? '依赖 POSIX「rename 打开中的目录」语义，Windows 上目录被句柄锁定会 EPERM' : false }, async t => {
   const f = await fixture(t);
   f.session('one');
   f.store.record({ sessionId: 'one' }, { type: 'event' });

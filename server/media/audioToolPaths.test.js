@@ -45,7 +45,7 @@ test('empty-string env values are treated as unset, not as candidates', () => {
   assert.equal(resolved.ffprobePath, null);
 });
 
-test('runnable tool resolution skips a present but unexecutable binary and tries PATH fallback', async () => {
+test('runnable tool resolution skips a present but unexecutable binary and tries PATH fallback', { skip: process.platform === 'win32' ? '依赖 shebang 脚本与 exec 位语义，Windows 不适用' : false }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'lunara-audio-tools-'));
   const broken = join(dir, 'wrong-arch');
   const working = join(dir, 'working-tool');

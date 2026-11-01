@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { resolve } from 'node:path';
 import { ensureElectronInstalled, inspectElectronInstall } from './ensure-electron.mjs';
 
+// 注入的假路径集合必须经过与实现相同的 path.resolve：Windows 会把 '/repo/...' 解析为带盘符的绝对路径。
+const p = (...parts) => resolve(...parts);
+
 test('inspect reports a complete install only when path.txt target exists', () => {
-  const files = new Set(['/repo/node_modules/electron/path.txt', '/repo/node_modules/electron/dist/Electron.app']);
+  const files = new Set([p('/repo/node_modules/electron/path.txt'), p('/repo/node_modules/electron/dist/Electron.app')]);
   const result = inspectElectronInstall({
     root: '/repo',
     fileExists: path => files.has(path),
     readText: () => 'Electron.app\n',
   });
   assert.equal(result.ready, true);
-  assert.equal(result.binaryPath, '/repo/node_modules/electron/dist/Electron.app');
+  assert.equal(result.binaryPath, p('/repo/node_modules/electron/dist/Electron.app'));
 });
 
 test('ensure invokes the package installer once and verifies the result', async () => {
@@ -24,7 +28,7 @@ test('ensure invokes the package installer once and verifies the result', async 
       : { ready: false, reason: 'path.txt missing' },
     runInstaller: async path => {
       calls += 1;
-      assert.equal(path, '/repo/node_modules/electron/install.js');
+      assert.equal(path, p('/repo/node_modules/electron/install.js'));
       installed = true;
     },
   });

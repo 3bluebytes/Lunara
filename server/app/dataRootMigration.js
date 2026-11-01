@@ -282,6 +282,10 @@ export function runMigration({
     const copyStats = validateCopiedDatabase(join(backupDir, name), sourceStats || {});
     if (attempt.level === 'none') degraded = true;
     databases.push({ name, tables: copyStats.tables.length, rows: copyStats.rows, sourceLevel: attempt.level });
+    // 用完即关：迁移后源目录要留给用户手动清理，Windows 上句柄不关会一直锁住源库文件。
+    if (attempt.db) {
+      try { attempt.db.close(); } catch { /* already closed */ }
+    }
   }
 
   // ---- 第 4 步：晋升 data/ + 复制 user/ ----

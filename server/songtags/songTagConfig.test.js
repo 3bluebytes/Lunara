@@ -18,7 +18,7 @@ function makeConfigDir(t) {
   return dir;
 }
 
-test('auto 开关持久化到 song-tag.json（0600）；端点字段被忽略', async t => {
+test('auto 开关持久化到 song-tag.json（0600）；端点字段被忽略', { skip: process.platform === 'win32' ? 'POSIX 文件权限语义,Windows 不适用' : false }, async t => {
   const dir = makeConfigDir(t);
   const { writeFileSync } = await import('node:fs');
   // 旧版文件带端点字段：读取时必须忽略，只保留 auto 语义。

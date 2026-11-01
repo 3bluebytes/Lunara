@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
@@ -173,7 +173,8 @@ export function openBrowser(url, log = console) {
 
 async function importServerModule(modulePath, log) {
   try {
-    return await import(resolve(PACKAGE_ROOT, modulePath));
+    // Windows 下绝对路径必须转 file:// URL，否则 `D:\...` 被当成 `d:` 协议（ERR_UNSUPPORTED_ESM_URL_SCHEME）。
+    return await import(pathToFileURL(resolve(PACKAGE_ROOT, modulePath)).href);
   } catch (error) {
     const hint = nativeModuleHint(error);
     if (hint) {

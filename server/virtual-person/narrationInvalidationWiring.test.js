@@ -10,9 +10,19 @@ process.chdir(mkdtempSync(resolve(tmpdir(), 'lunara-narration-stale-wiring-')));
 
 test('a saved memory invalidates prepared narrations and the candidate pool for that conversation', async t => {
   const staleCalls = [], poolCalls = [];
+  // 隔离：不固定 LUNARA_DB_PATH 时 MemoryService 会落到真实数据根 ~/.lunara。
+  const previousDbPath = process.env.LUNARA_DB_PATH;
+  process.env.LUNARA_DB_PATH = resolve(process.cwd(), 'memory.db');
+  t.after(() => { process.env.LUNARA_DB_PATH = previousDbPath; });
   const memory = new MemoryService('station');
   await memory.initialize();
-  t.after(() => { memory.shutdown(); rmSync(process.cwd(), { recursive: true, force: true }); });
+  const workdir = process.cwd();
+  t.after(() => { memory.shutdown();
+    // Windows 不能删除仍被打开的 SQLite 文件与进程当前工作目录，先关库、切走再清。
+    composition.conversationStore?.close?.();
+    composition.registry?.close?.();
+    process.chdir(tmpdir());
+    rmSync(workdir, { recursive: true, force: true }); });
   const composition = createVirtualPersonRuntimeComposition({
     chat: async () => ({ message: { role: 'assistant', content: 'ok' } }),
     synthesize: async () => null,

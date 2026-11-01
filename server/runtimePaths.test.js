@@ -139,7 +139,8 @@ test('相对 env 值改锚数据根解析并告警实际路径', () => {
       assert.equal(resolveDatabasePath(), resolve('/tmp/lunara-home', 'data/state.db'));
     });
     assert.equal(warnings.length, 1, `应有一条相对路径告警，实际: ${JSON.stringify(warnings)}`);
-    assert.match(warnings[0], /data\/state\.db/);
+    // Windows 上 path.resolve 产生反斜杠分隔，正则需兼容两种分隔符。
+    assert.match(warnings[0], /data[\\/]+state\.db/);
   });
 });
 
@@ -172,7 +173,7 @@ test('相对 LUNARA_RADIOHOST_DIR 锚数据根解析并告警（与每路径 res
       assert.equal(resolvePersonaRoot(), resolve('/tmp/lunara-home', 'user/radiohost'));
     });
     assert.equal(warnings.length, 1, `应有一条相对路径告警，实际: ${JSON.stringify(warnings)}`);
-    assert.match(warnings[0], /user\/radiohost/);
+    assert.match(warnings[0], /user[\\/]+radiohost/);
   });
 });
 

@@ -10,7 +10,7 @@
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { getLLMConfig } from '../server/llmConfig.js';
 import * as qq from '../server/qq.js';
 
@@ -59,15 +59,21 @@ if (!existsSync(BIN_PATH)) {
 
 // ===== 2. Electron-installed ABI =====
 header('Electron ABI 对齐');
+// Windows 的 cmd.exe 不支持 `VAR=1 cmd` 环境变量前缀语法，改用 spawnSync + 显式 env；
+// 且 Windows 下 .bin/electron 是 .cmd shim，spawnSync 无法直接执行，所以直接指向 dist 里的二进制。
+const electronBin = resolve(ROOT, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
+const electronProbe = spawnSync(
+  electronBin,
+  ['-e', 'process.stdout.write(process.versions.modules)'],
+  { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
+);
 try {
-  const electronAbi = execSync(
-    `ELECTRON_RUN_AS_NODE=1 ${resolve(ROOT, 'node_modules/.bin/electron')} -e "process.stdout.write(process.versions.modules)"`,
-    { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
-  ).trim();
+  if (electronProbe.status !== 0 || !electronProbe.stdout?.trim()) throw new Error(electronProbe.stderr?.trim() || `exit=${electronProbe.status}`);
+  const electronAbi = electronProbe.stdout.trim();
   ok(`Electron 当前 ABI = ${electronAbi}`);
   hint(`prestart 用 \`electron-rebuild -f\` 自动检测，无需 hardcode --force-abi`);
 } catch (e) {
-  warn('Electron 未安装或读取 ABI 失败：' + e.message.split('\n')[0]);
+  warn('Electron 未安装或读取 ABI 失败：' + String(e.message).split('\n')[0]);
 }
 
 // ===== 3. LLM endpoint =====

@@ -12,15 +12,29 @@ import { retrieveExpressionPreferences } from '../program/narrationContext.js';
 process.chdir(mkdtempSync(resolve(tmpdir(), 'lunara-expression-pref-')));
 
 test('an expression correction persists with its quote and reaches narration retrieval until revoked', async t => {
-  const dbPath = resolve(process.cwd(), 'state.db');
+  const workdir = process.cwd();
+  // 隔离：MemoryService 不传 dbPath 时会落到真实数据根 ~/.lunara，
+  // 首次运行写入的撤销记录会永久拦截后续重跑（writeKey 是确定性的）。
+  const previousDbPath = process.env.LUNARA_DB_PATH;
+  process.env.LUNARA_DB_PATH = resolve(workdir, 'memory.db');
+  const dbPath = resolve(workdir, 'state.db');
   const registry = new VirtualPersonRegistry({ dbPath }).initialize();
   const conversationStore = new ConversationStore({ dbPath }).initialize();
-  t.after(() => { conversationStore.close(); registry.close(); rmSync(process.cwd(), { recursive: true, force: true }); });
+  // 注意：node:test 的 after hook 按注册顺序（FIFO）执行，不是 LIFO！
+  // 所以清理必须合并进单个 hook，按依赖顺序执行：关库 → 切走 → 删目录。
+  // （在 POSIX 上 rm 打开中的文件也能成功，所以顺序错误从不在 mac 上暴露。）
+  let memory;
+  t.after(async () => {
+    process.env.LUNARA_DB_PATH = previousDbPath;
+    await memory?.shutdown?.();
+    conversationStore.close(); registry.close();
+    process.chdir(tmpdir());
+    rmSync(workdir, { recursive: true, force: true });
+  });
   registry.createRadiohost({ id: 'a', displayName: 'A', voiceProfileId: 'voice-a' });
   const person = registry.get('a');
-  const memory = new MemoryService(person.memoryNamespace);
+  memory = new MemoryService(person.memoryNamespace);
   await memory.initialize();
-  t.after(() => memory.shutdown());
 
   const changed = [];
   const registered = {};

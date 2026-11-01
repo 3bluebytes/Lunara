@@ -25,7 +25,7 @@ function makeConfigDir(t) {
 
 const endpointOf = (id = 'custom') => readCustomTtsConfig().endpoints.find(endpoint => endpoint.id === id);
 
-test('保存与读取往返；apiKey 只写不读出（对外只有 hasKey）', t => {
+test('保存与读取往返；apiKey 只写不读出（对外只有 hasKey）', { skip: process.platform === 'win32' ? 'POSIX 文件权限语义,Windows 不适用' : false }, t => {
   const dir = makeConfigDir(t);
   saveCustomTtsConfig({ endpoint: { id: 'custom', baseUrl: 'https://tts.example/v1', apiKey: 'sk-secret', model: 'tts-1' } });
   const endpoint = endpointOf();

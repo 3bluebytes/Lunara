@@ -1,0 +1,21 @@
+# 跨平台一致性:仓库统一 LF(源码/CSS/JSON 的测试断言依赖 \n),
+# Windows 上 git autocrlf=true 会把工作区转成 CRLF,导致 CSS 文本断言失败。
+* text=auto eol=lf
+
+# 二进制文件禁止任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.node binary
+*.7z binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.db binary

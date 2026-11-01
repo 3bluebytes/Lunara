@@ -25,7 +25,7 @@ async function withConfigDir(fn) {
   }
 }
 
-test('自定义配置目录覆盖默认路径，写入 nested llm 配置且权限为 0600', async () => {
+test('自定义配置目录覆盖默认路径，写入 nested llm 配置且权限为 0600', { skip: process.platform === 'win32' ? 'POSIX 文件权限语义,Windows 不适用' : false }, async () => {
   await withConfigDir(async dir => {
     const saved = await setLLMConfig({
       baseUrl: 'https://example.test/v1/',
@@ -104,7 +104,7 @@ test('LUNARA_CONFIG_DIR 优先于 legacy CLAUDIO_CONFIG_DIR', async () => {
   }
 });
 
-test('新配置缺失时迁移 legacy 文件，保持 0600 且不删除旧文件', async () => {
+test('新配置缺失时迁移 legacy 文件，保持 0600 且不删除旧文件', { skip: process.platform === 'win32' ? 'POSIX 文件权限语义,Windows 不适用' : false }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'lunara-config-migrate-'));
   const current = join(root, 'current');
   const legacy = join(root, 'legacy');

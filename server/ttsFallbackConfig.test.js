@@ -33,7 +33,7 @@ test('开启免费声音必须带知情确认，否则拒绝且不写文件', ()
   assert.equal(config.readTtsFallbackConfig().freeVoicesEnabled, false);
 }));
 
-test('确认后开启：记下确认时间，代读默认开、目标默认晓晓，文件 0600', () => withTempDir(dir => {
+test('确认后开启：记下确认时间，代读默认开、目标默认晓晓，文件 0600', { skip: process.platform === 'win32' ? 'POSIX 文件权限语义,Windows 不适用' : false }, () => withTempDir(dir => {
   const saved = config.saveTtsFallbackConfig({ freeVoicesEnabled: true, consent: true }, { now: () => 1761523200000 });
   assert.equal(saved.freeVoicesEnabled, true);
   assert.equal(saved.consentAt, '2025-10-27T00:00:00.000Z');

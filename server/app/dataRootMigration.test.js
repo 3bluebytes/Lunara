@@ -272,7 +272,7 @@ test('dry-run：目标零写入、报告含检测结果', () => {
   });
 });
 
-test('dry-run 对 0o555 只读源仍成功且源文件 mtime 集合不变（不假设 djhosts 信号检出）', () => {
+test("dry-run 对 0o555 只读源仍成功且源文件 mtime 集合不变（不假设 djhosts 信号检出）", { skip: process.platform === 'win32' ? '依赖 chmod 0o555 目录级只读语义，Windows/NTFS 不支持' : false }, () => {
   withDataRoot(targetRoot => {
     const source = uniqueRoot('src');
     try {
@@ -320,7 +320,7 @@ test('第二层回退：库文件只读（目录可写）→ readonly 打开 + �
   });
 });
 
-test('第三层回退：目录级只读 → 以副本为基准 status source-readonly-degraded 且校验通过', () => {
+test("第三层回退：目录级只读 → 以副本为基准 status source-readonly-degraded 且校验通过", { skip: process.platform === 'win32' ? '依赖 chmod 0o555 目录级只读语义，Windows/NTFS 不支持' : false }, () => {
   withDataRoot(targetRoot => {
     const source = uniqueRoot('src');
     try {

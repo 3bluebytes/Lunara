@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,15 +28,25 @@ function harness(dbPath, chat) {
     retrieveMemories: input => retrievePersonMemories(memory, conversationStore, input),
     logger: { error() {}, warn() {} },
   }).initialize();
-  return { registry, conversationStore, memory, tools, runtime,
-    close() { runtime.shutdown(); memory.store.close(); } };
+  const h = { registry, conversationStore, memory, tools, runtime,
+    // 幂等：测试可能在用例中途显式 close 后又把 close 挂到 after hook 上。
+    close() { if (h._closed) return; h._closed = true;
+      runtime.shutdown(); memory.store.close();
+      // Windows 下必须关掉所有 SQLite 句柄才能删除临时目录（POSIX 无此限制）。
+      conversationStore.close(); registry.close(); } };
+  return h;
 }
 
+// node:test 的 after hook 按注册顺序（FIFO）执行：rm 钩子若先注册会先于 close 钩子运行，
+// 在 Windows 上因文件仍被打开而 EPERM。改为收集目录，在文件级 after（所有用例结束后、
+// 全部句柄已释放）统一清理。
+const tempDirs = [];
 function temporary(t) {
   const dir = mkdtempSync(join(tmpdir(), 'lunara-relationships-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  tempDirs.push(dir);
   return join(dir, 'state.db');
 }
+after(() => { for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true }); });
 
 function createPeople(h) {
   for (const id of ['a', 'b', 'c']) h.registry.createRadiohost({ id, displayName: id.toUpperCase(), voiceProfileId: `voice-${id}` });
