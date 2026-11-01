@@ -43,8 +43,37 @@
   <link rel="stylesheet" href="/interactions.css?v=2" />
 </head>
 <body>
-  <!-- macOS hiddenInset 拖动条：顶部一条 28px 透明区，留给 traffic lights + 拖动 -->
-  <div id="drag-bar" aria-hidden="true"></div>
+  <!-- 无边框窗口拖动条：顶部一条透明区，留给拖动；Windows 桌面壳在内右侧放自绘窗控 -->
+  <div id="drag-bar">
+    <div id="win-controls" role="toolbar" aria-label="窗口控制" hidden>
+      <button id="win-min" type="button" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+      </button>
+      <button id="win-max" type="button" title="最大化 / 还原" aria-label="最大化或还原">
+        <svg class="glyph-max" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        <svg class="glyph-restore" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="3.5" width="7" height="7" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M3.5 3.5v-2h7v7h-2" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+      </button>
+      <button id="win-close" type="button" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 1.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+      </button>
+    </div>
+  </div>
+  <script>
+    // 仅 Windows 桌面壳（frame:false）启用自绘窗控；浏览器 / macOS 不渲染。
+    // preload（lunaraDesktop）先于页面脚本执行，这里可直接读 platform。
+    (function () {
+      if (window.lunaraDesktop?.platform !== 'win32') return;
+      document.documentElement.classList.add('electron-win');
+      const bar = document.getElementById('win-controls');
+      const api = window.lunaraDesktop.win;
+      if (!bar || !api) return;
+      bar.hidden = false;
+      document.getElementById('win-min')?.addEventListener('click', () => api.minimize());
+      document.getElementById('win-max')?.addEventListener('click', () => api.toggleMaximize());
+      document.getElementById('win-close')?.addEventListener('click', () => api.close());
+      api.onMaximizeChange?.(isMax => document.documentElement.classList.toggle('is-maximized', !!isMax));
+    })();
+  </script>
 
   <div id="source-failure-warnings" class="source-failure-warnings" role="status" aria-live="polite" aria-label="音乐源提醒" hidden></div>
 

@@ -259,6 +259,37 @@ html, body {
   app-region: drag;
   pointer-events: auto;
 }
+
+/* Windows 桌面壳（frame:false）的自绘窗控：与系统窗控同布局（右上三键），配色随主题暖白。 */
+html.electron-win #drag-bar { height: 34px; }
+#win-controls {
+  position: absolute;
+  top: 0; right: 0;
+  height: 100%;
+  display: flex;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+html:not(.electron-win) #win-controls { display: none; }
+#win-controls button {
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #e8e4d8;
+  display: grid;
+  place-items: center;
+}
+#win-controls button:hover { background: rgba(255, 255, 255, 0.09); }
+#win-controls button:active { background: rgba(255, 255, 255, 0.16); }
+#win-controls #win-close:hover { background: #e81123; color: #fff; }
+#win-controls svg { width: 12px; height: 12px; }
+/* 最大化 ⇄ 还原图标切换（主进程推送状态，html.is-maximized 拟合） */
+#win-max .glyph-restore { display: none; }
+html.is-maximized #win-max .glyph-max { display: none; }
+html.is-maximized #win-max .glyph-restore { display: block; }
 .no-drag, button, input, textarea, select, a,
 .sb-q-item, .chat-track, .lyric-line {
   -webkit-app-region: no-drag;

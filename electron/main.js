@@ -3,7 +3,9 @@
 
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, nativeTheme, session } from 'electron';
 import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+// Windows 下动态 import() 必须用 file:// URL：
+// `D:\\...` 会被 ESM loader 当成 `d:` 协议报 ERR_UNSUPPORTED_ESM_URL_SCHEME（macOS 的 /posix 路径无此问题）。
+import { pathToFileURL, fileURLToPath } from 'url';
 import { DESKTOP_WINDOW_BOUNDS } from './windowBounds.js';
 import { installElectronShutdown } from './shutdown.js';
 import { acquireSingleInstance } from './singleInstance.js';
@@ -128,6 +130,19 @@ function isAppWindow(event) {
   return url.startsWith(`http://localhost:${PORT}`);
 }
 
+// 自绘窗控（frame:false，Windows）：渲染层的最小化/最大化/关闭经由这条窄通道。
+// 用与托盘通道相同的 isAppWindow 校验，避免任意页面向窗口发指令。
+const WINDOW_CONTROL_CHANNEL = 'lunara:window-control';
+const WINDOW_MAXIMIZED_CHANNEL = 'lunara:window-maximized';
+ipcMain.on(WINDOW_CONTROL_CHANNEL, (event, command) => {
+  if (!isAppWindow(event)) return;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (command === 'minimize') win.minimize();
+  else if (command === 'toggle-maximize') (win.isMaximized() ? win.unmaximize() : win.maximize());
+  else if (command === 'close') win.close();
+});
+
 ipcMain.on(TRAY_STATE_CHANNEL, (event, state) => {
   if (!trayController || !isAppWindow(event)) return;
   trayController.setState(state);
@@ -149,7 +164,7 @@ async function bootOnce() {
   // 导入与启动分开；退出时等启动收尾再释放服务端资源。
   lastBootStage = 'importing server module';
   serverStarting = (async () => {
-    serverModule = await import(resolve(ROOT, 'server/index.js'));
+    serverModule = await import(pathToFileURL(resolve(ROOT, 'server/index.js')).href);
     lastBootStage = 'server module imported';
     if (!quitting) await serverModule.start(PORT);
     lastBootStage = 'server started';
@@ -172,7 +187,16 @@ async function bootOnce() {
   const win = new BrowserWindow({
     ...DESKTOP_WINDOW_BOUNDS,
     center: true,
-    titleBarStyle: 'hiddenInset',
+    // macOS: hiddenInset（红绿灯内嵌）；Windows: hidden + titleBarOverlay ——
+    // hiddenInset 在 Windows 不生效会回落到默认标题栏（上个世纪观感的来源），
+    // 必须 hidden + overlay 才能得到融入主题的无边框窗口（Web 端 #drag-bar 已就绪）。
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' }
+      : {
+          // Windows: 彻底无框 + 自绘窗控（index.html #win-controls）。
+          // 不用 titleBarOverlay：本机 Windows build 26200 上 WCO 按钮在部分窗口状态下不绘制（系统层 bug）。
+          frame: false,
+        }),
     backgroundColor: '#07050c',
     title: 'Lunara',
     icon: APP_ICON,
@@ -184,9 +208,29 @@ async function bootOnce() {
     },
   });
 
+  // Windows: 去掉默认菜单栏（File/Edit/View… 是「上个世纪观感」的另一半）。
+  // 菜单去掉后 DevTools 快捷键会失效，这里补回 F12 / Ctrl+Shift+I。
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const isF12 = input.key === 'F12';
+      const isCtrlShiftI = input.control && input.shift && input.key.toLowerCase() === 'i';
+      if (isF12 || isCtrlShiftI) {
+        event.preventDefault();
+        win.webContents.toggleDevTools();
+      }
+    });
+  }
+
   lastBootStage = 'creating window';
   clearTimeout(bootWatchdog);
   win.loadURL(`http://localhost:${PORT}?_=${Date.now()}`);
+
+  // 最大化状态上行：渲染层用它在最大化 ⇄ 还原之间切换窗控图标。
+  const pushMaximized = () => { if (!win.isDestroyed()) win.webContents.send(WINDOW_MAXIMIZED_CHANNEL, win.isMaximized()); };
+  win.on('maximize', pushMaximized);
+  win.on('unmaximize', pushMaximized);
 
   // 开发时设 LUNARA_DEVTOOLS=1 可开 DevTools。
   if (process.env.LUNARA_DEVTOOLS === '1') {
