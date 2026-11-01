@@ -62,7 +62,8 @@ test('parseCliArgs：--version 与 --help', () => {
 test('applyCliEnv：--data-dir/--port/--host 写入对应 env', () => {
   const env = {};
   applyCliEnv({ dataDir: '/tmp/dr', port: '9090', host: '0.0.0.0' }, env);
-  assert.equal(env.LUNARA_DATA_DIR, '/tmp/dr');
+  // 契约：applyCliEnv 会 resolve 数据目录（Windows 上 '/tmp/dr' → 'D:\tmp\dr'），断言跟随平台语义。
+  assert.equal(env.LUNARA_DATA_DIR, resolve('/tmp/dr'));
   assert.equal(env.PORT, '9090');
   assert.equal(env.LUNARA_HOST, '0.0.0.0');
 });

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { STORAGE_KEYS } from '../core/storageKeys.js';
 import { createNocturneMaterialController } from './nocturneMaterial.js';
 
@@ -69,10 +70,15 @@ test('玻璃只在支持模糊时生效，减少透明度时退回实底；选�
 });
 
 test('切回其他主题无残留：data-material 只被夜场样式读取', async () => {
-  const { execFileSync } = await import('node:child_process');
-  const root = new URL('..', import.meta.url).pathname;
-  const hits = execFileSync('grep', ['-rlF', '--include=*.css', '[data-material=', root], { encoding: 'utf8' })
-    .trim().split('\n').filter(Boolean).map(file => file.slice(root.length));
+  // 原实现 spawn GNU grep（-rlF），Windows 无 grep 且 new URL().pathname 在盘符路径下不合法；
+  // 改为纯 Node 遍历 pwa/ 下的 .css 文件，语义不变：data-material 只允许出现在夜场样式里。
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const { join, sep } = await import('node:path');
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const cssFiles = readdirSync(root, { recursive: true })
+    .map(rel => rel.split(sep).join('/'))
+    .filter(rel => rel.endsWith('.css'));
+  const hits = cssFiles.filter(rel => readFileSync(join(root, rel), 'utf8').includes('[data-material='));
   assert.deepEqual(hits, ['themes/nocturne/overrides.css']);
   const css = await readFile(new URL('../themes/nocturne/overrides.css', import.meta.url), 'utf8');
   for (const line of css.split('\n').filter(l => l.includes('[data-material='))) {
