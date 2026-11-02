@@ -5,11 +5,12 @@
 //
 // - 完全隔离数据根：六个 LUNARA_* env + DOTENV_CONFIG_PATH=/dev/null，绝不写真实 ~/.lunara。
 // - 直接启动 .app 内的可执行文件（不依赖 Finder/launchd），轮询 /api/health 至 ok:true。
+// - 实际执行随包 ffmpeg（-version），架构不对的二进制在这里暴露。
 // - 断言页面 200、数据根生成 state/life 两库与 user/ 模板。
 // - SIGTERM 后 15s 内干净退出。
 // - win32：NSIS 安装后才存在可执行入口，本轮按人工验收清单执行，退出码 2（不静默通过）。
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -62,6 +63,12 @@ const childEnv = {
 };
 
 console.log(`━━━ 打包冒烟: ${appPath}（port=${port}，数据根=${dataRoot}）━━━`);
+// 文件在位不等于能执行：架构不对的二进制会报 bad CPU type。实际跑一次随包 ffmpeg。
+const bundledFfmpeg = join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', 'ffmpeg');
+const ffmpegRun = spawnSync(bundledFfmpeg, ['-version'], { timeout: 10_000, encoding: 'utf8' });
+check('随包 ffmpeg 可在本机执行', ffmpegRun.status === 0,
+  String(ffmpegRun.error?.message || ffmpegRun.stderr || '').slice(0, 200));
+
 const child = spawn(bin, [], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 const bootLog = [];
 child.stdout.on('data', chunk => bootLog.push(String(chunk)));

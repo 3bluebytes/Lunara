@@ -3,13 +3,12 @@
 // 为什么必须是单例：并发去重是 per-store 的内存状态；qq.js、ncm.js 与播放失败
 // 隔离三处必须看到同一张 in-flight 表，否则「同一首歌两个写流」这个问题会原样复现。
 //
-// 工具解析（ffmpeg/ffprobe）走 audioToolPaths 的路径契约：env → 随包二进制 → PATH，
+// 工具解析（ffmpeg）走 audioToolPaths 的路径契约：env → 随包二进制 → PATH，
 // 并实际执行探测；不可用时退化为结构校验，绝不声称做过解码验证。
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ffmpegStaticPath from 'ffmpeg-static';
-import ffprobeStatic from 'ffprobe-static';
 import { resolveRunnableAudioTools } from './audioToolPaths.js';
 import { resolveAudioCacheDir } from '../runtimePaths.js';
 import { createMediaAssetStore } from './mediaAssetStore.js';
@@ -25,8 +24,7 @@ async function audioTools() {
     toolsPromise = resolveRunnableAudioTools({
       env: process.env,
       bundledFfmpegPath: typeof ffmpegStaticPath === 'string' ? ffmpegStaticPath : null,
-      bundledFfprobePath: typeof ffprobeStatic?.path === 'string' ? ffprobeStatic.path : null,
-    }).catch(() => ({ ffmpegPath: null, ffprobePath: null }));
+    }).catch(() => ({ ffmpegPath: null }));
   }
   return toolsPromise;
 }
@@ -39,8 +37,8 @@ export function setMediaAssetTrace(sink) {
 const execFileAsync = promisify(execFile);
 
 async function verifyMediaFile(file, { expectedDurationSeconds = 0 } = {}) {
-  const { ffmpegPath, ffprobePath } = await audioTools();
-  const verifier = createMediaVerifier({ ffmpegPath, ffprobePath, execFileImpl: execFileAsync });
+  const { ffmpegPath } = await audioTools();
+  const verifier = createMediaVerifier({ ffmpegPath, execFileImpl: execFileAsync });
   return verifier(file, { expectedDurationSeconds });
 }
 

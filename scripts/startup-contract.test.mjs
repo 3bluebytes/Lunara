@@ -68,6 +68,19 @@ test('desktop packaging contract: builder config whitelist excludes private runt
   assert.ok(builderConfig.includes('icon.icns') && builderConfig.includes('icon.ico'), '打包配置应引用生成的图标');
 });
 
+test('desktop packaging contract: only a host-runnable ffmpeg ships as the audio tool', async () => {
+  // ffprobe-static 的 darwin/arm64 实际是 x86_64，无 Rosetta 的 Apple Silicon 上跑不起来；
+  // 格式与时长改由随包 ffmpeg 读出，安装包不再携带 ffprobe。
+  const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
+  assert.ok(pkg.dependencies['ffmpeg-static'], 'ffmpeg-static 是随包音频工具');
+  assert.equal(pkg.dependencies['ffprobe-static'], undefined, '不再依赖 ffprobe-static');
+  const builderConfig = await readFile(new URL('electron-builder.yml', root), 'utf8');
+  assert.ok(builderConfig.includes('node_modules/ffmpeg-static/**/*'), 'ffmpeg 必须 asarUnpack 才能执行');
+  assert.ok(!builderConfig.includes('ffprobe'), '打包配置不得再引用 ffprobe');
+  const smoke = await readFile(new URL('scripts/smoke-packaged-app.mjs', root), 'utf8');
+  assert.match(smoke, /ffmpeg-static/, '打包冒烟必须实际执行随包 ffmpeg，不能只查文件存在');
+});
+
 test('desktop packaging contract: publish metadata and LICENSE exist', async () => {
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
   assert.ok(pkg.author, 'author 是打包与发布的必填元数据');

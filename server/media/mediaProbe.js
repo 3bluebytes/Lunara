@@ -2,7 +2,7 @@
 //
 // 「浏览器能不能放」不是完整性证明：本文件把两件事分开：
 // 1. 结构事实（容器魔数、FLAC STREAMINFO 里的真实时长）——不依赖外部工具；
-// 2. 解码事实（ffmpeg 完整解码零错误、ffprobe 探测容器与时长）——有工具才做。
+// 2. 解码事实（ffmpeg 完整解码零错误，再读 ffmpeg 输入信息里的容器与时长）——有工具才做。
 //
 // 失败分类保持稳定、可直接落 trace；不返回 URL、供应商报文或凭据。
 
@@ -108,17 +108,27 @@ export function decodedDurationSeconds(progressOutput) {
   return value;
 }
 
-async function probeWithFfprobe(ffprobePath, file, execFileImpl, timeoutMs) {
+/**
+ * 解析 `ffmpeg -i <file>` 打印到 stderr 的输入信息：格式名取 `Input #0, <names>, from` 的第一个，
+ * 时长取 `Duration: HH:MM:SS.xx`。`Duration: N/A` 或没有输入段时返回 null，不猜。
+ */
+export function parseFfmpegInputInfo(stderr) {
+  const text = String(stderr || '');
+  const input = /^Input #0, (.+?), from '/m.exec(text);
+  const format = input ? input[1].split(',')[0].trim() || null : null;
+  const clock = /^\s*Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)/m.exec(text);
+  const duration = clock ? Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]) : null;
+  return { format, durationSeconds: Number.isFinite(duration) && duration > 0 ? duration : null };
+}
+
+async function probeInputWithFfmpeg(ffmpegPath, file, execFileImpl, timeoutMs) {
+  // 不给输出参数时 ffmpeg 只读容器头并以退出码 1 结束，输入信息在 stderr 里。
   try {
-    const { stdout } = await execFileImpl(ffprobePath, [
-      '-v', 'error', '-show_entries', 'format=format_name,duration', '-of', 'json', file,
-    ], { timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true });
-    const parsed = JSON.parse(String(stdout || '{}'));
-    const format = String(parsed?.format?.format_name || '').split(',')[0] || null;
-    const duration = Number(parsed?.format?.duration);
-    return { format, durationSeconds: Number.isFinite(duration) && duration > 0 ? duration : null };
-  } catch {
-    return { format: null, durationSeconds: null };
+    const result = await execFileImpl(ffmpegPath, ['-hide_banner', '-nostdin', '-i', file],
+      { timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true });
+    return parseFfmpegInputInfo(result?.stderr);
+  } catch (error) {
+    return parseFfmpegInputInfo(error?.stderr);
   }
 }
 
@@ -138,7 +148,6 @@ export function decodeCoverageIsComplete(decodedSeconds, referenceSeconds, {
 
 export function createMediaVerifier({
   ffmpegPath = null,
-  ffprobePath = null,
   execFileImpl = null,
   timeoutMs = 30_000,
   toleranceSeconds = DEFAULT_DURATION_TOLERANCE_SECONDS,
@@ -186,11 +195,9 @@ export function createMediaVerifier({
       // 完整解码顺带给出真实解码时长：MP3 没有校验和，这是判断截断的唯一手段。
       const decoded = decodedDurationSeconds(stdout);
       if (decoded) durationSeconds = decoded;
-      if (ffprobePath) {
-        const probed = await probeWithFfprobe(ffprobePath, file, execFileImpl, timeoutMs);
-        if (probed.format) format = probed.format;
-        if (probed.durationSeconds) durationSeconds = probed.durationSeconds;
-      }
+      const probed = await probeInputWithFfmpeg(ffmpegPath, file, execFileImpl, timeoutMs);
+      if (probed.format) format = probed.format;
+      if (probed.durationSeconds) durationSeconds = probed.durationSeconds;
     }
 
     if (durationLooksTruncated(durationSeconds, expectedDurationSeconds)) {

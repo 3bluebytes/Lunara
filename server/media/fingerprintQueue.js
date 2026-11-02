@@ -106,11 +106,9 @@ export function getFingerprintQueue() {
     tools: async () => {
       const { resolveRunnableAudioTools } = await import('./audioToolPaths.js');
       const ffmpegStaticPath = (await import('ffmpeg-static')).default;
-      const ffprobeStatic = (await import('ffprobe-static')).default;
       return resolveRunnableAudioTools({
         env: process.env,
         bundledFfmpegPath: typeof ffmpegStaticPath === 'string' ? ffmpegStaticPath : null,
-        bundledFfprobePath: typeof ffprobeStatic?.path === 'string' ? ffprobeStatic.path : null,
       });
     },
   });

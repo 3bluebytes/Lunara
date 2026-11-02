@@ -41,7 +41,6 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "ffmpeg-static": "^5.2.0",
-    "ffprobe-static": "^3.1.0",
     "ipaddr.js": "2.2.0",
     "linkedom": "0.18.12",
     "NeteaseCloudMusicApi": "^4.31.0",

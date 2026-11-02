@@ -1,6 +1,8 @@
-// audioToolPaths.js — 共享媒体与音频指纹使用的 ffmpeg/ffprobe 解析契约。
+// audioToolPaths.js — 共享媒体与音频指纹使用的 ffmpeg 解析契约。
 //
-// 路径顺序：显式 env → 随包二进制 → PATH 命令。
+// 路径顺序：显式 env → 随包二进制 → PATH 命令。只解析 ffmpeg：媒体校验需要的容器格式与时长
+// 也由 ffmpeg 读出（见 mediaProbe.js），不再依赖 ffprobe——ffprobe-static 的 darwin/arm64
+// 实际是 x86_64，在没有 Rosetta 的 Apple Silicon 上无法执行。
 // 运行时必须通过 resolveRunnableAudioTool 实际执行探测，不能把存在性当成可执行性；
 // 静态 resolveAudioToolPaths 仅保留给配置/打包路径检查。探测不阻塞主程序启动。
 
@@ -41,33 +43,27 @@ export async function resolveRunnableAudioTool(candidates = [], {
 export async function resolveRunnableAudioTools({
   env = process.env,
   bundledFfmpegPath = null,
-  bundledFfprobePath = null,
   timeoutMs = 3_000,
   execFileImpl = execFileAsync,
 } = {}) {
-  const candidates = (...values) => [...new Set(values
+  const candidates = [env?.LUNARA_FFMPEG_PATH, bundledFfmpegPath, 'ffmpeg']
     .map(value => typeof value === 'string' ? value.trim() : '')
     .filter(Boolean)
-    .map(asarUnpackedPath))];
-  const [ffmpegPath, ffprobePath] = await Promise.all([
-    resolveRunnableAudioTool(candidates(env?.LUNARA_FFMPEG_PATH, bundledFfmpegPath, 'ffmpeg'), { timeoutMs, execFileImpl }),
-    resolveRunnableAudioTool(candidates(env?.LUNARA_FFPROBE_PATH, bundledFfprobePath, 'ffprobe'), { timeoutMs, execFileImpl }),
-  ]);
-  return { ffmpegPath, ffprobePath };
+    .map(asarUnpackedPath);
+  const ffmpegPath = await resolveRunnableAudioTool(candidates, { timeoutMs, execFileImpl });
+  return { ffmpegPath };
 }
 
 /**
  * @param {object} [options]
- * @param {NodeJS.ProcessEnv} [options.env] 读写 LUNARA_FFMPEG_PATH / LUNARA_FFPROBE_PATH
+ * @param {NodeJS.ProcessEnv} [options.env] 读取 LUNARA_FFMPEG_PATH
  * @param {string|null} [options.bundledFfmpegPath] ffmpeg-static 的导出值
- * @param {string|null} [options.bundledFfprobePath] ffprobe-static 的导出值
  * @param {(path: string) => boolean} [options.exists] 存在性判定（默认全部通过，由上层兜底）
- * @returns {{ ffmpegPath: string|null, ffprobePath: string|null }}
+ * @returns {{ ffmpegPath: string|null }}
  */
 export function resolveAudioToolPaths({
   env = process.env,
   bundledFfmpegPath = null,
-  bundledFfprobePath = null,
   exists = () => true,
 } = {}) {
   const pick = (...candidates) => {
@@ -80,6 +76,5 @@ export function resolveAudioToolPaths({
   };
   return {
     ffmpegPath: pick(env?.LUNARA_FFMPEG_PATH, bundledFfmpegPath),
-    ffprobePath: pick(env?.LUNARA_FFPROBE_PATH, bundledFfprobePath),
   };
 }
