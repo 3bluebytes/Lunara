@@ -46,7 +46,7 @@ jobs:
             import { execFileSync } from "node:child_process";
             import assert from "node:assert/strict";
             const asar = "dist-desktop/mac-arm64/Lunara.app/Contents/Resources/app.asar";
-            const list = execFileSync("npx", ["--no-install", "@electron/asar", "list", asar], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+            const list = execFileSync("npx", ["--no-install", "@electron/asar", "list", asar], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).replaceAll("\\", "/");
             const entries = list.split(/\r?\n/).filter(Boolean);
             for (const req of ["/server/index.js", "/pwa/index.html", "/build/licenses/README-ffmpeg.md"]) {
               assert.ok(entries.includes(req), "missing required asset: " + req);
@@ -68,7 +68,7 @@ jobs:
             import { execFileSync } from "node:child_process";
             import assert from "node:assert/strict";
             const asar = "dist-desktop/win-unpacked/resources/app.asar";
-            const list = execFileSync("npx", ["--no-install", "@electron/asar", "list", asar], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: true });
+            const list = execFileSync("npx", ["--no-install", "@electron/asar", "list", asar], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: true }).replaceAll("\\", "/");
             const entries = list.split(/\r?\n/).filter(Boolean);
             for (const req of ["/server/index.js", "/pwa/index.html", "/build/licenses/README-ffmpeg.md"]) {
               assert.ok(entries.includes(req), "missing required asset: " + req);
