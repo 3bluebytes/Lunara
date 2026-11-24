@@ -432,12 +432,14 @@ test('观测钩子：openai-completions 的 start/end 带适配后的 body 与�
   const [start, attemptEvent, end] = events;
   assert.deepEqual({
     sessionId: start.sessionId, model: start.model, api: start.api, source: start.source,
-    maxTokens: start.maxTokens, temperature: start.temperature, timeoutMs: start.timeoutMs,
+    maxTokens: start.maxTokens, temperature: start.temperature,
     thinkingMode: start.thinkingMode, toolChoice: start.toolChoice, toolNames: start.toolNames,
   }, {
     sessionId: 'sess-1', model: 'deepseek-v4-flash', api: 'openai-completions', source: 'registry:default',
-    maxTokens: 100, temperature: 0.5, timeoutMs: 1234, thinkingMode: 'disabled', toolChoice: 'auto', toolNames: ['search_music'],
+    maxTokens: 100, temperature: 0.5, thinkingMode: 'disabled', toolChoice: 'auto', toolNames: ['search_music'],
   });
+  assert.ok(Number.isInteger(start.timeoutMs) && start.timeoutMs > 0 && start.timeoutMs <= 1234,
+    `timeoutMs 应在 (0, 1234] 内，实际 ${start.timeoutMs}`);
   // 每次尝试各留一条 model_attempt：分类、额度与用量（design §3 任务 3.4）。
   assert.deepEqual({
     taskId: attemptEvent.taskId, attempt: attemptEvent.attempt, outcome: attemptEvent.outcome,
