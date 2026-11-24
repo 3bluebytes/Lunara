@@ -10,6 +10,8 @@
 //   marker = build_ambient_marker(wake=wake, last_user_turn_at_ms=..., current_track=track)
 //   result = ambient_result_of(result=loop_result, error=None, aborted=False)
 
+import { REAL_CLOCK_RESET_MS } from '../virtual-person/historyTime.js';
+
 export const AMBIENT_MARKER_PREFIX = '［运行时提示，不是对方说的话］';
 const MEMORY_QUERY_MAX = 200;
 // 绕过 presence_respond 的纯文本只为 trace 截取（2026-10-21 观测修订）：够看出是「说出来的安静」还是真台词。
@@ -46,12 +48,13 @@ function sinceText(nowMs, atMs) {
 }
 
 // 回来了（add-app-open-greeting D8）：离开时长只给粗粒度档位，不暴露精确时间戳。
-const AWAY_TEXT = Object.freeze({ hour: '一个多小时', hours: '几个小时', overnight: '大半天', day: '一天多', days: '好几天' });
+const AWAY_TEXT = Object.freeze({ brief: '一小会儿', hour: '一个多小时', hours: '几个小时', overnight: '大半天', day: '一天多', days: '好几天' });
 
-/** 离开时长的档位：不到 1 小时为 null（不算回来）。 */
+/** 离开时长的档位：正时差且不到 1 小时为 brief（一小会儿）。 */
 export function awayBucket(awayMs) {
   const hours = Number(awayMs) / 3_600_000;
-  if (!(hours >= 1)) return null;
+  if (!(hours > 0)) return null;
+  if (hours < 1) return 'brief';
   if (hours < 2) return 'hour';
   if (hours < 7) return 'hours';
   if (hours < 24) return 'overnight';
@@ -72,12 +75,17 @@ function wakeReasonText(wake) {
 
 // 回来了：不说「在一起听」，不写精确间隔、这段时间的播放计数或曲目（可能根本没在听）。
 function appOpenMarker(wake, nowMs, timeZone) {
-  const away = awayText(awayBucket(wake?.awayMs));
+  const awayMs = Number(wake?.awayMs);
+  const away = awayText(awayBucket(awayMs));
+  const isLongReturn = Number.isFinite(awayMs) && awayMs >= REAL_CLOCK_RESET_MS;
   return [
     AMBIENT_MARKER_PREFIX,
     `现在是当地的${dayPart(nowMs, timeZone)}。对方刚打开 app，${away ? `离你们上次见面过了${away}，` : ''}此刻还没有跟你说话。`,
+    isLongReturn
+      ? '现实时钟已明显流逝：此前对话中任何瞬态生理状态、呼吸紧绷或半截现场动作都已随真实时间自然平复归零，绝不能假装时间静止无缝硬接上一句。请先看上一轮末尾状态：若上次本已自然收尾（道别、点歌已应答或话题聊完），直接用 presence_respond（action=quiet）安静陪着不打扰；若上次明显卡在半途突然中断离开，可按你的人设分寸决定是否用 presence_respond（action=speak，支持 beats 发 1..2 拍）自然得体地主动问一句，也可配合 note_thought 记一笔心里话。'
+      : '',
     `这次醒来是因为：${wakeReasonText(wake)}。`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function buildAmbientMarker({ wake, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -133,7 +141,13 @@ export function ambientResultOf({ result = null, error = null, aborted = false }
   }
   const accepted = [...(result?.outcomes || [])].reverse().find(outcome => outcome?.ok === true && outcome?.terminal
     && (outcome.code === 'AMBIENT_LINE_ACCEPTED' || outcome.code === 'AMBIENT_QUIET'));
-  if (accepted?.facts?.action === 'speak' && clean(accepted.facts.text)) return { action: 'speak', text: clean(accepted.facts.text) };
+  if (accepted?.facts?.action === 'speak' && clean(accepted.facts.text)) {
+    return {
+      action: 'speak',
+      text: clean(accepted.facts.text),
+      ...(Array.isArray(accepted.facts.beats) && accepted.facts.beats.length ? { beats: accepted.facts.beats } : {}),
+    };
+  }
   if (accepted) return { action: 'quiet' };
   // 没调 presence_respond、直接回了纯文本：一律按安静，不出口。实机里这种回复多半是
   // 「我不出声，就让曲子放着」这类把安静说出来的话；想开口必须走 presence_respond 的校验。

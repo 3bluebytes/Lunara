@@ -2,7 +2,10 @@
 // 契约见 openspec/changes/embed-netease-api-service（local-music-source-service）。
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -118,6 +121,95 @@ test('内置服务在指定端口起得来、页面可确认、stop 后端口能
     await handle?.stop();
   }
   assert.equal(await isPortFree(port), true, 'stop 之后端口必须能再次绑定');
+});
+
+test('raw and managed services both omit default IP headers; fourth-slot IP is not transport options', async () => {
+  // 对照真实原版服务，避免把依赖已有的默认行为误当成包装器修复效果。
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const isolated = mkdtempSync(join(tmpdir(), 'lunara-ncm-ip-baseline-'));
+  writeFileSync(join(isolated, 'anonymous_token'), '');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { createServer } from 'node:http';
+    const { startEmbeddedNcm, findFreePort } = await import(new URL('./server/ncmEmbedded.js', import.meta.url));
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    const seen = [];
+    const upstream = createServer((req, res) => {
+      seen.push({ url: req.url, ...req.headers });
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ code: 200, data: [{ id: 990001, url: null, code: 200 }] }));
+    });
+    await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const handle = await startEmbeddedNcm({
+      env: { NCM_BASE_URL: 'http://127.0.0.1:' + await findFreePort() },
+      log: { info() {}, warn() {} },
+      probeOptions: { fetchImpl: async () => ({ ok: false }) },
+    });
+    assert.ok(handle);
+    const raw = await require('NeteaseCloudMusicApi/server.js').serveNcmApi({
+      port: await findFreePort(), host: '127.0.0.1', checkVersion: false,
+    });
+    if (!raw.server.listening) await new Promise(resolve => raw.server.once('listening', resolve));
+    const rawBase = 'http://127.0.0.1:' + raw.server.address().port;
+    const domain = encodeURIComponent('http://127.0.0.1:' + upstream.address().port);
+    for (const [base, query] of [[rawBase, 'id=990001&level=standard'],
+      [handle.baseUrl, 'id=990001&level=standard'],
+      [rawBase, 'id=990001&level=standard&realIP=203.0.113.9']]) {
+      const response = await fetch(base + '/song/url/v1?' + query + '&domain=' + domain,
+        { headers: { 'x-apicache-bypass': '1' } });
+      assert.equal(response.status, 200);
+      await response.json();
+    }
+    await handle.stop();
+    raw.server.closeAllConnections();
+    await new Promise(resolve => raw.server.close(resolve));
+    upstream.closeAllConnections();
+    await new Promise(resolve => upstream.close(resolve));
+    assert.equal(require('NeteaseCloudMusicApi/util/request.js').length, 3);
+    assert.equal(seen.length, 3, 'all controls reach the local fake upstream');
+    for (const headers of seen.slice(0, 2)) {
+      assert.equal('x-real-ip' in headers, false, 'raw baseline already omits default IP headers');
+      assert.equal('x-forwarded-for' in headers, false);
+    }
+    assert.equal(seen[2]['x-real-ip'], '203.0.113.9', 'explicit realIP is still forwarded');
+    assert.equal(seen[2]['x-forwarded-for'], '203.0.113.9');
+    console.log('loopback-header-check-passed');
+    process.exit(0);
+  `], { cwd: process.cwd(), encoding: 'utf8', timeout: 20_000, env: { ...process.env, TMPDIR: isolated } });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /loopback-header-check-passed/);
+});
+
+test('standalone launcher reuses the embedded assembly and exits cleanly on SIGTERM', async t => {
+  const { spawn } = await import('node:child_process');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const port = await findFreePort();
+  const isolated = mkdtempSync(join(tmpdir(), 'lunara-ncm-standalone-'));
+  t.after(() => rmSync(isolated, { recursive: true, force: true }));
+  const child = spawn(process.execPath, ['scripts/ncm-server.mjs'], {
+    cwd: resolve(dirname(import.meta.filename), '..'),
+    env: { ...process.env, PORT: String(port), TMPDIR: isolated },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } });
+  let stdout = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  const deadline = Date.now() + 10_000;
+  let marker = false;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`);
+      if (response.ok && (await response.text()).includes('网易云音乐 API')) { marker = true; break; }
+    } catch { /* not listening yet */ }
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.ok(marker, `独立入口应在 PORT=${port} 提供网易云服务，stdout: ${stdout}`);
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve([code, signal])));
+  child.kill('SIGTERM');
+  const [code, signal] = await exited;
+  assert.equal(signal, null, '应通过 SIGTERM 处理器干净退出');
+  assert.equal(code, 0);
 });
 
 test('端口被非网易云服务占用时改听空闲端口并标记 fallback', async () => {

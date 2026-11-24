@@ -18,6 +18,8 @@ export function createNarrationCoordinator({
   audio,
   locationHref = globalThis.location?.href || '',
   logger = console,
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = handle => clearTimeout(handle),
 } = {}) {
   if (!audio?.addEventListener || typeof audio.play !== 'function') {
     throw new TypeError('narration coordinator requires an audio element');
@@ -29,9 +31,23 @@ export function createNarrationCoordinator({
   let sequence = 0;
   let active = null;
   let queue = [];
+  let delayTimer = null;
+  let delayResolve = null;
   const foregroundTurns = new Set();
   const foregroundWaiters = new Set();
   const lifecycleListeners = new Set();
+
+  function clearActiveDelay() {
+    if (delayTimer != null) {
+      clearTimer(delayTimer);
+      delayTimer = null;
+    }
+    if (delayResolve) {
+      const resolve = delayResolve;
+      delayResolve = null;
+      resolve(false);
+    }
+  }
 
   function snapshot() {
     return Object.freeze({
@@ -71,6 +87,7 @@ export function createNarrationCoordinator({
     const task = active;
     if (!task) return false;
     active = null;
+    clearActiveDelay();
     clearOwnedSource(task);
     emitLifecycle(outcome, task, detail);
     if (outcome === 'finished') safely(task.onFinish, task);
@@ -94,6 +111,19 @@ export function createNarrationCoordinator({
       if (eligible === false) {
         finishActive('cancelled', 'pre-start-ineligible');
         return false;
+      }
+      if (task.delayBeforeMs > 0) {
+        active.status = 'delaying';
+        const completedDelay = await new Promise(resolve => {
+          delayResolve = resolve;
+          delayTimer = setTimer(() => {
+            delayTimer = null;
+            delayResolve = null;
+            resolve(true);
+          }, task.delayBeforeMs);
+        });
+        if (!completedDelay || destroyed || !active || active.token !== token) return false;
+        active.status = 'starting';
       }
       audio.pause();
       audio.src = task.url;
@@ -126,11 +156,14 @@ export function createNarrationCoordinator({
   function enqueue(task = {}) {
     const url = String(task.url || '').trim();
     if (!url) return null;
+    const rawDelay = Number(task.delayBeforeMs);
+    const delayBeforeMs = Number.isFinite(rawDelay) && rawDelay > 0 ? Math.round(rawDelay) : 0;
     const normalized = {
       id: String(task.id || `narration-${sequence + 1}`),
       token: ++sequence,
       lane: task.lane === 'runtime' ? 'runtime' : 'foreground',
       url,
+      delayBeforeMs,
       meta: task.meta || null,
       onStart: task.onStart || NOOP,
       beforeStart: task.beforeStart || null,
@@ -221,6 +254,7 @@ export function createNarrationCoordinator({
     audio.removeEventListener('ended', listeners.ended);
     audio.removeEventListener('error', listeners.error);
     cancel(() => true, 'destroyed');
+    clearActiveDelay();
     foregroundTurns.clear();
     notifyWaitersIfIdle();
     audio.pause();

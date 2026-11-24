@@ -425,3 +425,23 @@ test('the service writes no memory and starts no agent turn', async () => {
     assert.equal(forbidden in service, false, `${forbidden} 不该出现在喜欢服务里`);
   }
 });
+
+test('setLike invokes onLikeChanged only on genuine desired state changes, not on idempotent replays', async () => {
+  const store = new TrackLikeStore({ dbPath: ':memory:', now: () => 1_700_000_000_000 }).initialize();
+  const invalidated = [];
+  const service = new TrackLikeService({
+    store,
+    providers: { ncm: {}, qq: {} },
+    registry: registryWith([]),
+    onLikeChanged: event => invalidated.push(event),
+  });
+
+  await service.setLike({ provider: 'qq', songId: 'q-1', desired: true, requestId: 'req-1' });
+  await service.setLike({ provider: 'qq', songId: 'q-1', desired: true, requestId: 'req-1' });
+  await service.setLike({ provider: 'qq', songId: 'q-1', desired: true, requestId: 'req-2' });
+  await service.setLike({ provider: 'qq', songId: 'q-1', desired: false, requestId: 'req-3' });
+  assert.deepEqual(invalidated, [
+    { provider: 'qq', songId: 'q-1', desired: true },
+    { provider: 'qq', songId: 'q-1', desired: false },
+  ]);
+});

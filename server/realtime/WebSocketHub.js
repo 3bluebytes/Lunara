@@ -1,3 +1,4 @@
+import { wireRuntimeState } from '../playback/playbackRuntimeTypes.js';
 import { WebSocket, WebSocketServer } from 'ws';
 import { localRequestAllowed } from '../http/requestBoundary.js';
 
@@ -52,13 +53,24 @@ export class WebSocketHub {
 
   /** 在线客户端汇总：连接数、可见连接数、有没有人正在输入（「回来了」问候据此判断）。 */
   presenceSummary() {
-    let visible = 0, typing = false;
+    let visible = 0, typing = false, visibleActiveSessionId = null, fallbackActiveSessionId = null;
     for (const ws of this.clients) {
       const entry = this.clientPresence.get(ws);
-      if (entry?.visible !== false) visible += 1;
+      const isVisible = entry?.visible !== false;
+      if (isVisible) visible += 1;
       if (entry?.typing === true) typing = true;
+      if (entry?.activeSessionId) {
+        if (isVisible && !visibleActiveSessionId) visibleActiveSessionId = entry.activeSessionId;
+        else if (!fallbackActiveSessionId) fallbackActiveSessionId = entry.activeSessionId;
+      }
     }
-    return { connected: this.clients.size, visible, typing };
+    const activeSessionId = visibleActiveSessionId || fallbackActiveSessionId;
+    return {
+      connected: this.clients.size,
+      visible,
+      typing,
+      ...(activeSessionId ? { activeSessionId } : {}),
+    };
   }
 
   /** 订阅客户端汇总变化（连上/断开/上报）；返回取消订阅。 */
@@ -68,21 +80,50 @@ export class WebSocketHub {
     return () => this.presenceListeners.delete(listener);
   }
 
-  _notifyPresence() {
+  _notifyPresence(idleReturn = null) {
     if (!this.presenceListeners.size) return;
     const summary = this.presenceSummary();
+    const payload = idleReturn ? { ...summary, idleReturn: { ...idleReturn } } : summary;
     for (const listener of this.presenceListeners) {
-      try { listener({ ...summary }); } catch { /* 订阅者异常不影响连接 */ }
+      try { listener({ ...payload }); } catch { /* 订阅者异常不影响连接 */ }
     }
   }
 
-  // 客户端唯一的上行消息：client-presence { visible, typing }。其余内容一律忽略，不回显、不记录正文。
+  // 客户端上行消息：client-presence { visible, typing, activeSessionId?, idleReturn? }。其余内容一律忽略，不回显、不记录正文。
   _receive(ws, raw) {
     let message;
     try { message = JSON.parse(String(raw)); } catch { return; }
     if (message?.type !== 'client-presence' || typeof message.visible !== 'boolean') return;
-    this.clientPresence.set(ws, { visible: message.visible, typing: message.typing === true });
-    this._notifyPresence();
+    const previous = this.clientPresence.get(ws);
+    let activeSessionId = null;
+    if (typeof message.activeSessionId === 'string') {
+      const trimmed = message.activeSessionId.trim().slice(0, 128);
+      if (trimmed) activeSessionId = trimmed;
+    } else if (message.activeSessionId === undefined && previous?.activeSessionId) {
+      activeSessionId = previous.activeSessionId;
+    }
+    this.clientPresence.set(ws, {
+      visible: message.visible,
+      typing: message.typing === true,
+      ...(activeSessionId ? { activeSessionId } : {}),
+    });
+    let idleReturn = null;
+    if (message.visible === true && message.typing !== true && message.idleReturn && typeof message.idleReturn === 'object') {
+      const awayMs = Number(message.idleReturn.awayMs);
+      if (Number.isFinite(awayMs) && awayMs > 0) {
+        const rawSessionId = typeof message.idleReturn.sessionId === 'string'
+          ? message.idleReturn.sessionId.trim().slice(0, 128)
+          : '';
+        const sessionId = rawSessionId || activeSessionId || null;
+        const firedAtMs = Number(message.idleReturn.firedAtMs);
+        idleReturn = {
+          ...(sessionId ? { sessionId } : {}),
+          awayMs,
+          ...(Number.isFinite(firedAtMs) && firedAtMs > 0 ? { firedAtMs } : {}),
+        };
+      }
+    }
+    this._notifyPresence(idleReturn);
   }
 
   attach(server) {
@@ -122,7 +163,7 @@ export class WebSocketHub {
       if (this.runtimeSnapshot) {
         const state = this.runtimeSnapshot();
         if (state) {
-          this._send(ws, { type: 'runtime-state', state });
+          this._send(ws, { type: 'runtime-state', state: wireRuntimeState(state) });
           const commands = this.runtimeCommands?.(state) || [];
           for (const command of commands) this._send(ws, { type: 'runtime-command', command });
         }

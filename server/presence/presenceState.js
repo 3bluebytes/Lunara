@@ -16,6 +16,7 @@ export function createPresenceEntry({ sessionId } = {}) {
     sessionId, sessionStartedAtMs: null, lastActivityAtMs: null,
     listenedMs: 0, playingSinceMs: null,
     activations: 0, completedCount: 0, skipCount: 0, consecutiveCompletions: 0, consecutiveSkips: 0,
+    recentSkippedTracks: [],
     lastOutputTrack: null, lastVoiceAtMs: null,
     // 每场的开口时间（P0 记录的是「本来会开口」的影子决策），用于窗口/整场预算。
     presenceLog: [], momentCounters: {},
@@ -118,27 +119,37 @@ export function reducePresence(entry, { previous, event, next, nowMs }) {
     && previous.phase === PlaybackPhase.PLAYING) {
     const ratio = coverage(previous, event, nowMs);
     if (ratio != null && ratio >= COMPLETED_COVERAGE) {
-      state.completedCount += 1; state.consecutiveCompletions += 1; state.consecutiveSkips = 0;
+      state.completedCount += 1; state.consecutiveCompletions += 1; state.consecutiveSkips = 0; state.recentSkippedTracks = [];
       state.momentCounters = bumpCounters(state.momentCounters, 'track_completed');
       const person = personOf(before, previous);
       moments.push({ kind: 'track_completed', personId: person, sessionId,
         triggerKey: key('track_completed', `${before.queueItemId}:${previous.txn.correlationId}`, person),
         evidence: { track: trackRef(before), consecutiveCompletions: state.consecutiveCompletions } });
     }
-  } else if ([P.NEXT_REQUESTED, P.CARD_SELECTED].includes(event.type) && advanced
+  } else if (event.type === P.NEXT_REQUESTED && advanced
     && [PlaybackPhase.PLAYING, PlaybackPhase.PAUSED].includes(previous.phase)) {
     const ratio = coverage(previous, event, nowMs);
     if (ratio != null) {
       state.consecutiveCompletions = 0;
       if (ratio < SKIPPED_COVERAGE) {
         state.skipCount += 1; state.consecutiveSkips += 1;
+        state.recentSkippedTracks = [...(state.recentSkippedTracks || []), trackRef(before)].filter(Boolean).slice(-4);
         state.momentCounters = bumpCounters(state.momentCounters, 'track_skipped');
         const person = personOf(before, previous);
         moments.push({ kind: 'track_skipped', personId: person, sessionId,
           triggerKey: key('track_skipped', `${before.queueItemId}:${previous.txn.correlationId}`, person),
           evidence: { track: trackRef(before), consecutiveSkips: state.consecutiveSkips } });
-      } else state.consecutiveSkips = 0;
+      } else {
+        state.consecutiveSkips = 0;
+        state.recentSkippedTracks = [];
+      }
     }
+  } else if (event.type === P.CARD_SELECTED && advanced
+    && [PlaybackPhase.PLAYING, PlaybackPhase.PAUSED].includes(previous.phase)) {
+    // 队列卡片切歌属主动指定播放（partial），不计入跳过或连跳嫌弃。
+    state.consecutiveCompletions = 0;
+    state.consecutiveSkips = 0;
+    state.recentSkippedTracks = [];
   }
 
   if (next.phase === PlaybackPhase.EXHAUSTED && previous.phase !== PlaybackPhase.EXHAUSTED && !effectiveRadioMode(next)) {
@@ -155,7 +166,7 @@ export function reducePresence(entry, { previous, event, next, nowMs }) {
       : nowMs - state.lastActivityAtMs >= SESSION_GAP_MS;
     if (newSession) {
       Object.assign(state, { sessionStartedAtMs: nowMs, listenedMs: 0, activations: 0, completedCount: 0, skipCount: 0,
-        consecutiveCompletions: 0, consecutiveSkips: 0, presenceLog: [], momentCounters: {} });
+        consecutiveCompletions: 0, consecutiveSkips: 0, recentSkippedTracks: [], presenceLog: [], momentCounters: {} });
       state.playingSinceMs = nowMs;
     }
     const previousTrack = state.lastOutputTrack;

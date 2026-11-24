@@ -29,12 +29,19 @@ function fallbackVoiceFor(voice, { fallbackTarget, resolveFallback }) {
 }
 
 export async function synthesizeWithFallback(text, {
-  voice, signal = null, performance = null, synth, voiceHealth,
+  voice, signal = null, performance = null, speechPlan = null, allowFallback = true, synth, voiceHealth,
   fallbackTarget = () => null, resolveFallback = () => null,
 } = {}) {
   const startedAt = Date.now();
   try {
-    const audio = await synth(text, { providerId: voice.providerId, voiceId: voice.voiceId, signal, performance, params: voice.params || {} });
+    const audio = await synth(text, {
+      providerId: voice.providerId,
+      voiceId: voice.voiceId,
+      signal,
+      performance,
+      ...(speechPlan ? { speechPlan } : {}),
+      params: voice.params || {},
+    });
     voiceHealth.observe(voice.providerId);
     return audio && { ...audio, voiceSource: { kind: 'primary', providerId: voice.providerId } };
   } catch (error) {
@@ -42,7 +49,7 @@ export async function synthesizeWithFallback(text, {
     const reason = synthesisReasonOfError(error);
     // 主声音自己花的时间（不含代读），给失败记录用。
     const elapsedMs = Date.now() - startedAt;
-    const target = !isCancelled(error, signal) && reason !== 'not-configured'
+    const target = allowFallback && !isCancelled(error, signal) && reason !== 'not-configured'
       ? fallbackVoiceFor(voice, { fallbackTarget, resolveFallback }) : null;
     if (!target) {
       voiceHealth.observe(endpoint, { error, signal, elapsedMs });

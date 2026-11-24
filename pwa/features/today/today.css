@@ -1,385 +1,209 @@
-/* 生活手记与日程：柔和夜色书写台。
-   同一套主题 token 上做三件事：暖化深色基底、通透玻璃、柔和发丝边，
-   并加大留白与行距，让「想写」这件事发生在灯下的纸面感而不刺眼。
-   强调色仍用 --studio-accent，与全局主题保持一致；暖色只用于氛围与表面。 */
+/* 手帐 · 同页拾光（Scheme B · Co-Page Journal）
+   Apple 备忘录极简秩序 × 听歌票根 / 原话便签 / 页边同页批注。
+   约束：
+   - 不在 JS 分支主题；通过 :root[data-theme="..."] 映射统一 --ln-* 语义 token。
+   - 让宿主舞台背景与胶片噪点自然透出，不再用死黑实底盖死桌面，同时保持纸面/侧栏清晰的明暗层级。
+   - 最小 UI 字号 >= 12px，杜绝 undersized-ui-text。
+   - 零嵌套卡片盒（nested-cards）、零 >1px 左边线、零渐变底、零遮挡浮层。
+   - reduced-motion 显式列出交互元素，不使用 .today-panel * 通配符。 */
+
 #app.today-open .today-panel {
-  --today-muted: var(--t-mid);
-  --today-danger: color-mix(in srgb, var(--coral, #f87171) 78%, var(--t-hi));
-  /* 书桌暖光只保留在局部（筛选 chip、选中态、徽标）；页面基底、卡片、
-     页眉与设置页同一套 studio 语言。 */
-  --today-line: color-mix(in srgb, hsl(34 74% 64% / .18), var(--studio-line));
-  --today-line-soft: color-mix(in srgb, hsl(34 64% 62% / .10), var(--studio-line));
-  --today-glass: color-mix(in srgb, hsl(34 42% 58% / .05), var(--glass-2));
-  --today-lift: color-mix(in srgb, hsl(34 40% 57% / .115), var(--ink-3));
-  --today-field-bg: color-mix(in srgb, hsl(34 34% 54% / .07), var(--glass-1));
-  overflow: hidden;
-  gap: 22px;
-  /* 页边距、上沿留白与底色均与其他壳层页面同一 token。 */
-  padding: var(--page-top, 20px) var(--page-edge, 34px) max(26px, env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--ink-1) 20%, transparent);
-}
+  --ln-bg-list: hsl(var(--ambient-hue, 32) 10% 10.5% / 0.74);
+  --ln-bg-paper: hsl(var(--ambient-hue, 32) 12% 14.5% / 0.86);
+  --ln-bg-input: rgba(0, 0, 0, 0.24);
+  --ln-bg-hover: rgba(243, 239, 232, 0.06);
+  --ln-bg-selected: color-mix(in srgb, var(--accent, #d8c39a) 15%, transparent);
+  --ln-bg-raised: #221f1c;
+  --ln-bg-popover: #211e1b;
+  --ln-slip-bg: rgba(216, 195, 154, 0.06);
+  --ln-stub-bg: rgba(243, 239, 232, 0.045);
+  --ln-margin-bg: rgba(243, 239, 232, 0.04);
+  --ln-dot: rgba(243, 239, 232, 0.13);
+  --ln-text: var(--text, #f3efe8);
+  --ln-text-2: rgba(243, 239, 232, 0.84);
+  --ln-text-3: rgba(243, 239, 232, 0.72);
+  --ln-placeholder: rgba(243, 239, 232, 0.42);
+  --ln-accent: var(--accent, #d8c39a);
+  --ln-accent-ink: var(--accent, #d8c39a);
+  --ln-accent-fill: var(--accent, #d8c39a);
+  --ln-accent-hover: var(--accent-hover, #e8d7b2);
+  --ln-accent-on: var(--text-on-accent, #151413);
+  --ln-accent-soft: color-mix(in srgb, var(--accent, #d8c39a) 16%, transparent);
+  --ln-danger: var(--danger, #e29682);
+  --ln-danger-soft: color-mix(in srgb, var(--danger, #e29682) 14%, transparent);
+  --ln-ok: var(--ok, #b4c4a2);
+  --ln-line: rgba(243, 239, 232, 0.11);
+  --ln-line-strong: rgba(243, 239, 232, 0.24);
+  --ln-radius: 4px;
+  --ln-radius-sm: 3px;
+  --ln-card-radius: 4px;
+  --ln-shadow-pop: 0 14px 36px rgba(0, 0, 0, 0.48);
+  --ln-font-reading: var(--font-reading, "PingFang SC", "Noto Serif SC", serif);
+  --ln-font-display: var(--font-display, "PingFang SC", sans-serif);
+  --ln-font-num: var(--font-number, var(--font-mono));
+  --ln-outer-pad-block: clamp(16px, 2.2vh, 24px);
+  --ln-outer-pad-inline: var(--timeline-edge, clamp(24px, 3vw, 36px));
+  --ln-frame-line: var(--ln-line);
 
-.today-panel .today-workspace-header { margin: 0; flex: 0 0 auto; }
-.today-panel .today-header-info { min-width: 0; }
-.today-panel .today-workspace-sub { max-width: 62ch; line-height: 1.75; }
-.today-panel .today-header-actions { justify-content: flex-end; gap: 8px; }
-.today-panel button {
-  box-sizing: border-box;
-  font-family: inherit;
-  min-height: 36px;
-  border-radius: 10px;
-  line-height: 1.4;
-  transition: background-color .16s ease-out, border-color .16s ease-out, color .16s ease-out, box-shadow .16s ease-out;
-}
-.today-panel button:hover { transform: none; }
-.today-panel button:disabled,
-.today-panel input:disabled,
-.today-panel select:disabled,
-.today-panel textarea:disabled { opacity: .55; cursor: not-allowed; }
-.today-panel .today-btn-primary {
-  /* 页面级主按钮：与聊天页「一起听」同一处理（--studio-primary-* token）。 */
-  background: var(--studio-primary-bg);
-  color: var(--t-hi);
-  border: 1px solid var(--studio-primary-border);
-  box-shadow: 0 2px 12px -4px color-mix(in srgb, var(--studio-accent) 20%, transparent);
-  padding: 8px 15px;
-}
-.today-panel .today-btn-primary:hover:not(:disabled) {
-  border-color: var(--studio-accent-ink);
-  background: var(--studio-primary-bg-hover);
-  color: var(--t-hi);
-  box-shadow: 0 4px 18px -2px color-mix(in srgb, var(--studio-accent) 32%, transparent);
-}
-.today-panel .today-badge-pulse { color: var(--studio-accent-ink); }
-
-/* 三轨：列表 | 可拖动分隔线 12px | 编辑器。--today-list-width 由 todaySplit.js 写入，
-   min() 保证编辑器始终留有保底宽度。 */
-.today-panel .today-workspace-body,
-.today-panel .today-workspace-body.is-detail-open {
-  grid-template-columns: min(var(--today-list-width, 344px), calc(100% - 380px)) 12px minmax(0, 1fr);
-  gap: 22px;
-  flex: 1 1 0;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-}
-/* 列表栏：同一页面卡材质（studio 面板 + 发丝边），暖玻璃只留给条目 hover。 */
-.today-panel .today-notes-sidebar {
-  border-radius: var(--studio-card-radius);
-  border: 1px solid var(--studio-line);
-  background: var(--studio-panel);
-  padding: 16px;
-  gap: 14px;
-  max-height: none;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-.today-panel .today-filter-tabs {
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  overflow: visible;
-  gap: 3px;
-  padding: 0 0 12px;
-  border-bottom: 1px solid var(--today-line-soft);
-}
-.today-panel .today-filter-tab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 34px;
-  padding: 5px 8px;
-  color: var(--today-muted);
-  font-size: 11.5px;
-  border-color: transparent;
-  border-radius: 999px;
+  padding: var(--ln-outer-pad-block) var(--ln-outer-pad-inline);
+  overflow: hidden;
   background: transparent;
-}
-.today-panel .today-filter-tab:hover { color: var(--t-hi); background: var(--today-glass); }
-.today-panel .today-filter-tab.is-active,
-.today-panel :is(.today-task-filter, [data-action="task-filter"]).is-active {
-  color: var(--t-hi);
-  background: color-mix(in srgb, var(--studio-accent) 15%, var(--today-lift));
-  border-color: color-mix(in srgb, var(--studio-accent) 34%, var(--today-line-soft));
-  font-weight: 600;
-}
-.today-panel .today-category-count {
-  color: var(--today-muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.today-panel .today-list-controls { display: flex; flex-direction: column; gap: 10px; }
-.today-panel .today-task-filters { display: flex; flex-wrap: wrap; gap: 5px; }
-.today-panel :is(.today-task-filter, [data-action="task-filter"]) {
-  min-height: 32px;
-  padding: 4px 9px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--today-muted);
-  font-size: 12px;
-  border-color: transparent;
-  border-radius: 999px;
-  background: transparent;
-}
-.today-panel :is(.today-task-filter, [data-action="task-filter"]) .count { font-variant-numeric: tabular-nums; }
-.today-panel :is(.today-list-tools, .today-search-sort) { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
-.today-panel .today-search-field,
-.today-panel .today-search-sort input { flex: 1 1 100%; min-width: 0; width: 100%; }
-.today-panel :is(.today-list-tools, .today-search-sort) input,
-.today-panel :is(.today-list-tools, .today-search-sort) select {
-  min-width: 0;
-  min-height: 38px;
-  padding: 7px 11px;
-  font-size: 13px;
-  border-radius: var(--studio-field-radius);
-  border: 1px solid var(--today-line-soft);
-  background: var(--today-field-bg);
-}
-.today-panel :is(.today-list-tools, .today-search-sort) select { flex: 1 1 130px; width: auto; }
-.today-panel .today-list-summary,
-.today-panel .today-quick-add-status {
-  margin: 0;
-  color: var(--today-muted);
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.today-panel .today-date-strip {
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--today-line-soft);
-  background: var(--today-field-bg);
-}
-.today-panel .today-strip-nav { flex-wrap: wrap; min-width: 0; gap: 3px; }
-.today-panel .today-strip-date-text { font-size: 12px; font-weight: 500; }
-.today-panel .today-strip-picker-wrap { flex: 0 0 36px; min-height: 36px; justify-content: center; }
-.today-panel .today-strip-picker-wrap:focus-within { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; border-radius: 10px; }
-.today-panel .today-icon-btn { min-width: 36px; min-height: 36px; padding: 4px; border-radius: 10px; }
-.today-panel .today-quick-add { padding: 0; gap: 9px; align-items: stretch; flex-direction: column; }
-.today-panel .today-quick-add-date { margin: 0; color: var(--today-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-/* 快速添加是一行输入：框高必须容得下一行，否则内容会溢出并露出内部滚动条。 */
-.today-panel .today-quick-add textarea {
-  min-height: 44px;
-  max-height: 148px;
-  font-size: 13px;
-  line-height: 1.6;
-  border-style: solid;
-  border-color: var(--today-line-soft);
-  background: var(--today-field-bg);
-  border-radius: 10px;
-  padding: 10px 12px;
-  resize: vertical;
-}
-.today-panel .today-quick-add textarea:focus-visible { border-color: color-mix(in srgb, var(--studio-accent) 45%, var(--today-line)); }
-.today-panel .today-quick-add-btn { align-self: flex-end; min-height: 36px; padding: 7px 12px; }
-.today-panel :is(input, textarea)::placeholder {
-  color: color-mix(in srgb, hsl(34 45% 72% / .42), var(--t-placeholder, var(--t-mid)));
-  opacity: 1;
+  color: var(--ln-text);
+  container-type: inline-size;
 }
 
-/* 列表采用连续条目，选中与完成互不依赖透明度。 */
-.today-panel .today-notes-list {
-  gap: 2px;
-  flex: 1 0 140px;
-  min-height: 140px;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 2px;
-  scroll-padding-block: 10px;
-  scrollbar-gutter: stable;
+:root[data-theme="moonlight"] #app.today-open .today-panel {
+  --ln-bg-list: rgba(9, 14, 34, 0.62);
+  --ln-bg-paper: rgba(16, 23, 52, 0.78);
+  --ln-bg-input: rgba(7, 10, 24, 0.56);
+  --ln-bg-hover: rgba(236, 230, 214, 0.06);
+  --ln-bg-selected: rgba(242, 196, 109, 0.14);
+  --ln-bg-raised: #11193b;
+  --ln-bg-popover: #11193b;
+  --ln-slip-bg: rgba(242, 196, 109, 0.075);
+  --ln-stub-bg: rgba(236, 230, 214, 0.05);
+  --ln-margin-bg: rgba(236, 230, 214, 0.045);
+  --ln-dot: rgba(236, 230, 214, 0.13);
+  --ln-text: #ece6d6;
+  --ln-text-2: rgba(236, 230, 214, 0.85);
+  --ln-text-3: rgba(236, 230, 214, 0.72);
+  --ln-placeholder: rgba(236, 230, 214, 0.44);
+  --ln-accent: #f2c46d;
+  --ln-accent-ink: #f2c46d;
+  --ln-accent-fill: #f2c46d;
+  --ln-accent-on: #1a1208;
+  --ln-accent-soft: rgba(242, 196, 109, 0.16);
+  --ln-line: rgba(236, 230, 214, 0.11);
+  --ln-line-strong: rgba(236, 230, 214, 0.24);
+  --ln-radius: 10px;
+  --ln-radius-sm: 8px;
+  --ln-card-radius: 12px;
+  --ln-font-num: var(--font-display);
 }
-.today-panel .today-notes-list .today-entry {
-  flex: 0 0 auto;
-  align-items: stretch;
-  flex-direction: column;
-  gap: 7px;
-  padding: 12px 9px;
-  border: 1px solid transparent;
-  border-bottom-color: var(--today-line-soft);
-  border-radius: 10px;
-  background: transparent;
-  cursor: default;
-  box-shadow: none;
-  transition: background-color .16s ease-out, border-color .16s ease-out;
+
+:root[data-theme="modernist"]:not([data-modernist-base="indigo"]) #app.today-open .today-panel {
+  --ln-bg-list: #ebe8e0;
+  --ln-bg-paper: #faf9f6;
+  --ln-bg-input: #ffffff;
+  --ln-bg-hover: rgba(17, 17, 17, 0.05);
+  --ln-bg-selected: rgba(200, 37, 24, 0.09);
+  --ln-bg-raised: #faf9f6;
+  --ln-bg-popover: #f5f3ee;
+  --ln-slip-bg: #f3f0e8;
+  --ln-stub-bg: #f3f1eb;
+  --ln-margin-bg: #f4f2eb;
+  --ln-dot: rgba(17, 17, 17, 0.13);
+  --ln-text: #111111;
+  --ln-text-2: #3c3934;
+  --ln-text-3: #59554e;
+  --ln-placeholder: #5e5952;
+  --ln-accent: #c82518;
+  --ln-accent-ink: #9e1c11;
+  --ln-accent-fill: #c82518;
+  --ln-accent-hover: #a61d12;
+  --ln-accent-on: #ffffff;
+  --ln-accent-soft: rgba(200, 37, 24, 0.09);
+  --ln-danger: #9e1c11;
+  --ln-danger-soft: rgba(158, 28, 17, 0.11);
+  --ln-ok: #1f5c35;
+  --ln-line: rgba(17, 17, 17, 0.13);
+  --ln-line-strong: rgba(17, 17, 17, 0.28);
+  --ln-radius: 4px;
+  --ln-radius-sm: 3px;
+  --ln-card-radius: 4px;
+  --ln-shadow-pop: 0 8px 24px rgba(17, 17, 17, 0.12);
+  --ln-font-num: var(--font-mono);
+  --ln-frame-line: var(--ln-line-strong);
 }
-.today-panel .today-notes-list .today-entry:hover { transform: none; background: var(--today-glass); }
-.today-panel .today-notes-list .today-entry.is-selected {
-  background: color-mix(in srgb, var(--studio-accent) 10%, var(--today-lift));
-  border-color: color-mix(in srgb, var(--studio-accent) 34%, var(--today-line-soft));
-  border-radius: 12px;
-  box-shadow: none;
+
+:root[data-theme="modernist"][data-modernist-base="indigo"] #app.today-open .today-panel {
+  --ln-bg-list: color-mix(in srgb, var(--text) 4%, var(--bg-page));
+  --ln-bg-paper: color-mix(in srgb, var(--text) 7%, var(--bg-page));
+  --ln-bg-input: var(--bg-input);
+  --ln-bg-popover: var(--bg-raised);
+  --ln-slip-bg: color-mix(in srgb, var(--accent) 8%, transparent);
+  --ln-stub-bg: color-mix(in srgb, var(--text) 4.5%, var(--bg-page));
+  --ln-margin-bg: color-mix(in srgb, var(--text) 4%, var(--bg-page));
+  --ln-text-2: var(--text-2);
+  --ln-text-3: var(--text-3);
+  --ln-placeholder: var(--t-placeholder);
+  --ln-accent: var(--accent);
+  --ln-accent-ink: var(--accent);
+  --ln-accent-fill: var(--accent);
+  --ln-accent-hover: var(--accent-hover);
+  --ln-accent-on: var(--text-on-accent);
+  --ln-radius: 4px;
+  --ln-radius-sm: 3px;
+  --ln-card-radius: 4px;
+  --ln-font-num: var(--font-mono);
+  --ln-frame-line: var(--ln-line-strong);
 }
-.today-panel .today-entry.done { opacity: 1; }
-.today-panel .today-entry.done .today-entry-title { color: var(--today-muted); }
-.today-panel .today-entry-main { align-items: flex-start; flex-wrap: nowrap; width: 100%; gap: 7px; }
-.today-panel .today-entry-checkbox-wrap { width: 36px; height: 36px; margin-top: -4px; }
-.today-panel .today-custom-check { border-color: color-mix(in srgb, hsl(34 50% 66% / .5), var(--today-muted)); border-radius: 5px; }
-.today-panel .today-entry-checkbox-wrap input:focus-visible + .today-custom-check {
-  outline: 2px solid var(--studio-accent-ink);
-  outline-offset: 4px;
+
+.today-panel,
+.today-panel *,
+.today-panel *::before,
+.today-panel *::after {
+  box-sizing: border-box;
 }
-.today-panel .today-entry-dot { margin: 11px 12px 0; box-shadow: 0 0 0 3px var(--today-glass); }
-.today-panel button.today-entry-content {
-  flex: 1 1 auto;
-  align-items: stretch;
-  gap: 6px;
-  min-width: 0;
-  width: 100%;
-  padding: 2px;
+
+.today-panel button,
+.today-panel input,
+.today-panel textarea,
+.today-panel select {
+  font-family: inherit;
+  color: inherit;
+}
+
+.today-panel button {
+  background: none;
   border: 0;
-  border-radius: 6px;
-  background: transparent;
-  text-align: start;
+  padding: 0;
+  cursor: pointer;
 }
-.today-panel button.today-entry-content:hover { background: transparent; }
-.today-panel .today-entry-title-row { gap: 6px; }
-.today-panel .today-entry-title { font-size: 14px; font-weight: 500; line-height: 1.55; overflow-wrap: anywhere; }
-.today-panel .today-entry-snippet { margin: 0; font-size: 12px; line-height: 1.6; color: var(--today-muted); overflow-wrap: anywhere; -webkit-line-clamp: 1; }
-.today-panel .today-entry-meta { gap: 5px 8px; font-size: 11.5px; color: var(--today-muted); overflow-wrap: anywhere; }
-.today-panel .today-entry-meta > * { max-width: 100%; }
-.today-panel .today-entry-scope { font-size: 10.5px; }
-.today-panel .today-overdue-badge { color: var(--today-danger); }
-.today-panel .today-entry-actions { opacity: 1; flex-wrap: wrap; gap: 5px; padding-inline-start: 42px; }
-.today-panel .today-action-btn { min-height: 32px; font-size: 12px; padding: 5px 9px; border-radius: 10px; }
-.today-panel .today-reschedule-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.today-panel .today-delete-confirm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
-.today-panel .today-delete-confirm p,
-.today-panel .today-delete-confirm > span { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.today-panel .today-delete-confirm [data-action="confirm-delete"] { border-color: var(--today-danger); color: var(--today-danger); }
-.today-panel .today-entry.is-busy { cursor: progress; }
-.today-panel .today-empty-item { padding: 30px 14px; line-height: 1.7; }
-.today-panel .today-empty-item .today-empty-title { font-size: 14px; color: var(--t-hi); }
-.today-panel .today-empty-item .today-empty-sub { font-size: 12px; color: var(--today-muted); }
 
-/* 中央书写区：同一页面卡材质；暖色只留在正文光晕与边框 tint。 */
-.today-panel .today-notes-editor-pane { overflow-x: hidden; overflow-y: auto; scroll-padding: 14px; scrollbar-gutter: stable; }
-.today-panel .today-editor-card {
-  min-width: 0;
-  min-height: 100%;
-  padding: 26px;
-  border-radius: var(--studio-card-radius);
-  border: 1px solid var(--studio-line);
-  background: var(--studio-panel);
-}
-.today-panel .today-editor-topbar { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--today-line-soft); }
-.today-panel .today-editor-date-pill { display: inline-flex; align-items: center; }
-.today-panel .today-back-to-list { display: none; }
-.today-panel .today-editor-status { min-width: 0; }
-.today-panel .today-save-feedback,
-.today-panel .today-save-indicator { color: var(--today-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.today-panel .today-save-feedback[data-state="error"],
-.today-panel .today-save-feedback[data-state="conflict"],
-.today-panel .today-save-feedback[data-state="authorization"] { color: var(--today-danger); }
-.today-panel .today-editor-surface { min-width: 0; gap: 22px; }
-.today-panel input.today-input-seamless-title {
-  font-family: 'Songti SC', 'Fraunces', var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-  /* 写作优先：标题只比正文高一级，不再用展示级大字挤掉书写区。 */
-  font-size: 18px;
-  line-height: 1.45;
-  letter-spacing: .01em;
-  font-weight: 600;
-  background: transparent;
-  border-color: transparent;
-  border-radius: 10px;
-  padding: 4px 2px;
-}
-.today-panel input.today-input-seamless-title:focus-visible { background: color-mix(in srgb, hsl(34 50% 60% / .06), transparent); }
-.today-panel .today-textarea-seamless-body {
-  min-height: 200px;
-  max-height: 62dvh;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 8px 4px;
-  font-size: 14.5px;
-  line-height: 1.9;
-  overflow-wrap: anywhere;
-}
-.today-panel .today-textarea-seamless-body:focus-visible { background: color-mix(in srgb, hsl(34 50% 60% / .05), transparent); }
-.today-panel .today-field-label,
-.today-panel .today-attr-label,
-.today-panel .today-hint { color: var(--today-muted); font-size: 12px; line-height: 1.65; }
-.today-panel .today-field-label,
-.today-panel .today-attr-label { font-weight: 500; letter-spacing: .02em; }
-.today-panel .today-attrs-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; padding-top: 18px; border-top: 1px solid var(--today-line-soft); }
-.today-panel .today-attr-item { display: flex; flex-direction: column; align-items: stretch; min-width: 0; gap: 7px; font-size: 12px; }
-.today-panel .today-time-range-group { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; }
-.today-panel .today-attr-item input,
-.today-panel .today-attr-item select {
-  min-width: 0;
-  min-height: 38px;
-  padding: 7px 10px;
-  font-size: 13px;
-  border-radius: var(--studio-field-radius);
-  border: 1px solid var(--today-line-soft);
-  background: var(--today-field-bg);
-}
-.today-panel .today-attr-pill { min-height: 38px; align-self: end; }
-.today-panel .today-companion-box { background: transparent; border-radius: 10px; padding: 14px 0; }
-.today-panel .today-companion-toggle { align-items: flex-start; }
-.today-panel .today-toggle-text { min-width: 0; overflow-wrap: anywhere; }
-.today-panel .today-toggle-text span { color: var(--today-muted); }
-.today-panel .today-person-chip { min-width: 0; max-width: 100%; }
-.today-panel .today-chip-text { overflow-wrap: anywhere; }
-.today-panel .today-editor-actions,
-.today-panel .today-editor-actions-left,
-.today-panel .today-editor-actions-right { flex-wrap: wrap; gap: 8px; }
-.today-panel .today-editor-actions { border-top: 1px solid var(--today-line-soft); padding-top: 16px; }
-.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery),
-.today-panel :is(.today-conflict-panel, .today-conflict) {
-  border: 1px solid color-mix(in srgb, var(--today-danger) 46%, var(--today-line-soft));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--today-danger) 7%, var(--today-lift));
-  padding: 13px;
-  color: var(--t-hi);
-  font-size: 13px;
-  line-height: 1.65;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) p,
-.today-panel :is(.today-conflict-panel, .today-conflict) p { margin: 0 0 8px; }
-.today-panel :is(.today-error-banner, .today-load-error, .today-save-recovery) p { flex: 1 1 240px; margin: 0; }
-.today-panel :is(.today-conflict-panel, .today-conflict) pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 180px; overflow-y: auto; }
-.today-panel :is(.today-conflict-panel, .today-conflict) button { margin-block-start: 6px; margin-inline-end: 6px; max-width: 100%; white-space: normal; }
-.today-panel .today-loading-bar { margin: 0; font-size: 13px; color: var(--today-muted); }
-.today-panel :is(button, input, select, textarea, summary):focus-visible {
-  outline: 2px solid var(--studio-accent-ink);
+.today-panel :is(button, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--ln-accent);
   outline-offset: 2px;
-  box-shadow: none;
 }
 
-@media (min-width: 1280px) {
-  .today-panel .today-workspace-body { grid-template-columns: min(var(--today-list-width, 356px), calc(100% - 380px)) 12px minmax(0, 1fr); }
+/* 备忘录双栏骨架 + 可拖动分隔线 */
+.today-panel .today-workspace-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: min(var(--today-list-width, 280px), calc(100% - 420px)) 12px minmax(0, 1fr);
+  background: transparent;
+  outline: 1px solid var(--ln-frame-line, var(--ln-line));
+  outline-offset: -1px;
+  border-radius: var(--ln-radius-sm);
+  overflow: hidden;
 }
 
-@media (max-width: 1200px) {
-  .today-panel .today-workspace-header { flex-wrap: wrap; gap: 12px; }
-  .today-panel .today-header-actions { justify-content: flex-start; }
-  .today-panel .today-workspace-body,
-  .today-panel .today-workspace-body.is-detail-open { grid-template-columns: min(var(--today-list-width, 314px), calc(100% - 360px)) 12px minmax(0, 1fr); gap: 16px; }
-  .today-panel .today-editor-card { padding: 20px; }
-  .today-panel .today-attrs-row { grid-template-columns: minmax(0, 1fr); }
+.today-panel .today-notes-sidebar {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ln-bg-list);
+  border-right: 1px solid var(--ln-line);
+  contain: layout paint;
 }
 
-/* 列表 | 编辑器之间的可拖动分隔线（≥961px）。平时只有一条细线，
-   悬停、聚焦或拖动时才显色，不抢内容注意力。 */
 .today-panel .today-split {
-  grid-column: 2;
-  align-self: stretch;
   position: relative;
   width: 12px;
-  min-width: 12px;
-  padding: 0;
-  border: 0;
-  background: none;
+  margin-left: -6px;
+  z-index: 3;
   cursor: col-resize;
   touch-action: none;
-  outline: none;
 }
+
 .today-panel .today-split::after {
   content: '';
   position: absolute;
@@ -387,175 +211,1310 @@
   bottom: 0;
   left: 5px;
   width: 2px;
-  border-radius: 1px;
-  /* 静息态也要看得见：这是用户唯一的拖拽提示，不能淡到几乎消失。
-     深色主题里半透明发丝线会被面板底色再压暗，所以这里用高光色、足够高的不透明度。 */
-  background: color-mix(in srgb, var(--t-hi, var(--studio-line)) 48%, transparent);
-  transition: background-color .15s ease;
+  background: transparent;
+  transition: background-color 0.14s ease;
 }
+
 .today-panel .today-split:hover::after,
-.today-panel .today-split:focus-visible::after { background: color-mix(in srgb, var(--studio-accent) 62%, transparent); }
-.today-panel .today-split:focus-visible::after { background: var(--studio-accent-ink); }
-:root.today-splitting { cursor: col-resize; user-select: none; }
-:root.today-splitting .today-panel .today-split::after { background: var(--studio-accent-ink); }
-
-@media (max-width: 960px) {
-  #app.today-open .today-panel {
-    padding: max(18px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-    gap: 16px;
-  }
-  .today-panel .today-workspace-body,
-  .today-panel .today-workspace-body.is-detail-open { grid-template-columns: minmax(0, 1fr); flex: 1 1 0; gap: 0; }
-  .today-panel .today-split { display: none; }
-  .today-panel .today-notes-editor-pane { display: none; }
-  .today-panel .today-workspace-body.is-detail-open .today-notes-sidebar { display: none; }
-  .today-panel .today-workspace-body.is-detail-open .today-notes-editor-pane { display: block; }
-  .today-panel .today-back-to-list { display: inline-flex; align-items: center; min-height: 40px; }
-  .today-panel .today-notes-sidebar { max-height: none; }
-  .today-panel .today-attrs-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .today-panel .today-filter-tabs { gap: 6px; }
-  .today-panel .today-filter-tab { padding-inline: 11px; }
-  .today-panel :is(.today-list-tools, .today-search-sort) { flex-wrap: nowrap; }
-  .today-panel .today-search-field { flex: 1 1 auto; }
-  .today-panel :is(.today-list-tools, .today-search-sort) select { flex: 0 1 140px; }
-  .today-panel .today-entry-actions { padding-inline-start: 42px; }
+.today-panel .today-split:focus-visible::after,
+html.today-splitting .today-panel .today-split::after {
+  background: var(--ln-accent);
 }
 
-@media (max-width: 520px) {
-  .today-panel .today-workspace-sub { font-size: 12px; }
-  .today-panel .today-header-actions { width: 100%; gap: 6px; }
-  .today-panel .today-header-actions button { padding-inline: 10px; font-size: 12px; }
-  .today-panel .today-filter-tab { flex: 1 1 auto; padding-inline: 7px; }
-  .today-panel :is(.today-task-filter, [data-action="task-filter"]) { min-height: 36px; }
-  .today-panel .today-notes-sidebar { padding: 12px; gap: 12px; }
-  .today-panel :is(.today-list-tools, .today-search-sort) { flex-wrap: wrap; }
-  .today-panel :is(.today-list-tools, .today-search-sort) select { flex: 1 1 120px; }
-  .today-panel .today-search-field { flex-basis: 100%; }
-  .today-panel .today-attrs-row { grid-template-columns: minmax(0, 1fr); }
-  .today-panel .today-editor-card { padding: 16px; }
-  .today-panel input.today-input-seamless-title { font-size: 16px; }
-  .today-panel .today-textarea-seamless-body { min-height: 160px; }
-  .today-panel :is(.today-list-tools, .today-search-sort) input,
-  .today-panel .today-quick-add textarea,
-  .today-panel .today-editor-card input,
-  .today-panel .today-editor-card textarea,
-  .today-panel .today-editor-card select { font-size: 16px; }
-  .today-panel .today-editor-topbar { align-items: flex-start; }
-  .today-panel .today-editor-status { flex-basis: 100%; }
-  .today-panel .today-editor-actions-right { flex: 1 1 100%; }
-  .today-panel .today-editor-actions-right > button { flex: 1 1 auto; }
-  .today-panel .today-action-btn { min-height: 36px; }
-}
-
-/* 缩短视口时允许栏内完整滚动，保留返回与恢复入口。 */
-@media (max-height: 600px) {
-  #app.today-open .today-panel { padding-top: max(12px, env(safe-area-inset-top)); gap: 12px; }
-  .today-panel .today-workspace-sub { display: none; }
-  .today-panel .today-workspace-header { gap: 8px; }
-  .today-panel .today-notes-list { flex-basis: 160px; min-height: 160px; }
-  .today-panel .today-textarea-seamless-body { min-height: 110px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .today-panel *, .today-panel *::before, .today-panel *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-}
-
-@media (forced-colors: active) {
-  .today-panel .today-filter-tab.is-active,
-  .today-panel :is(.today-task-filter, [data-action="task-filter"]).is-active,
-  .today-panel .today-notes-list .today-entry.is-selected { outline: 1px solid Highlight; outline-offset: -1px; }
-  .today-panel .today-custom-check { forced-color-adjust: none; background: Canvas; border-color: ButtonText; }
-  .today-panel .today-entry-checkbox-wrap input:checked + .today-custom-check { background: Highlight; border-color: Highlight; }
-  .today-panel .today-entry-checkbox-wrap input:checked + .today-custom-check::after { border-color: HighlightText; }
-}
-
-/* 装饰复选框不截获真实 input 的点击。 */
-.today-panel .today-custom-check { pointer-events: none; }
-.today-panel .today-editor-empty {
-  min-height: 100%;
-  box-sizing: border-box;
+/* 左栏搜索 + 方形新建 */
+.today-panel .today-sidebar-head {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 16px;
-  padding: 36px;
-  color: var(--today-muted);
-}
-.today-panel .today-editor-empty h2 { margin: 0; color: var(--t-hi); font: 500 18px/1.45 'Songti SC', 'Fraunces', serif; letter-spacing: .02em; }
-.today-panel .today-editor-empty p { margin: 0; max-width: 46ch; font-size: 14px; line-height: 1.85; }
-.today-panel .is-task-editor .today-textarea-seamless-body { min-height: 96px; max-height: 36dvh; }
-.today-panel details.today-companion-box { border: 0; border-top: 1px solid var(--today-line-soft); padding: 14px 0 0; }
-.today-panel details.today-companion-box summary { color: var(--today-muted); font-size: 13px; cursor: pointer; line-height: 1.65; padding: 6px 2px; }
-.today-panel details.today-companion-box[open] summary { margin-bottom: 12px; color: var(--t-hi); }
-.today-panel details.today-companion-box > [data-action="revoke"] { margin-bottom: 12px; }
-/* 重复规则是整条事项的属性；星期选择保持真实复选框与可见焦点。 */
-.today-panel .today-repeat-weekdays {
-  grid-column: 1 / -1;
-  min-width: 0;
-  margin: 0;
-  padding: 14px 0 0;
-  border: 0;
-  border-top: 1px solid var(--today-line-soft);
-  display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+  padding: 16px 16px 12px;
+  flex: none;
 }
-.today-panel .today-repeat-weekdays[hidden] { display: none; }
-.today-panel .today-repeat-weekdays legend { padding: 0 8px 0 0; color: var(--today-muted); font-size: 12px; line-height: 1.65; }
-.today-panel .today-repeat-weekdays label {
+
+.today-panel .today-search-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-line);
+  background: var(--ln-bg-hover);
+  color: var(--ln-text-3);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.today-panel .today-search-box input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ln-text);
+  font-size: 13px;
+  outline: none;
+}
+
+.today-panel .today-search-box input::placeholder {
+  color: var(--ln-placeholder);
+}
+
+.today-panel .today-new-btn {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-line-strong);
+  background: var(--ln-bg-hover);
+  color: var(--ln-text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 5px 10px;
-  border: 1px solid var(--today-line-soft);
-  border-radius: 10px;
-  color: var(--t-mid);
+  transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+}
+
+.today-panel .today-new-btn:hover {
+  border-color: var(--ln-accent);
+  color: var(--ln-accent-ink);
+  background: var(--ln-accent-soft);
+}
+
+.today-panel .today-load-error,
+.today-panel .today-error-banner {
+  margin: 6px 16px 10px;
+  padding: 8px 12px;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-danger);
+  background: var(--ln-danger-soft);
+  color: var(--ln-text);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.today-panel .today-error-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.today-panel .today-word-count-row {
+  padding: 6px clamp(24px, 3.2vw, 40px);
+  font-size: 12px;
+  color: var(--ln-text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.today-panel .today-word-count-row.is-over {
+  color: var(--ln-danger);
+  font-weight: 600;
+}
+
+/* 左侧备忘录时间列表 */
+.today-panel .today-notes-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 12px 24px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.today-panel .today-timeline-heading {
+  padding: 14px 10px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ln-text-3);
+  letter-spacing: 0.04em;
+}
+
+.today-panel .today-timeline-heading:first-child {
+  padding-top: 4px;
+}
+
+.today-panel .today-entry {
+  list-style: none;
+}
+
+.today-panel .today-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: var(--ln-radius-sm);
+  transition: background-color 0.12s ease;
+}
+
+.today-panel .today-entry-row:hover {
+  background: var(--ln-bg-hover);
+}
+
+.today-panel .today-entry.is-selected .today-entry-row {
+  background: var(--ln-bg-selected);
+}
+
+.today-panel .today-entry-checkbox-wrap {
+  position: relative;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+}
+
+.today-panel .today-entry-checkbox-wrap input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.today-panel .today-custom-check {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ln-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.today-panel .today-entry-checkbox-wrap input:checked + .today-custom-check {
+  background: var(--ln-accent-fill);
+  border-color: var(--ln-accent-fill);
+  box-shadow: inset 0 0 0 3px var(--ln-bg-list);
+}
+
+.today-panel .today-entry-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 10px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.today-panel .today-entry-main-col {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.today-panel .today-entry-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-panel .today-entry-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ln-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.today-panel .today-entry.done .today-entry-title {
+  text-decoration: line-through;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-overdue-badge {
+  flex: none;
+  font-size: 12px;
+  color: var(--ln-danger);
+}
+
+.today-panel .today-entry-sub {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-entry-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.today-panel .today-entry-snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-panel .today-entry-snippet[hidden] {
+  display: none;
+}
+
+.today-panel .today-entry-badge {
+  flex: none;
+  color: var(--ln-accent-ink);
+  display: inline-flex;
+  align-items: center;
+}
+
+.today-panel .today-partner-mini-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--partner-color, var(--ln-accent-fill));
+  display: inline-block;
+  flex: none;
+}
+
+.today-panel .today-empty-item {
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.today-panel .today-empty-title {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  color: var(--ln-text-2);
+}
+
+.today-panel .today-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ln-text-3);
+  line-height: 1.5;
+}
+
+/* 右栏纸页工作区 */
+.today-panel .today-notes-editor-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ln-bg-paper);
+}
+
+.today-panel .today-sheet-toolbar {
+  position: relative;
+  flex: none;
+  height: 50px;
+  padding: 0 clamp(24px, 3.2vw, 40px);
+  border-bottom: 1px solid var(--ln-line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.today-panel .today-sheet-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.today-panel .today-back-to-list {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex: none;
   font-size: 13px;
-}
-.today-panel .today-repeat-weekdays label:has(input:checked) { background: color-mix(in srgb, var(--studio-accent) 12%, var(--today-lift)); border-color: var(--studio-accent-ink); color: var(--t-hi); }
-.today-panel .today-repeat-weekdays label:has(input:focus-visible) { outline: 2px solid var(--studio-accent-ink); outline-offset: 3px; }
-.today-panel .today-repeat-weekdays input[type="checkbox"] { appearance: auto; position: static; opacity: 1; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--studio-accent-ink); }
-.today-panel .today-repeat-hint { grid-column: 1 / -1; margin: 0; color: var(--today-muted); font-size: 12px; line-height: 1.75; }
-@media (max-width: 520px) {
-  .today-panel .today-editor-empty { padding: 22px; }
-  .today-panel .is-task-editor .today-textarea-seamless-body { min-height: 88px; }
+  color: var(--ln-accent-ink);
+  font-weight: 500;
+  padding: 4px 2px;
 }
 
-/* ==========================================================================
-   暖化表面层
-   conversations.css 里的通用 pill / chip / badge 仍带冷灰底；
-   这里只统一表面与边框的暖度，交互语义色（选中/主按钮）仍用 --studio-accent。
-   ========================================================================== */
-.today-panel .today-meta-pill {
-  padding: 2px 8px;
+/* 正常输入、防抖与静默保存不闪烁状态字；仅授权变更/报错/冲突时显示提示。 */
+.today-panel .today-save-indicator {
+  font-size: 12px;
+  color: var(--ln-text-3);
+  white-space: nowrap;
+  display: none;
+}
+
+.today-panel .today-save-indicator[data-state="authorization"],
+.today-panel .today-save-indicator[data-state="error"],
+.today-panel .today-save-indicator[data-state="conflict"],
+.today-panel .today-save-indicator[data-state="deleted"] {
+  display: inline-flex;
+  align-items: center;
+}
+
+.today-panel .today-save-indicator[data-state="authorization"] {
+  color: var(--ln-accent-ink);
+}
+
+.today-panel .today-save-indicator[data-state="error"],
+.today-panel .today-save-indicator[data-state="conflict"],
+.today-panel .today-save-indicator[data-state="deleted"] {
+  color: var(--ln-danger);
+}
+
+.today-panel .today-btn-primary {
+  height: 28px;
+  padding: 0 12px;
   border-radius: 999px;
-  background: color-mix(in srgb, hsl(34 45% 60% / .12), var(--glass-1));
-  color: var(--today-muted);
+  background: var(--ln-accent-fill);
+  color: var(--ln-accent-on);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.today-panel .today-date-badge { color: var(--today-muted); font-variant-numeric: tabular-nums; }
-.today-panel .today-time-badge { color: color-mix(in srgb, var(--t-hi) 90%, transparent); }
-.today-panel .today-repeat-badge { color: var(--studio-accent-ink); }
-.today-panel .today-custom-check { background: var(--today-field-bg); }
-.today-panel .today-entry-checkbox-wrap:hover .today-custom-check { border-color: var(--studio-accent-ink); }
-.today-panel .today-person-chip {
-  background: var(--today-field-bg);
-  border-color: var(--today-line-soft);
-}
-.today-panel .today-icon-btn:hover { background: var(--today-glass); }
-.today-panel .today-pill-btn {
-  border: 1px solid color-mix(in srgb, var(--studio-accent) 26%, var(--today-line-soft));
-}
-.today-panel .today-strip-picker-wrap input[type="date"] { color: var(--today-muted); }
-.today-panel .today-btn-sub {
-  border: 1px solid var(--today-line-soft);
-  background: var(--today-field-bg);
-}
-.today-panel .today-error-banner,
-.today-panel .today-load-error { border-radius: 10px; }
 
-/* 时间线辅助节点默认不显示，由需要它的主题在 overrides 里打开。 */
-.today-timeline-time, .today-timeline-heading, .today-now { display: none; }
+.today-panel .today-btn-primary[hidden] {
+  display: none;
+}
+
+.today-panel .today-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex: none;
+}
+
+.today-panel .today-tool-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--ln-radius-sm);
+  color: var(--ln-text-2);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.today-panel .today-tool-btn:hover {
+  background: var(--ln-bg-hover);
+  color: var(--ln-text);
+}
+
+.today-panel .today-tool-btn.is-active {
+  background: var(--ln-accent-soft);
+  color: var(--ln-accent-ink);
+}
+
+.today-panel .today-tool-btn.is-armed {
+  color: var(--ln-accent-ink);
+}
+
+/* 非遮挡右侧抽屉容器 */
+.today-panel .today-sheet-body-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.today-panel .today-sheet-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: clamp(36px, 5vh, 56px) clamp(28px, 6%, 80px) clamp(64px, 8vh, 96px);
+  cursor: text;
+  container-type: inline-size;
+  contain: layout style;
+}
+
+.today-panel .today-sheet-scroll.variant-dotgrid {
+  background-image: radial-gradient(circle, var(--ln-dot) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-position: 8px 8px;
+}
+
+.today-panel .today-inspector-drawer {
+  width: 312px;
+  flex: none;
+  border-left: 1px solid var(--ln-line);
+  background: var(--ln-bg-popover);
+  overflow-y: auto;
+  padding: 14px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 「⋯ 更多」轻菜单（注意：菜单挂在 50px 工具栏内，max-height 必须参照视口而非父级 100%） */
+.today-panel .today-popover.is-menu {
+  position: absolute;
+  top: 48px;
+  right: clamp(24px, 3.2vw, 40px);
+  z-index: 20;
+  width: 264px;
+  max-height: min(460px, calc(100dvh - 160px));
+  overflow-y: auto;
+  border-radius: var(--ln-card-radius);
+  border: 1px solid var(--ln-line-strong);
+  background: var(--ln-bg-popover);
+  box-shadow: var(--ln-shadow-pop);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.today-panel .today-menu-label {
+  padding: 6px 10px 2px;
+  font-size: 12px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-menu-item {
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--ln-radius-sm);
+  color: var(--ln-text);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.today-panel .today-menu-item:hover {
+  background: var(--ln-bg-hover);
+}
+
+.today-panel .today-menu-item.is-danger {
+  color: var(--ln-danger);
+}
+
+.today-panel .today-mood-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid var(--ln-line);
+}
+
+.today-panel .today-mood-row button {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--ln-line);
+  font-size: 12px;
+  color: var(--ln-text-2);
+}
+
+.today-panel .today-mood-row button.is-on {
+  border-color: var(--ln-accent);
+  background: var(--ln-accent-soft);
+  color: var(--ln-accent-ink);
+}
+
+.today-panel .today-more-advanced summary {
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--ln-text-2);
+  cursor: pointer;
+  border-radius: var(--ln-radius-sm);
+}
+
+.today-panel .today-more-advanced summary:hover {
+  background: var(--ln-bg-hover);
+}
+
+.today-panel .today-more-fields {
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.today-panel .today-more-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-more-fields :is(input, select) {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-line);
+  background: var(--ln-bg-input);
+  color: var(--ln-text);
+  font-size: 12.5px;
+}
+
+.today-panel .today-more-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.today-panel .today-repeat-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.today-panel .today-repeat-weekdays label {
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 抽屉内部控件 */
+.today-panel .today-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.today-panel .today-pop-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ln-text);
+}
+
+.today-panel .today-pop-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-pop-sec-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ln-text-2);
+  margin-top: 4px;
+}
+
+.today-panel .today-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.today-panel .today-pop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--ln-card-radius);
+  border: 1px solid var(--ln-line);
+}
+
+.today-panel .today-pop-row-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.today-panel .today-pop-row-main {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ln-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.today-panel .today-pop-row-quote {
+  font-size: 12.5px;
+  color: var(--ln-text);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.today-panel .today-pop-row-sub {
+  font-size: 12px;
+  color: var(--ln-text-3);
+  margin-top: 2px;
+}
+
+.today-panel .today-pill-btn {
+  flex: none;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--ln-line-strong);
+  color: var(--ln-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.today-panel .today-pill-btn:hover {
+  border-color: var(--ln-accent);
+  color: var(--ln-accent-ink);
+}
+
+.today-panel .today-pill-btn.is-on {
+  background: var(--ln-accent-fill);
+  border-color: var(--ln-accent-fill);
+  color: var(--ln-accent-on);
+  font-weight: 600;
+}
+
+.today-panel .today-partner-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.today-panel .today-partner-chip {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--ln-line-strong);
+  color: var(--ln-text-2);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-panel .today-partner-chip.is-on {
+  border-color: var(--ln-accent);
+  background: var(--ln-accent-soft);
+  color: var(--ln-accent-ink);
+  font-weight: 500;
+}
+
+.today-panel .today-scope-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.today-panel .today-scope-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--ln-text-2);
+  cursor: pointer;
+}
+
+.today-panel .today-companion-note-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-line);
+  background: var(--ln-bg-input);
+  color: var(--ln-text);
+  font-size: 12.5px;
+}
+
+.today-panel .today-pop-preview {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--ln-card-radius);
+  border: 1px solid var(--ln-line);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ln-text-2);
+}
+
+.today-panel .today-pop-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ln-danger);
+}
+
+.today-panel .today-pop-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ln-line);
+}
+
+.today-panel .today-quiet-btn,
+.today-panel .today-inline-link {
+  font-size: 12px;
+  color: var(--ln-text-3);
+  padding: 3px 6px;
+  border-radius: var(--ln-radius-sm);
+}
+
+.today-panel .today-quiet-btn:hover,
+.today-panel .today-inline-link:hover {
+  color: var(--ln-accent-ink);
+  background: var(--ln-bg-hover);
+}
+
+/* 居中时间戳 + 电台刊头 + 自适应居中/双栏纸页 */
+.today-panel .today-sheet-meta-date {
+  text-align: center;
+  font-size: 12px;
+  color: var(--ln-text-3);
+  margin: 0 0 28px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.today-panel .today-playbill-masthead {
+  width: 100%;
+  max-width: 780px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 14px;
+  padding-bottom: 12px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--ln-line-strong);
+}
+
+.today-panel .today-playbill-day {
+  font-family: var(--ln-font-display);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ln-text);
+  white-space: nowrap;
+}
+
+.today-panel .today-playbill-sub {
+  font-size: 12.5px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-spread {
+  width: 100%;
+  max-width: 780px;
+  flex: 1 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 228px;
+  gap: 28px;
+  align-items: start;
+}
+
+/* 无页边批注时单栏居中舒展，消除空右栏偏左失衡感。 */
+.today-panel .today-spread:not(.has-annotations) {
+  max-width: 660px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.today-panel .today-spread:not(.has-annotations) .today-margin-rail {
+  display: none;
+}
+
+.today-panel .today-spread.variant-playbill.has-annotations {
+  gap: 32px;
+}
+
+.today-panel .today-paper-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.today-panel .today-sheet-firstline {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  margin: 0 0 16px;
+  background: transparent;
+  color: var(--ln-text);
+  font-family: var(--ln-font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -0.015em;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  field-sizing: content;
+}
+
+.today-panel .today-spread.variant-playbill .today-sheet-firstline {
+  font-size: 24px;
+}
+
+.today-panel .today-sheet-firstline::placeholder,
+.today-panel .today-sheet-body::placeholder {
+  color: var(--ln-placeholder);
+  font-weight: 400;
+}
+
+.today-panel .today-sheet-body {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: var(--ln-text);
+  font-family: var(--ln-font-reading);
+  font-size: 16px;
+  line-height: 1.9;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  field-sizing: content;
+}
+
+.today-panel .today-sheet-body.is-tail {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+
+.today-panel .today-sheet-firstline:focus-visible,
+.today-panel .today-sheet-body:focus-visible,
+.today-panel .today-check-input:focus-visible {
+  outline: none;
+}
+
+/* Apple 备忘录式交互圆圈清单 */
+.today-panel .today-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 6px 0 8px;
+}
+
+.today-panel .today-check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: var(--ln-radius-sm);
+}
+
+.today-panel .today-check-row:focus-within {
+  background: var(--ln-bg-hover);
+}
+
+.today-panel .today-check-circle {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--ln-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ln-accent-on);
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.today-panel .today-check-row.is-done .today-check-circle {
+  background: var(--ln-accent-fill);
+  border-color: var(--ln-accent-fill);
+}
+
+.today-panel .today-check-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ln-text);
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 2px 0;
+  outline: none;
+}
+
+.today-panel .today-check-row.is-done .today-check-input {
+  text-decoration: line-through;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-check-del {
+  color: var(--ln-text-3);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--ln-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.today-panel .today-check-del:hover {
+  background: var(--ln-bg-hover);
+  color: var(--ln-text);
+}
+
+/* 黑胶票根与原话便签 */
+.today-panel .today-fragments-b {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+
+.today-panel .today-stub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 10px;
+}
+
+.today-panel .today-vinyl-stub {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--ln-card-radius);
+  background: var(--ln-stub-bg);
+  border: 1px solid var(--ln-line);
+}
+
+.today-panel .today-vinyl-art {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--ln-accent-soft);
+  border: 1px solid var(--ln-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ln-accent-ink);
+}
+
+.today-panel .today-vinyl-meta {
+  min-width: 0;
+}
+
+.today-panel .today-vinyl-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ln-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.today-panel .today-vinyl-artist {
+  font-size: 12px;
+  color: var(--ln-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.today-panel .today-vinyl-perf {
+  padding-left: 8px;
+  border-left: 1px dashed var(--ln-line-strong);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ln-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.today-panel .today-vinyl-heart {
+  color: var(--ln-accent-ink);
+  display: inline-flex;
+}
+
+.today-panel .today-verbatim-slip {
+  padding: 12px 15px;
+  border-radius: var(--ln-card-radius);
+  background: var(--ln-slip-bg);
+  border: 1px solid var(--ln-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.today-panel .today-slip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-slip-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ln-text-2);
+  font-weight: 500;
+}
+
+.today-panel .today-slip-text {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--ln-text);
+}
+
+.today-panel .today-frag-remove {
+  color: var(--ln-text-3);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ln-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.today-panel .today-frag-remove:hover {
+  background: var(--ln-bg-hover);
+  color: var(--ln-text);
+}
+
+/* 空白页低打扰轻拼贴引导 */
+.today-panel .today-compose-today-cta {
+  margin-top: 28px;
+  align-self: flex-start;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px dashed var(--ln-line-strong);
+  color: var(--ln-text-2);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+}
+
+.today-panel .today-compose-today-cta:hover {
+  border-style: solid;
+  border-color: var(--ln-accent);
+  background: var(--ln-accent-soft);
+  color: var(--ln-accent-ink);
+}
+
+/* 右侧页边同页批注轨 */
+.today-panel .today-margin-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.today-panel .today-margin-card {
+  padding: 12px 14px;
+  border-radius: var(--ln-card-radius);
+  background: var(--ln-margin-bg);
+  border: 1px solid var(--ln-line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.today-panel .today-margin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ln-text-3);
+}
+
+.today-panel .today-margin-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ln-accent-ink);
+  font-weight: 600;
+}
+
+.today-panel .today-margin-anchor {
+  font-size: 12px;
+  color: var(--ln-text-3);
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--ln-line);
+}
+
+.today-panel .today-margin-body {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ln-text);
+}
+
+.today-panel .today-postscript-reply {
+  padding-left: 10px;
+  border-left: 1px solid var(--ln-line-strong);
+  font-size: 12.5px;
+  color: var(--ln-text-2);
+}
+
+.today-panel .today-margin-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-panel .today-reply-box {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.today-panel .today-reply-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--ln-radius-sm);
+  border: 1px solid var(--ln-line-strong);
+  background: var(--ln-bg-input);
+  color: var(--ln-text);
+  font-size: 12.5px;
+}
+
+/* 5s 软删除撤销条 */
+.today-panel .today-undo-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--ln-bg-popover);
+  border: 1px solid var(--ln-line-strong);
+  box-shadow: var(--ln-shadow-pop);
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--ln-text);
+}
+
+.today-panel .today-undo-toast[hidden] {
+  display: none;
+}
+
+.today-panel .today-undo-toast button {
+  color: var(--ln-accent-ink);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.today-panel .today-load-fail {
+  margin: auto;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-size: 13.5px;
+  color: var(--ln-text-2);
+}
+
+/* 容器窄化（如打开右侧抽屉）时纸页与批注退为单列 */
+@container (max-width: 720px) {
+  .today-panel .today-spread {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+}
+
+/* 移动/窄屏视口 */
+@media (max-width: 960px) {
+  #app.today-open .today-panel {
+    padding: 0;
+  }
+
+  .today-panel .today-workspace-body {
+    grid-template-columns: minmax(0, 1fr);
+    outline: 0;
+    border-radius: 0;
+  }
+
+  .today-panel .today-sidebar-head {
+    padding: 14px 16px 12px;
+  }
+
+  .today-panel .today-split {
+    display: none;
+  }
+
+  .today-panel .today-notes-sidebar {
+    border-right: 0;
+  }
+
+  .today-panel .today-workspace-body.is-detail-open .today-notes-sidebar {
+    display: none;
+  }
+
+  .today-panel .today-workspace-body:not(.is-detail-open) .today-notes-editor-pane {
+    display: none;
+  }
+
+  .today-panel .today-back-to-list {
+    display: inline-flex;
+  }
+
+  .today-panel .today-sheet-toolbar {
+    padding: 0 16px;
+    gap: 6px;
+  }
+
+  .today-panel .today-popover.is-menu {
+    top: 48px;
+    right: 16px;
+  }
+
+  .today-panel .today-tool-label {
+    display: none;
+  }
+
+  .today-panel .today-tool-btn {
+    padding: 0 7px;
+  }
+
+  .today-panel .today-sheet-scroll {
+    padding: 24px 22px 48px;
+  }
+
+  .today-panel .today-spread {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .today-panel .today-sheet-body-wrap {
+    flex-direction: column-reverse;
+  }
+
+  .today-panel .today-inspector-drawer {
+    width: 100%;
+    max-height: 44vh;
+    border-left: 0;
+    border-bottom: 1px solid var(--ln-line);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .today-panel .today-split::after,
+  .today-panel .today-new-btn,
+  .today-panel .today-entry-row,
+  .today-panel .today-tool-btn,
+  .today-panel .today-check-circle,
+  .today-panel .today-compose-today-cta {
+    transition: none;
+  }
+}

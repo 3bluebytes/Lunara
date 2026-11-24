@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLlm, extractJson, LLMNotConfiguredError, rawChatAttempt, setCapabilityObserver, setLlmBudgetGuard, setLlmObserver } from './llm.js';
+import { conformMessages } from './llmMessages.js';
 
 function fakeFetch(responder) {
   const calls = [];
@@ -99,6 +100,64 @@ test('anthropic-messages：system 提取、max_tokens 必填、tool_use/tool_res
   assert.deepEqual(call.body.tools, [{ name: 'search_music', description: '搜歌', input_schema: TOOLS[0].function.parameters }]);
 });
 
+test('anthropic-messages：promptCache 标三个缓存断点（system、本回合原话之前、最后一条），用量含缓存读写', async () => {
+  const fetchImpl = fakeFetch(() => ({
+    ok: true,
+    json: async () => ({ content: [{ type: 'text', text: '好' }], stop_reason: 'end_turn',
+      usage: { input_tokens: 20, output_tokens: 4, cache_read_input_tokens: 900, cache_creation_input_tokens: 80 } }),
+  }));
+  const llm = createLlm({ fetchImpl,
+    resolveEndpoint: async () => ({ baseUrl: 'http://gw/v1', apiKey: 'ak-test', model: 'claude-x', api: 'anthropic-messages' }) });
+  const history = [
+    { role: 'system', content: '你是主持人。' },
+    { role: 'user', content: '第一句' },
+    { role: 'assistant', content: '回第一句' },
+    { role: 'user', content: '[本轮背景]\n\n放首歌' },
+    { role: 'assistant', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'search_music', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call-1', content: '{"tracks":[]}' },
+  ];
+  const out = await llm.chat(history, TOOLS, { maxTokens: 100, promptCache: true });
+  // anthropic 的 input_tokens 不含缓存部分：prompt_tokens 是三者之和。
+  assert.deepEqual(out.usage, { prompt_tokens: 1000, completion_tokens: 4, total_tokens: 1004, cached_tokens: 900, cache_write_tokens: 80 });
+  const { body } = fetchImpl.calls[0];
+  const cache = { type: 'ephemeral' };
+  assert.deepEqual(body.system, [{ type: 'text', text: '你是主持人。', cache_control: cache }]);
+  assert.deepEqual(body.messages.map(message => message.role), ['user', 'assistant', 'user', 'assistant', 'user']);
+  assert.equal(body.messages[0].content, '第一句', '更早的消息不标');
+  assert.deepEqual(body.messages[1].content, [{ type: 'text', text: '回第一句', cache_control: cache }], '本回合原话之前的那条');
+  assert.equal(body.messages[2].content, '[本轮背景]\n\n放首歌', '带本轮背景的原话下一轮会变，不在它上面标');
+  assert.equal(body.messages[3].content[0].cache_control, undefined);
+  assert.deepEqual(body.messages[4].content, [{ type: 'tool_result', tool_use_id: 'call-1', content: '{"tracks":[]}', cache_control: cache }]);
+  assert.equal(JSON.stringify(body).match(/cache_control/g).length, 3, '不超过协议的 4 个断点');
+
+  // 没有 promptCache（一次性任务）就不标断点：缓存写入比普通输入贵，一次性请求不值得。
+  await llm.chat(history, TOOLS, { maxTokens: 100 });
+  assert.doesNotMatch(JSON.stringify(fetchImpl.calls[1].body), /cache_control/);
+  assert.equal(fetchImpl.calls[1].body.system, '你是主持人。');
+});
+
+test('各协议的缓存命中 token 归一到 usage.cached_tokens；供应商没报告就不加字段', async () => {
+  const cases = [
+    ['openai-completions', { choices: [{ message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 64 } } }, 64],
+    ['openai-completions', { choices: [{ message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 2, prompt_cache_hit_tokens: 70, prompt_cache_miss_tokens: 30 } }, 70],
+    ['openai-completions', { choices: [{ message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 2 } }, undefined],
+    ['openai-responses', { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '好' }] }],
+      usage: { input_tokens: 100, output_tokens: 2, input_tokens_details: { cached_tokens: 50 } } }, 50],
+    ['google-generative-ai', { candidates: [{ content: { role: 'model', parts: [{ text: '好' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 2, totalTokenCount: 102, cachedContentTokenCount: 40 } }, 40],
+  ];
+  for (const [api, payload, expected] of cases) {
+    const fetchImpl = fakeFetch(() => ({ ok: true, json: async () => payload }));
+    const llm = createLlm({ fetchImpl, resolveEndpoint: async () => ({ baseUrl: 'http://gw/v1', apiKey: 'k', model: 'm', api }) });
+    const out = await llm.chat([{ role: 'user', content: '在吗' }], null, { maxTokens: 50 });
+    assert.equal(out.usage.cached_tokens, expected, api);
+    assert.equal(out.usage.prompt_tokens, 100, `${api}：prompt_tokens 仍是全部输入`);
+  }
+});
+
 test('google-generative-ai：systemInstruction、functionCall/Response、id→name 映射', async () => {
   const fetchImpl = fakeFetch(() => ({
     ok: true,
@@ -112,7 +171,7 @@ test('google-generative-ai：systemInstruction、functionCall/Response、id→na
     resolveEndpoint: async () => ({ baseUrl: 'http://g/v1beta', apiKey: 'g-key', model: 'gemini-x', api: 'google-generative-ai' }),
   });
   const out = await llm.chat(MESSAGES_WITH_TOOLFLOW, TOOLS, { maxTokens: 50, temperature: 0.2 });
-  assert.deepEqual(out.message.tool_calls, [{ id: 'gcall_search_music', type: 'function', function: { name: 'search_music', arguments: '{"query":"b"}' } }]);
+  assert.deepEqual(out.message.tool_calls, [{ id: 'gcall_search_music_1', type: 'function', function: { name: 'search_music', arguments: '{"query":"b"}' } }]);
   assert.equal(out.finishReason, 'tool_calls');
   assert.deepEqual(out.usage, { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 });
 
@@ -127,6 +186,39 @@ test('google-generative-ai：systemInstruction、functionCall/Response、id→na
     'tool 消息按 id→name 映射为 functionResponse');
   assert.deepEqual(call.body.tools, [{ functionDeclarations: [{ name: 'search_music', description: '搜歌', parameters: TOOLS[0].function.parameters }] }]);
   assert.equal(call.body.generationConfig.maxOutputTokens, 50);
+});
+
+test('google-generative-ai：同轮同名两次 functionCall 各自拿到唯一 id，回程结果配对完整', async () => {
+  const fetchImpl = fakeFetch(() => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{ content: { role: 'model', parts: [
+        { functionCall: { name: 'search_music', args: { query: 'a' } } },
+        { functionCall: { name: 'search_music', args: { query: 'b' } } },
+      ] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 3, totalTokenCount: 11 },
+    }),
+  }));
+  const llm = createLlm({
+    fetchImpl,
+    resolveEndpoint: async () => ({ baseUrl: 'http://g/v1beta', apiKey: 'g-key', model: 'gemini-x', api: 'google-generative-ai' }),
+  });
+  const first = await llm.chat([{ role: 'user', content: '放两首' }], TOOLS, { maxTokens: 50, temperature: 0.2 });
+  const ids = first.message.tool_calls.map(call => call.id);
+  assert.equal(new Set(ids).size, 2, '同轮同名调用必须各自有唯一 id');
+  assert.deepEqual(first.message.tool_calls.map(call => call.function.name), ['search_music', 'search_music'],
+    'id 里仍能看出函数名，方便诊断');
+
+  // 把这两个调用与两条结果按下一轮的真实形状发回去：conformMessages 不得再拒绝。
+  await llm.chat([
+    { role: 'user', content: '放两首' },
+    { role: 'assistant', content: '', tool_calls: first.message.tool_calls },
+    { role: 'tool', tool_call_id: ids[0], content: '{"tracks":["a"]}' },
+    { role: 'tool', tool_call_id: ids[1], content: '{"tracks":["b"]}' },
+  ], TOOLS, { maxTokens: 50, temperature: 0.2 });
+  const toolTurn = fetchImpl.calls.at(-1).body.contents.filter(content => content.role === 'user').pop();
+  assert.deepEqual(toolTurn.parts.map(part => part.functionResponse.name), ['search_music', 'search_music'],
+    '两条结果都按 id→name 还原成 functionResponse，没有一条被丢掉');
 });
 
 test('openai-responses：input 转换、function_call/call_id 往返', async () => {
@@ -1149,9 +1241,9 @@ test('traceContent=false 时 error 观测不带 providerDetail', async t => {
   assert.equal(events.find(event => event.phase === 'error').providerDetail, null);
 });
 
-test('选歌与串词按 light 档发送较低思考量，但永不关闭思考；对话轮保持模型默认', async () => {
+test('选歌按 light 档发送较低思考量，但永不关闭思考；对话轮保持模型默认', async () => {
   const endpoint = capability => async () => ({ baseUrl: 'http://gw/v1', apiKey: 'k', model: 'm', api: 'openai-completions', capability });
-  for (const taskId of ['music_selection', 'narration']) {
+  for (const taskId of ['music_selection']) {
     const fetchImpl = fakeFetch(() => ({ ok: true, json: async () => okChoices('{"ok":true}') }));
     const llm = createLlm({ fetchImpl,
       resolveEndpoint: endpoint({ thinking: { canDisable: false, budgetKnob: 'reasoning_effort' }, source: 'probe' }) });
@@ -1433,7 +1525,7 @@ test('流式正文：多 delta 拼接、streamed/ttftMs、usage 结算与 start/
   assert.equal(end.text, '晚上好呀。');
 });
 
-test('流式 tool_calls：按 index 累积 id/name/arguments 片段；缺 index 归 0、无 id 不伪造', async () => {
+test('流式 tool_calls：按 index 累积 id/name/arguments 片段；缺 index 归 0、缺 id 合成确定性回退 call.id', async () => {
   const args = ['{"query":', '"孙燕姿"}'];
   const fetchImpl = fakeFetch(() => sseResponse([
     {
@@ -1465,7 +1557,7 @@ test('流式 tool_calls：按 index 累积 id/name/arguments 片段；缺 index 
   assert.equal(out.finishReason, 'tool_calls');
   assert.equal(out.outcome, 'ok', '工具循环不需要区分流式与非流式');
 
-  // 缺失 index 用 0；没有 id 的片段不伪造 id。
+  // 缺失 index 用 0；没有 id 的流式工具调用合成确定性且不碰撞的 call.id。
   const noIndex = fakeFetch(() => sseResponse([
     { choices: [{ index: 0, delta: { tool_calls: [{ function: { name: 'no_id_tool', arguments: '{"a":1}' } }] },
       finish_reason: 'tool_calls' }] },
@@ -1475,9 +1567,37 @@ test('流式 tool_calls：按 index 累积 id/name/arguments 片段；缺 index 
   const outNoIndex = await llmNoIndex.chat([{ role: 'user', content: '放首歌' }], TOOLS,
     { taskId: 'chat_dialogue', stream: true });
   assert.deepEqual(outNoIndex.message.tool_calls, [{
-    type: 'function', function: { name: 'no_id_tool', arguments: '{"a":1}' },
+    id: 'call_0', type: 'function', function: { name: 'no_id_tool', arguments: '{"a":1}' },
   }]);
-  assert.equal('id' in outNoIndex.message.tool_calls[0], false, '没有 id 就不伪造');
+
+  // 非流式多条缺失 id 的 tool_calls 也得到互不重复的回退 id，可供下一轮 tool_result 配对通过 conformMessages。
+  const nonStreamMulti = fakeFetch(() => ({
+    ok: true,
+    json: async () => ({
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { type: 'function', function: { name: 'search_music', arguments: '{"query":"a"}' } },
+            { id: 'call_1', type: 'function', function: { name: 'search_music', arguments: '{"query":"b"}' } },
+            { type: 'function', function: { name: 'search_music', arguments: '{"query":"c"}' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    }),
+  }));
+  const llmMulti = createLlm({ fetchImpl: nonStreamMulti, resolveEndpoint: streamEndpoint });
+  const outMulti = await llmMulti.chat([{ role: 'user', content: '找三首' }], TOOLS, { taskId: 'chat_dialogue' });
+  assert.deepEqual(outMulti.message.tool_calls.map(c => c.id), ['call_0', 'call_1', 'call_2']);
+  assert.doesNotThrow(() => conformMessages([
+    { role: 'user', content: '找三首' },
+    outMulti.message,
+    { role: 'tool', tool_call_id: 'call_0', content: '{}' },
+    { role: 'tool', tool_call_id: 'call_1', content: '{}' },
+    { role: 'tool', tool_call_id: 'call_2', content: '{}' },
+  ]));
 });
 
 test('流式思考与 usage：reasoning delta 累积；网关不返回 usage 时保持 null', async t => {
@@ -1671,4 +1791,75 @@ test('只有思考的流交给既有 classifyOutcome：不抛流式特例错误'
   const attempts = events.filter(event => event.phase === 'attempt');
   assert.deepEqual(attempts.map(event => event.outcome), ['reasoning_only', 'reasoning_only']);
   assert.equal(attempts[0].streamed, true);
+});
+
+test('providerReplay：带工具调用的回复保留供应商的思考状态，回放给同一协议时原样带回', async () => {
+  const toolCall = { id: 'call-1', type: 'function', function: { name: 'search_music', arguments: '{"query":"a"}' } };
+  const cases = [
+    { api: 'anthropic-messages',
+      response: { content: [{ type: 'thinking', thinking: '想一下', signature: 'sig-1' }, { type: 'redacted_thinking', data: 'xx' },
+        { type: 'tool_use', id: 'call-1', name: 'search_music', input: { query: 'a' } }], stop_reason: 'tool_use' },
+      sent: body => body.messages[1].content,
+      expected: [{ type: 'thinking', thinking: '想一下', signature: 'sig-1' }, { type: 'redacted_thinking', data: 'xx' },
+        { type: 'tool_use', id: 'call-1', name: 'search_music', input: { query: 'a' } }] },
+    { api: 'google-generative-ai',
+      response: { candidates: [{ content: { parts: [{ thought: true, text: '想一下' },
+        { functionCall: { name: 'search_music', args: { query: 'a' } }, thoughtSignature: 'sig-g' }] } }] },
+      sent: body => body.contents[1].parts,
+      expected: [{ functionCall: { name: 'search_music', args: { query: 'a' } }, thoughtSignature: 'sig-g' }] },
+    { api: 'openai-completions',
+      response: { choices: [{ message: { role: 'assistant', content: '', reasoning_content: '想一下', tool_calls: [toolCall] }, finish_reason: 'tool_calls' }] },
+      sent: body => body.messages[2],
+      expected: { role: 'assistant', content: '', tool_calls: [toolCall], reasoning_content: '想一下' } },
+  ];
+  for (const { api, response, sent, expected } of cases) {
+    const fetchImpl = fakeFetch(() => ({ ok: true, json: async () => response }));
+    const llm = createLlm({ fetchImpl, resolveEndpoint: async () => ({ baseUrl: 'http://gw/v1', apiKey: 'k', model: 'm', api }) });
+    const first = await llm.chat([{ role: 'system', content: 's' }, { role: 'user', content: '放首歌' }], TOOLS, { maxTokens: 100 });
+    assert.equal(first.message.providerReplay?.api, api, api);
+    const id = first.message.tool_calls[0].id;
+    await llm.chat([{ role: 'system', content: 's' }, { role: 'user', content: '放首歌' },
+      { ...first.message, content: first.message.content || '' }, { role: 'tool', tool_call_id: id, content: '{}' }], TOOLS, { maxTokens: 100 });
+    const body = fetchImpl.calls[1].body;
+    assert.deepEqual(sent(body), expected, api);
+    assert.doesNotMatch(JSON.stringify(body), /providerReplay/, `${api}: 内部字段不外发`);
+  }
+});
+
+test('providerReplay：别的协议产生的思考状态不回放，也不外发；没有思考就不加字段', async () => {
+  const foreign = { api: 'anthropic-messages', blocks: [{ type: 'thinking', thinking: 'x', signature: 's' }] };
+  const history = [{ role: 'system', content: 's' }, { role: 'user', content: '放首歌' },
+    { role: 'assistant', content: '', providerReplay: foreign,
+      tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'search_music', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call-1', content: '{}' }];
+  for (const api of ['openai-completions', 'google-generative-ai', 'openai-responses']) {
+    const fetchImpl = fakeFetch(() => ({ ok: true, json: async () => (api === 'openai-completions'
+      ? { choices: [{ message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }] }
+      : api === 'google-generative-ai' ? { candidates: [{ content: { parts: [{ text: '好' }] } }] }
+        : { output: [{ type: 'message', content: [{ type: 'output_text', text: '好' }] }] }) }));
+    const llm = createLlm({ fetchImpl, resolveEndpoint: async () => ({ baseUrl: 'http://gw/v1', apiKey: 'k', model: 'm', api }) });
+    const out = await llm.chat(history, TOOLS, { maxTokens: 100 });
+    assert.equal(out.message.providerReplay, undefined, api);
+    assert.doesNotMatch(JSON.stringify(fetchImpl.calls[0].body), /providerReplay|signature|reasoning_content/, api);
+  }
+});
+
+test('toolChoice none：各协议都能表达「这次不许调工具」', async () => {
+  const expected = {
+    'openai-completions': body => assert.equal(body.tool_choice, 'none'),
+    'openai-responses': body => assert.equal(body.tool_choice, 'none'),
+    'anthropic-messages': body => assert.deepEqual(body.tool_choice, { type: 'none' }),
+    'google-generative-ai': body => assert.deepEqual(body.toolConfig, { functionCallingConfig: { mode: 'NONE' } }),
+  };
+  for (const [api, check] of Object.entries(expected)) {
+    const fetchImpl = fakeFetch(() => ({ ok: true, json: async () => (api === 'openai-completions'
+      ? { choices: [{ message: { role: 'assistant', content: '好' }, finish_reason: 'stop' }] }
+      : api === 'google-generative-ai' ? { candidates: [{ content: { parts: [{ text: '好' }] } }] }
+        : api === 'anthropic-messages' ? { content: [{ type: 'text', text: '好' }], stop_reason: 'end_turn' }
+          : { output: [{ type: 'message', content: [{ type: 'output_text', text: '好' }] }] }) }));
+    const llm = createLlm({ fetchImpl, resolveEndpoint: async () => ({ baseUrl: 'http://gw/v1', apiKey: 'k', model: 'm', api }) });
+    await llm.chat(MESSAGES_WITH_TOOLFLOW, TOOLS, { maxTokens: 100, toolChoice: 'none' });
+    check(fetchImpl.calls[0].body);
+    assert.ok(fetchImpl.calls[0].body.tools?.length, `${api}: 工具定义保留`);
+  }
 });

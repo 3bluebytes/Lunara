@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSourceHealthWiring } from './createSourceHealthWiring.js';
-import { reportSourceHealth, resetSourceHealthReporter } from '../music/sourceHealthSignal.js';
+import { beginSourceHealthAttempt, reportSourceHealth, resetSourceHealthReporter } from '../music/sourceHealthSignal.js';
 import { createProviderRegistry } from '../music/providerRegistry.js';
 
 function fixture(t, options = {}) {
@@ -113,6 +113,47 @@ test('an old background auth check cannot overwrite explicit login recovery', as
   finish({ loggedIn: false, code: 'requires-auth' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(wiring.authFailures(), []);
+});
+
+test('repeated same-code faults invalidate older recovery even without an active backoff', t => {
+  const { wiring, events } = fixture(t);
+  const oldest = beginSourceHealthAttempt('ncm');
+  wiring.recordFailure('ncm', 'rate-limited');
+  const older = beginSourceHealthAttempt('ncm');
+  wiring.recordFailure('ncm', 'rate-limited');
+  oldest();
+  older();
+  assert.deepEqual(events.map(event => event.code), ['rate-limited']);
+  assert.equal(wiring.sourceIssues()[0]?.code, 'rate-limited');
+  const fresh = beginSourceHealthAttempt('ncm');
+  wiring.recordFailure('qq', 'timeout');
+  fresh();
+  assert.deepEqual(wiring.sourceIssues().map(issue => issue.source), ['qq'], 'a different source does not invalidate recovery');
+});
+
+test('replacing the wiring discards recovery callbacks from the previous observer', t => {
+  fixture(t);
+  const old = beginSourceHealthAttempt('ncm');
+  const { wiring, events } = fixture(t);
+  wiring.recordFailure('ncm', 'rate-limited');
+  old();
+  assert.deepEqual(events.map(event => event.code), ['rate-limited']);
+  assert.equal(wiring.sourceIssues()[0]?.code, 'rate-limited');
+});
+
+test('active stream backoff blocks recovery and login does not clear unrelated incidents', t => {
+  let blocked = true;
+  const { wiring, events } = fixture(t, { providers: { ncm: { isStreamBackoffActive: () => blocked } } });
+  reportSourceHealth('ncm', 'rate-limited');
+  wiring.recordSuccess('ncm');
+  assert.equal(wiring.sourceIssues()[0]?.code, 'rate-limited');
+  assert.equal(wiring.inspect().failures.find(item => item.id === 'ncm')?.code, 'rate-limited');
+  blocked = false;
+  wiring.recordAuthenticated('ncm');
+  assert.equal(wiring.sourceIssues()[0]?.code, 'rate-limited', 'verified account is not a stream recovery');
+  assert.deepEqual(events.map(event => event.code), ['rate-limited']);
+  wiring.recordSuccess('ncm');
+  assert.deepEqual(events.map(event => event.code), ['rate-limited', null]);
 });
 
 test('unknown providers and broken subscribers cannot affect the resolution signal', t => {

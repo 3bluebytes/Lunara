@@ -20,6 +20,90 @@ export const FREE_VOICE_DISCLOSURE = '免费声音来自微软 Edge「大声朗�
 const DEFAULT_EDGE_VOICE = Object.freeze({ id: 'zh-CN-XiaoxiaoNeural', name: '晓晓' });
 const SEP = '\u0001';
 
+export function enableFreeVoices(saveTtsFallback) {
+  if (typeof saveTtsFallback !== 'function') throw new TypeError('缺少免费声音保存动作');
+  return saveTtsFallback({ freeVoicesEnabled: true, consent: true });
+}
+
+export function createFreeVoiceQuickEnable({
+  documentLike,
+  saveTtsFallback,
+  onEnabled = () => {},
+} = {}) {
+  const button = documentLike.createElement('button');
+  button.type = 'button';
+  button.className = 'shell-primary';
+  button.dataset.freeVoiceEnable = '';
+  button.textContent = '使用免费声音';
+
+  const prompt = documentLike.createElement('div');
+  prompt.dataset.freeVoicePrompt = '';
+  prompt.hidden = true;
+  prompt.setAttribute('role', 'region');
+  prompt.setAttribute('aria-label', '免费声音说明');
+
+  const copy = documentLike.createElement('p');
+  copy.dataset.freeVoiceDisclosure = '';
+  copy.textContent = FREE_VOICE_DISCLOSURE;
+
+  const actions = documentLike.createElement('div');
+  actions.className = 'free-voice-prompt-actions';
+  const agree = documentLike.createElement('button');
+  agree.type = 'button';
+  agree.className = 'shell-primary';
+  agree.dataset.freeVoiceAgree = '';
+  agree.textContent = '同意并开启';
+  const cancel = documentLike.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'tts-text-button';
+  cancel.dataset.freeVoiceCancel = '';
+  cancel.textContent = '取消';
+  const status = documentLike.createElement('p');
+  status.dataset.freeVoiceStatus = '';
+  status.setAttribute('role', 'status');
+  actions.append(agree, cancel);
+  prompt.append(copy, actions, status);
+
+  const wrap = documentLike.createElement('div');
+  wrap.className = 'free-voice-quick';
+  wrap.append(button, prompt);
+
+  let busy = false;
+  const closePrompt = () => {
+    prompt.hidden = true;
+    status.textContent = '';
+    button.focus?.({ preventScroll: true });
+  };
+  button.addEventListener('click', () => {
+    prompt.hidden = false;
+    agree.focus?.({ preventScroll: true });
+  });
+  cancel.addEventListener('click', closePrompt);
+  prompt.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault?.();
+    closePrompt();
+  });
+  agree.addEventListener('click', () => {
+    if (busy) return;
+    busy = true;
+    agree.disabled = true;
+    cancel.disabled = true;
+    void enableFreeVoices(saveTtsFallback).then(async config => {
+      prompt.hidden = true;
+      status.textContent = '';
+      await onEnabled(config);
+    }).catch(error => {
+      status.textContent = error?.message || '没有开启免费声音';
+    }).finally(() => {
+      busy = false;
+      agree.disabled = false;
+      cancel.disabled = false;
+    });
+  });
+  return wrap;
+}
+
 const encodeTarget = target => (target?.profileId ? `p${SEP}${target.profileId}` : target?.voiceId ? `e${SEP}${target.voiceId}` : '');
 function decodeTarget(value) {
   const [kind, id] = String(value || '').split(SEP);
@@ -121,11 +205,11 @@ export function createFreeVoiceSettings({
     render();
   }
 
-  async function save(patch, success, statusSelector = '#tts-fallback-status') {
+  async function commit(action, success, statusSelector = '#tts-fallback-status') {
     busy = true;
     render();
     try {
-      const config = await controller.saveTtsFallback(patch);
+      const config = await action();
       consentOpen = false;
       apply(config);
       onConfig(config);
@@ -139,6 +223,10 @@ export function createFreeVoiceSettings({
       busy = false;
       render();
     }
+  }
+
+  function save(patch, success, statusSelector) {
+    return commit(() => controller.saveTtsFallback(patch), success, statusSelector);
   }
 
   function onFreeToggle(event) {
@@ -168,7 +256,11 @@ export function createFreeVoiceSettings({
     cleanups.push(() => node.removeEventListener(type, listener));
   }
   listen('#tts-free-toggle', 'change', onFreeToggle);
-  listen('#tts-free-agree', 'click', () => void save({ freeVoicesEnabled: true, consent: true }, '免费声音已开启：上方「来源接口」已切到免费声音，点「获取声音列表」后在发现结果里试听。', '#tts-free-status'));
+  listen('#tts-free-agree', 'click', () => void commit(
+    () => enableFreeVoices(patch => controller.saveTtsFallback(patch)),
+    '免费声音已开启：已保留的声音可直接使用；也可在上方「来源接口」获取更多声音。',
+    '#tts-free-status',
+  ));
   listen('#tts-free-cancel', 'click', cancelConsent);
   // preventDefault：只收起说明，不让设置面板把同一个 Esc 当成关闭整个面板。
   listen('#tts-free-consent', 'keydown', event => {

@@ -51,9 +51,13 @@ import { createTtsCustomService, migrateLegacyMinimaxTtsConfig } from './tts/tts
 import { getPublicLLMConfig } from './llmConfig.js';
 import { WebSocketHub } from './realtime/WebSocketHub.js';
 import { createPersonVoice, syncCustomVoices } from './tts/personVoice.js';
+import { createTtsAssetLifecycle } from './tts/ttsAssetLifecycle.js';
+import { createTtsPreviewService, listResolvedVoiceOptions } from './tts/ttsPreviewService.js';
+import { seedDefaultFreeVoice } from './ttsCustomConfig.js';
 import { QueueService } from './playback/QueueService.js';
 import { RadioRequestService } from './requests/RadioRequestService.js';
-import { createMusicSelectionAgent } from './program/MusicSelectionAgent.js';
+import { createHostMusicRunner } from './virtual-person/hostMusicRunner.js';
+import { createTrackLineFreshness } from './program/trackLineFreshness.js';
 import { MusicSelectionService } from './program/MusicSelectionService.js';
 import { findCuratedFallbacks, validateCuratedFallback } from './program/curatedFallbacks.js';
 import { createProductionMusicCandidateSupply } from './program/musicCandidateSupply.js';
@@ -65,6 +69,7 @@ import { validateResolvedTrackAgainstRequest } from './program/programConstraint
 import { resumeCommandsForState } from './playback/PlaybackRuntime.js';
 import { createPlaybackRuntimeComposition } from './playback/createPlaybackRuntimeComposition.js';
 import { createLifeContextRuntime } from './life/createLifeContextRuntime.js';
+import { createJournalAnnotationGenerator } from './life/journalAnnotation.js';
 import { AuthService } from './services/AuthService.js';
 import { StationService } from './services/StationService.js';
 import { MemoryAdminService } from './services/MemoryAdminService.js';
@@ -83,7 +88,9 @@ import { VirtualPersonService } from './virtual-person/VirtualPersonService.js';
 import { consolidateStation } from './station/StationConsolidation.js';
 import { createHttpApp } from './app/createHttpApp.js';
 import { registerDefaultRoutes } from './http/registerDefaultRoutes.js';
-import { resolveTtsCacheDir, resolveDatabasePath, resolveAudioCacheDir, resolveImageCacheDir, resolveDataRoot } from './runtimePaths.js';
+import { resolveTtsCacheDir, resolveDatabasePath, resolveAudioCacheDir, resolveImageCacheDir, resolveDataRoot, resolveEmbeddingModelDir } from './runtimePaths.js';
+import { EmbeddingClient } from './memory/embedding/EmbeddingClient.js';
+import { createSemanticMemory } from './memory/embedding/semanticMemory.js';
 import { createSessionTraceWiring, recordTrackIntroTurn } from './app/createSessionTraceWiring.js';
 import { createLlmRuntimeWiring } from './app/createLlmRuntimeWiring.js';
 import { createRuntime } from './app/createRuntime.js';
@@ -204,10 +211,11 @@ const playbackRuntime = createPlaybackRuntimeComposition({
   publish: broadcast,
   trace: recordServiceEvent('playback'),
   getRadioRequestService: () => radioRequestService,
-  prepareTrackNarration: (effect, options) => narrationAgent.prepareTrack(effect, options),
   resolveTrackNarrationAsset: (effect, options) => programNarrationComposer.resolveTrackNarrationAsset(effect, options),
+  lineDropReason: (track, sessionId) => trackLineFreshness(track, sessionId),
   onTrackNarrationStarted: (snapshot, event, track) => recordTrackIntroTurn({ sessionTrace,
     conversationStore: virtualPerson.conversationStore, queueService, publish: broadcast, snapshot, event, track }),
+  rewriteTrackLines: input => rewriteTrackLines(input), // 停得够久再接着放：旧串词作废的几首交还原 host 重写
 });
 
 // ---- 声音身份：仅自定义接口与系统语音，无本地模型服务 ----
@@ -218,22 +226,27 @@ const { resolvePersonVoice, synthesizeForPerson, performanceCapabilityForPerson,
 const lifeContext = createLifeContextRuntime({ resolveDatabasePath, playbackRuntime }); // life.db，默认私有；变更失效未播串词
 let virtualPersonService = null;
 const webAccess = createWebAccess({ state });
+// 本地语义召回：模型未安装时 available() 为 false，不启动子进程；关系事实超出预算时才按需启动。
+const semanticMemory = createSemanticMemory({ embedder: new EmbeddingClient({ modelRoot: resolveEmbeddingModelDir() }) });
 const virtualPerson = createVirtualPersonRuntimeComposition({
   sessionTrace,
   webAccess,
   chat: (messages, tools, options) => llm.chat(messages, tools, options),
-  synthesize: ({ text, voiceProfileId, signal }) => synthesizeForPerson(text, { voiceProfileId, signal }),
+  synthesize: ({ text, voiceProfileId, signal, performance, allowFallback }) => synthesizeForPerson(text, { voiceProfileId, signal, performance, allowFallback }),
   publish: broadcast,
   queueService,
   playbackRuntime,
   getMemoryService: () => _station?.stationMemory,
+  getDreaming: () => _dream,
   isSharedMemoryActive: row => _station?.isStationSeedActive(row) ?? false,
+  semanticMemory,
   getMusicService: () => musicSelectionService,
   getEnvironment: () => {
     void triggerAutoLocation();
     return envMod.snapshot();
   },
   getLifeContext: lifeContext.getLifeContext,
+  isLifeContextCurrent: snapshot => lifeContext.service.snapshotStillCurrent(snapshot),
   personaGateway: {
     create: input => virtualPersonService.create(input),
     list: () => virtualPersonService.list(),
@@ -250,6 +263,10 @@ const virtualPerson = createVirtualPersonRuntimeComposition({
     }));
   },
   logger: console,
+});
+const ttsLifecycle = createTtsAssetLifecycle({
+  cacheDir: resolveTtsCacheDir(), conversationStore: virtualPerson.conversationStore,
+  listPinnedTurnIds: () => lifeContext.service.listQuotedTurnIds(), logger: console,
 });
 virtualPersonService = new VirtualPersonService({
   registry: virtualPerson.registry,
@@ -286,14 +303,18 @@ virtualPersonService = new VirtualPersonService({
   // 编辑声音时拒绝未知引用：legacy 别名（供应商 voice id、新旧显示名）都算已知。
   resolveVoiceProfile: id => VoiceDirectory.resolveProfileId(id),
   onRoomDeleted,
+  ttsLifecycle,
+  synthesizeSpeech: ({ text, voiceProfileId, signal, performance, speechPlan, allowFallback }) => synthesizeForPerson(text, { voiceProfileId, signal, performance, speechPlan, allowFallback }),
 });
-const { programNarrationComposer, narrationAgent } = createNarrationWiring({
+const trackLineFreshness = createTrackLineFreshness({ conversationStore: virtualPerson.conversationStore });
+const { programNarrationComposer, rewriteTrackLines } = createNarrationWiring({
   agentLoop: virtualPerson.agentLoop, toolRegistry: virtualPerson.toolRegistry, registry: virtualPerson.registry,
+  host: virtualPerson.runtime,
   conversationStore: virtualPerson.conversationStore, getSongTagStore, getMemoryService: () => _station?.stationMemory,
   // trackLikeService 在下方才初始化；串词时一定已就绪，读不到时 narrationContext 当作未知。
   getTrackLikeService: () => trackLikeService,
-  getListeningSnapshot: sessionId => playbackRuntime.listeningSnapshot(sessionId),
-  getLifeSnapshot: lifeContext.getLifeContext,
+  // 队列里写好还没念的串词：同一段时间会挨着念出来，写新的时要一起比重复。
+  getListening: sessionId => playbackRuntime.listeningSnapshot(sessionId),
   getMusicService: () => musicSelectionService, synthesize: synthesizeForPerson, getPerformanceCapability: performanceCapabilityForPerson, sessionTrace });
 const likeHydration = createLikeHydration();
 
@@ -330,20 +351,24 @@ const programCommitService = new ProgramCommitService({
 const musicCandidateSupply = createProductionMusicCandidateSupply({
   getSourcePolicy,
   recommendationWeights: () => readRecommendationWeights(state), trace: recordServiceEvent('music') });
+let presence = null;
 musicSelectionService = new MusicSelectionService({
   getSourcePolicy, getSourceFailures: () => productionSourceHealth.authFailures(),
   programCommitService, playbackRuntime, registry: virtualPerson.registry,
-  // 候选交给模型挑选时在后台预解析可播放版本（并发 3），提交时复用；预热批次不预解析。
+  // 候选交给模型挑选时在后台预解析可播放版本（并发 3），提交时复用。
   preResolveConcurrency: 3,
   trace: recordServiceEvent('music'),
   conversationStore: virtualPerson.conversationStore,
   getMemoryService: () => _station?.stationMemory,
+  getDreaming: () => _dream,
   isSharedMemoryActive: row => _station?.isStationSeedActive(row) ?? false,
   getSongTagStore, getPlaylistTracks, getAlbumTracks,
   getRecentPlays: sinceTs => state.recentPlaysIdentitySince(sinceTs),
   getListeningHistory: ({ personId, since }) => (store => ({ plays: state.playsWithOutcomeSince(since), songStats: store?.db ? store.songStats(personId, { limit: 200 }) : [],
     observations: store?.db ? store.recentPlaybackObservations(personId, { since }) : [] }))(_station?.getReflectionAgent()?.store),
-  getFamiliarArtists: () => getLibraryStore().listLikedArtists(),
+  getFamiliarArtists: () => [...new Set([...getLibraryStore().listLikedArtists(), ...getLibraryStore().artistsForSongs(getTrackLikeStore().listLikedTracks())])],
+  getLikedTracks: () => getTrackLikeStore().listLikedTracks(), getLikesRevision: () => getTrackLikeStore().likesRevision(),
+  getSessionPresence: sid => presence?.observer?.entry?.(sid) || null,
   getLibraryRevision: () => JSON.stringify([
     getLibraryStore().db.prepare('SELECT COUNT(*) AS count, MAX(last_seen_at) AS latest, MAX(removed_at) AS removed FROM library_tracks').get(),
     getSongTagStore().db.prepare('SELECT COUNT(*) AS count, MAX(updated_at) AS latest FROM song_tags').get(),
@@ -372,10 +397,11 @@ if (savedCookie) ncm.setCookie(savedCookie);
 const savedQQCookie = state.getPref('qq_cookie');
 if (savedQQCookie) qq.setCookie(savedQQCookie);
 
-// 续播与手动下一首的受限任务入口：同一 AgentLoop、无合成用户消息（见 program/MusicSelectionAgent.js）。
-const musicSelectionAgent = createMusicSelectionAgent({ agentLoop: virtualPerson.agentLoop, toolRegistry: virtualPerson.toolRegistry, registry: virtualPerson.registry });
+// 没有听众消息时 host 自己选歌的回合：续播、手动下一首和预热（见 virtual-person/hostMusicRunner.js）。
+const hostMusicRunner = createHostMusicRunner({ agentLoop: virtualPerson.agentLoop, toolRegistry: virtualPerson.toolRegistry,
+  host: virtualPerson.runtime, registry: virtualPerson.registry });
 radioRequestService = new RadioRequestService({ conversationService: virtualPerson.chatService,
-  musicService: musicSelectionService, getMusicSelectionAgent: () => musicSelectionAgent,
+  musicService: musicSelectionService, getHostMusicRunner: () => hostMusicRunner,
   sessionTrace, playbackRuntime, conversationStore: virtualPerson.conversationStore,
   // 续选人 = 房间当前主持人；被归档的角色不可用，回退到第一个可用成员。
   isPersonAvailable: id => {
@@ -384,12 +410,8 @@ radioRequestService = new RadioRequestService({ conversationService: virtualPers
   } });
 
 // Browser reports provide playback analytics. The runtime bridge owns person-specific learning.
-async function applyPlayOutcome({ song_id, outcome, played_seconds }) {
-  const r = state.recordOutcome({
-    song_id: String(song_id),
-    outcome: String(outcome),
-    played_seconds: Number(played_seconds) || 0,
-  });
+async function applyPlayOutcome({ song_id, provider, source, outcome, played_seconds }) {
+  const r = state.recordOutcome({ song_id: String(song_id), ...(provider || source ? { source: String(source || provider) } : {}), outcome: String(outcome), played_seconds: Number(played_seconds) || 0 });
   // Bus event for any interested subscriber (e.g. taste consolidation, dreaming).
   if (_station?.bus && r.ok && r.updated > 0) {
     _station.bus.publishEvent(createEvent({
@@ -407,10 +429,8 @@ const playbackOperationsService = createPlaybackOperationsService({
 
 // 「喜欢」意图的唯一入口：本地意图落 state.db，远端镜像受 like-write 能力门约束
 // （QQ 没有该能力，因此只会是 local_only）。不经过 AgentLoop，不写角色记忆。
-const trackLikeService = new TrackLikeService({
-  store: getTrackLikeStore(),
-  providers: { ncm, qq },
-});
+const trackLikeService = new TrackLikeService({ store: getTrackLikeStore(), providers: { ncm, qq },
+  onLikeChanged: () => musicSelectionService?.pool?.invalidate() });
 likeHydration.attach(trackLikeService);
 
 const memoryAdminService = new MemoryAdminService({
@@ -418,6 +438,20 @@ const memoryAdminService = new MemoryAdminService({
   getDreaming: () => _dream,
   conversationStore: virtualPerson.conversationStore,
   invalidate: () => musicSelectionService.pool?.invalidate(),
+  dropUnspokenLines: () => {
+    const runtime = playbackRuntime.snapshot();
+    const sessionIds = [runtime.activeListeningSessionId, ...Object.keys(runtime.suspendedSessions || {})].filter(Boolean);
+    for (const sessionId of sessionIds) {
+      try { musicSelectionService.dropPreparedLines?.(sessionId); } catch { /* 批次里的串词到开口前还会再核对 */ }
+    }
+    if (typeof playbackRuntime.invalidateAllPreparedNarrations === 'function') {
+      Promise.resolve(playbackRuntime.invalidateAllPreparedNarrations()).catch(() => {});
+      return;
+    }
+    for (const sessionId of sessionIds) {
+      Promise.resolve(playbackRuntime.invalidatePreparedNarrations(sessionId)).catch(() => {});
+    }
+  },
   generateDailySummary,
   consolidateStation,
 });
@@ -456,23 +490,10 @@ const llmSettingsService = new LlmSettingsService({ sessionOverrides: sessionMod
 // ---- 设置：LLM provider + 音源 + TTS 音色 + 主播放源 ----
 // 选项来自 VoiceDirectory 的预设身份（稳定 vp_* id），不再是供应商 voice id。
 // 每个选项带上当前实际会用到的 provider 与是否回落，使设置页能如实呈现。
-function ttsVoiceOptions() {
-  // 与 /api/station/voices 共用同一份解析，避免两个界面给出不一致的回落结论。
-  return VoiceDirectory.listResolvedVoiceProfiles().map(profile => ({
-    id: profile.id,
-    name: profile.displayName,
-    note: profile.description,
-    providerId: profile.resolvedProviderId,
-    voiceId: profile.resolvedVoiceId,
-    sourceLabel: profile.sourceLabel,
-    isFallback: profile.isFallback,
-  }));
-}
-
 const settingsHttpService = new SettingsHttpService({
   state,
   tts,
-  getVoices: () => ttsVoiceOptions(),
+  getVoices: () => listResolvedVoiceOptions(VoiceDirectory),
   providerStatus: () => tts.providerStatus(), sourceHealth: productionSourceHealth.snapshot,
   playbackMix: () => playbackMixShares(),
   getSnapshot: getSettingsSnapshot,
@@ -485,26 +506,10 @@ const ttsCustomService = createTtsCustomService({
   onConfigChanged: syncCustomVoices, getPerson: id => virtualPerson.registry.get(id),
   synthesize: (text, options) => tts.synth(text, options), storeAudio: audio => tts.storeAudio(audio),
 });
-const ttsPreviewService = {
-  async preview({ voiceProfileId, text } = {}) {
-    const voice = resolvePersonVoice(voiceProfileId);
-    if (!voice || voice.unavailable || !voice.providerId) {
-      return { error: '这把声音当前不可用，请换一个或检查声音服务配置。' };
-    }
-    // 试听只是确认音色，本地合成没有费用但没有时间上限——不截断的话
-    // 一段超长文本会让 CPU 空转数分钟。
-    const previewText = String(text || '').trim().slice(0, 500) || '接下来是陈奕迅的《富士山下》。';
-    try {
-      const audio = await tts.synth(previewText, {
-        providerId: voice.providerId,
-        voiceId: voice.voiceId, params: voice.params || {},
-      });
-      return { url: audio?.url || null, providerId: audio?.providerId || voice.providerId, isFallback: voice.isFallback };
-    } catch (error) {
-      return { error: '这把声音试听失败，请检查声音配置后重试。' };
-    }
-  },
-};
+const ttsPreviewService = createTtsPreviewService({
+  resolvePersonVoice,
+  synth: (text, options) => tts.synth(text, options),
+});
 const healthService = new HealthService({
   providers: { ncm, qq },
   getLlmConfig: getPublicLLMConfig,
@@ -514,9 +519,17 @@ const healthService = new HealthService({
 });
 
 // 陪伴感：只读观察 → 心跳叫醒 → 主循环 ambient turn，她自己决定说不说（openspec: add-companion-heartbeat）。
-const presence = createPresenceWiring({ playbackRuntime, sessionTrace, state, virtualPerson, queueService,
+presence = createPresenceWiring({ playbackRuntime, sessionTrace, state, virtualPerson, queueService,
   clientHub: webSocketHub, usageLedger, publish: broadcast,
+  onSkipMomentum: moment => musicSelectionService?.pool?.invalidate({ sessionId: moment.sessionId }),
   getActivity: sessionId => virtualPerson.runtime.presenceActivity(sessionId) });
+
+const generateJournalAnnotation = createJournalAnnotationGenerator({
+  virtualPerson,
+  getStation: () => _station,
+  loadPersonaMarkdown,
+  llm,
+});
 
 registerDefaultRoutes(app, {
   webAccess,
@@ -530,6 +543,11 @@ registerDefaultRoutes(app, {
   environmentService: { getNow: () => envMod.getNow(), environmentEvent: currentEnvironmentEvent },
   llmSettingsService,
   lifeContextService: lifeContext.service,
+  conversationStore: virtualPerson.conversationStore,
+  virtualPersonRegistry: virtualPerson.registry,
+  trackLikeStore: getTrackLikeStore(),
+  playsForDateRange: state.playsForDateRange,
+  generateJournalAnnotation,
 });
 
 // LLM 只从独立用户配置文件读取；state.db 中旧 llm provider 字段被安全忽略。
@@ -581,6 +599,7 @@ async function startStationComponent() {
 }
 
 async function stopStationComponent() {
+  semanticMemory.close();
   await _stationResources?.stop().catch(error => console.warn('[station] subscription cleanup:', error.message));
   _stationResources = null;
   if (_station) await _station.shutdown();
@@ -638,9 +657,11 @@ function startMaintenanceComponent() {
   }, 3000);
   _maintenanceTasks.timeout(() => runStationConsolidation('startup'), 5000);
   _maintenanceTasks.interval(() => runStationConsolidation('periodic'), 60 * 60 * 1000);
+  ttsLifecycle.scheduleSweep();
 }
 
 async function stopMaintenanceComponent() {
+  ttsLifecycle.stop();
   await _maintenanceTasks?.stop();
   _maintenanceTasks = null;
 }
@@ -693,6 +714,7 @@ export async function start(port = PORT, options = {}) {
     state,
     collectLegacyVoiceSelections: () => (virtualPerson.registry.list() || []).map(e => e.voiceProfileId).filter(id => id && !String(id).startsWith('vp_')),
   });
+  seedDefaultFreeVoice({ voiceProfileId: virtualPerson.registry.get('lunara')?.voiceProfileId });
   syncCustomVoices();
 
   const address = _runtimeHandle.address;

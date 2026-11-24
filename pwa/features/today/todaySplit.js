@@ -94,8 +94,9 @@ export function createTodaySplit({
     if (!fromSplit(event) || !desktop() || (event.button != null && event.button !== 0)) return;
     event.preventDefault?.();
     const startWidth = width ?? (Math.round(measuredListWidth()) || TODAY_SPLIT.min);
-    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth };
-    event.target.setPointerCapture?.(event.pointerId);
+    const captureTarget = handle() || panel;
+    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth, captureTarget };
+    captureTarget?.setPointerCapture?.(event.pointerId);
     panel?.ownerDocument?.documentElement?.classList?.add?.('today-splitting');
   }
   function onPointerMove(event) {
@@ -104,7 +105,8 @@ export function createTodaySplit({
   }
   function endDrag(event) {
     if (!drag) return;
-    handle()?.releasePointerCapture?.(event?.pointerId ?? drag.pointerId);
+    const target = drag.captureTarget || handle() || panel;
+    target?.releasePointerCapture?.(event?.pointerId ?? drag.pointerId);
     drag = null;
     panel?.ownerDocument?.documentElement?.classList?.remove?.('today-splitting');
     save();
@@ -130,6 +132,8 @@ export function createTodaySplit({
     listen(panel, 'pointermove', onPointerMove);
     listen(panel, 'pointerup', endDrag);
     listen(panel, 'pointercancel', endDrag);
+    listen(panel, 'lostpointercapture', endDrag);
+    listen(windowLike, 'blur', endDrag);
     listen(panel, 'keydown', onKeyDown);
     listen(panel, 'dblclick', event => { if (fromSplit(event)) reset(); });
     if (typeof windowLike?.MutationObserver === 'function') {

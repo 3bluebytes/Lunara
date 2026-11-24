@@ -16,6 +16,7 @@ const BOOST_DAY_OF_WEEK = 0.1;
 const PENALTY_OLDER_30D = 0.1;
 const SECONDARY_MULTIPLIER = 0.5;
 const PRIMARY_FETCH_LIMIT = 50;   // SQL 拉的最大数，再做评分排序
+const PRIMARY_SCAN_LIMIT = 500;   // accept 翻页的扫描上限
 const SECONDARY_FETCH_LIMIT = 30; // spreading 的上限
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -51,6 +52,8 @@ export function retrieveForPrompt(memoryService, options = {}) {
     excludeTags,
     topK = 5,
     enableSpreading = true,
+    // 调用方的适用/去重判断：在排序截取前过滤，不合格的候选不占 topK 名额（也不更新 last_activated_at）。
+    accept = null,
   } = options;
 
   if (!memoryService || !memoryService.store) return [];
@@ -63,7 +66,16 @@ export function retrieveForPrompt(memoryService, options = {}) {
   let primary = [];
   if (query && store._ftsAvailable && String(query).trim().length >= 3) {
     // BM25 via FTS5
-    primary = _bm25Primary(db, namespace, query, type, PRIMARY_FETCH_LIMIT);
+    // 有 accept 时按页往后取：最强的一页可能全被拒（如都已在关系记忆里注入），不能因此整节空掉。
+    for (let offset = 0; offset < PRIMARY_SCAN_LIMIT; offset += PRIMARY_FETCH_LIMIT) {
+      const page = _bm25Rows(db, namespace, query, type, PRIMARY_FETCH_LIMIT, offset);
+      primary.push(...page);
+      if (!accept || page.length < PRIMARY_FETCH_LIMIT
+        || _applyTagFilters(primary, { tagsAll, excludeTags }).filter(accept).length >= topK) break;
+    }
+    // bm25 越负越相关 → 按本次最相关的一条归一化到 [0, 1]：最相关的为 1，越弱越接近 0。
+    const strongest = Math.max(0, ...primary.map(r => Math.abs(r._rank || 0)));
+    primary.forEach(r => { r._base = strongest > 0 ? Math.abs(r._rank || 0) / strongest : 1; });
   } else {
     // 退化：按 type / tag 过滤
     primary = store.search({
@@ -99,7 +111,8 @@ export function retrieveForPrompt(memoryService, options = {}) {
     combined = [...primary, ...filteredSecondary];
   }
 
-  // ===== Step 4: sort + top-K =====
+  // ===== Step 4: filter + sort + top-K =====
+  if (accept) combined = combined.filter(accept);
   combined.sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
   const final = combined.slice(0, topK);
 
@@ -116,7 +129,7 @@ export function retrieveForPrompt(memoryService, options = {}) {
 
 // ===== Helpers =====
 
-function _bm25Primary(db, namespace, query, type, limit) {
+function _bm25Rows(db, namespace, query, type, limit, offset) {
   // FTS5 query: 用 MATCH，BM25 rank 越小越相关；归一化到 [0, 1]
   const sql = `
     SELECT m.*, bm25(memories_fts) AS rank
@@ -127,24 +140,41 @@ function _bm25Primary(db, namespace, query, type, limit) {
       ${type ? 'AND m.type = ?' : ''}
       AND (m.expires_at IS NULL OR m.expires_at > ?)
     ORDER BY rank
-    LIMIT ?
+    LIMIT ? OFFSET ?
   `;
-  const params = [query, namespace];
+  const expression = trigramMatchExpression(query);
+  if (!expression) return [];
+  const params = [expression, namespace];
   if (type) params.push(type);
-  params.push(Date.now(), limit);
+  params.push(Date.now(), limit, offset);
   let rows;
   try {
     rows = db.prepare(sql).all(...params);
   } catch {
     return [];
   }
-  if (!rows.length) return [];
-  // bm25 越小越相关 → 反转到 [0, 1]：用 1 / (1 + |rank|)
   return rows.map(r => {
     const rec = store_rowToRecord(r);
-    rec._base = 1 / (1 + Math.abs(r.rank || 0));
+    rec._rank = r.rank || 0;
     return rec;
   });
+}
+
+const MAX_QUERY_TRIGRAMS = 64;
+
+/**
+ * 把本轮原话变成 FTS5 查询：字母/数字/汉字连续片段切成三字组，用 OR 连起来。
+ * 整句直接 MATCH 会被当成所有三字组都要出现（再加上标点语法错误），长句几乎总是零命中；
+ * OR 让共享三字组越多的记忆 BM25 排得越前。每个三字组加引号，用户文字不会变成查询语法。
+ * Python 伪代码：' OR '.join(f'"{g}"' for g in dict.fromkeys(trigrams(runs(query))))
+ */
+export function trigramMatchExpression(query) {
+  const grams = new Set();
+  for (const run of String(query || '').match(/[\p{L}\p{N}]+/gu) || []) {
+    const chars = [...run.toLowerCase()];
+    for (let i = 0; i + 3 <= chars.length && grams.size < MAX_QUERY_TRIGRAMS; i += 1) grams.add(chars.slice(i, i + 3).join(''));
+  }
+  return [...grams].map(gram => `"${gram.replaceAll('"', '""')}"`).join(' OR ');
 }
 
 function _recencyBase(record) {

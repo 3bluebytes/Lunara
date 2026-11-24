@@ -20,7 +20,7 @@ function fixture(options = {}) {
   return { queue, runtime, service, events, effects };
 }
 
-test('canonical replacements commit together; only the activated song requests narration', async () => {
+test('canonical replacements commit together; no line pass means the songs play silently', async () => {
   const h = fixture({ resolveTrack: async query => query === '旧候选' ? { ok: false } : playable(query),
     findSubstitutes: async () => [{ candidateId: 'replacement', query: '真实替代' }], validateSubstitute: () => true });
   const result = await h.service.commit(candidate(), { musicAction: { delivery: 'replace_now' },
@@ -31,9 +31,20 @@ test('canonical replacements commit together; only the activated song requests n
   assert.equal(h.runtime.snapshot().phase, 'loading');
   assert.equal(h.events.some(event => event.message || event.overlayNarrations?.length), false);
   assert.equal(result.committedProgram.narrationItems.length, 0);
-  assert.equal(h.runtime.snapshot().queue[0].narration.status, 'preparing');
+  assert.equal(h.runtime.snapshot().queue[0].narration.status, 'absent');
   assert.equal(h.runtime.snapshot().queue[0].narration.ttsUrl, null);
   assert.doesNotMatch(JSON.stringify(h.events), /未核实的旧口播/);
+});
+
+test('a line pass on its way marks every committed occurrence as being written; a prepared line is taken as written', async () => {
+  const h = fixture({ resolveTrack: async query => playable(query) });
+  const coming = await h.service.commit(candidate(), { musicAction: { delivery: 'replace_now' },
+    virtualPersonId: 'a', voiceProfileId: 'voice-a', listeningSessionId: 'one', linePassComing: true });
+  assert.equal(coming.ok, true);
+  for (const track of h.runtime.snapshot().queue) {
+    assert.equal(track.narration.status, 'preparing');
+    assert.equal(track.narration.generationRevision, 1, '第一代：写好的那一条才对得上');
+  }
 });
 
 test('exact resolution failure changes neither queue nor chat and returns factual failure', async () => {

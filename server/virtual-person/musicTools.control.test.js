@@ -104,7 +104,7 @@ test('resume with a requested continuation still announces the follow-up music',
 function narrationService(overrides = {}) {
   const submitted = [];
   const playing = {
-    activeListeningSessionId: 'conversation:a', runtimeVersion: 18, outputGeneration: 4,
+    active: true, runtimeVersion: 18, outputGeneration: 4,
     phase: 'playing', currentIndex: 0, currentSongId: 'song-a',
     txn: { correlationId: 'runtime-1-queue-a', queueItemId: 'queue-a' },
     queue: [{ queueItemId: 'queue-a', songId: 'song-a', programId: 'program-a', title: '歌 A', artist: '歌手 A' }],
@@ -143,6 +143,70 @@ test('narrate_current_track asks the runtime for the playing occurrence without 
   assert.match(outcome.presentation.displayText, /我来说说这一首/u);
   assert.doesNotMatch(outcome.presentation.displayText, /确认之前|不要/u);
   assert.match(outcome.modelContext, /确认之前不要说已经讲过了/u);
+});
+
+// 这一首还没有串词：runtime 接受请求后开新代次（preparing），工具把它交给这一轮结束后的 line pass。
+function unwrittenService({ status = 'absent' } = {}) {
+  const fixture = narrationService();
+  const { playing, submitted } = fixture;
+  const item = { ...playing.queue[0], narration: { status, generationRevision: 3 } };
+  const live = { ...playing, queue: [item] };
+  const failed = [];
+  const targets = [];
+  const service = {
+    playbackRuntime: {
+      listeningSnapshot: () => live,
+      async submit(event) {
+        submitted.push(event);
+        if (status === 'absent') live.queue = [{ ...item, narration: { status: 'preparing', generationRevision: 4 } }];
+        return { accepted: true, commands: [], effects: [] };
+      },
+    },
+    lineTargetFor: (track, sessionId) => {
+      const target = { track, sessionId, fail: reason => { failed.push(reason); } };
+      targets.push(target);
+      return target;
+    },
+    mutate: async (_context, run) => run(() => {}),
+  };
+  const registry = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  registerMusicTools(registry, () => service);
+  return { registry, submitted, targets, failed };
+}
+const collector = () => {
+  const collected = [];
+  return { collected, collect: list => collected.push(...list) };
+};
+
+test('narrate_current_track：没写的这一首交给这一轮的 line pass，只交一次，也不许诺一定说', async () => {
+  const { registry, targets, failed } = unwrittenService();
+  const linePass = collector();
+  const outcome = await registry.execute('narrate_current_track', {}, { ...narrationContext, linePass });
+  assert.equal(outcome.ok, true);
+  assert.equal(linePass.collected.length, 1);
+  assert.equal(linePass.collected[0], targets[0]);
+  assert.equal(linePass.collected[0].track.narration.generationRevision, 4, '绑定新开的代次');
+  assert.deepEqual(failed, []);
+  assert.match(outcome.presentation.displayText, /想想/u);
+  assert.doesNotMatch(outcome.presentation.displayText, /我来说说/u);
+});
+
+test('narrate_current_track：已写好或正在写，不再开一轮写作', async () => {
+  for (const status of ['ready', 'preparing']) {
+    const { registry, targets } = unwrittenService({ status });
+    const linePass = collector();
+    const outcome = await registry.execute('narrate_current_track', {}, { ...narrationContext, linePass });
+    assert.equal(outcome.ok, true, status);
+    assert.equal(linePass.collected.length, 0, status);
+    assert.equal(targets.length, 0, status);
+  }
+});
+
+test('narrate_current_track：调用方没有 line pass 时立刻归位成安静播放', async () => {
+  const { registry, failed } = unwrittenService();
+  const outcome = await registry.execute('narrate_current_track', {}, narrationContext);
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(failed, ['no-line-pass']);
 });
 
 test('failed music selection keeps the operation status model-only', async () => {
@@ -193,7 +257,7 @@ test('narrate_current_track fails closed for another song, another session, or a
   assert.equal(other.submitted.length, 0);
   assert.match(wrongSong.presentation.displayText, /没在播/u);
 
-  const elsewhere = narrationService({ activeListeningSessionId: 'conversation:b' });
+  const elsewhere = narrationService({ active: false });
   const wrongSession = await elsewhere.registry.execute('narrate_current_track', {}, narrationContext);
   assert.equal(wrongSession.ok, false);
   assert.equal(elsewhere.submitted.length, 0);

@@ -13,8 +13,13 @@ export function createLifeContextRuntime({ resolveDatabasePath, playbackRuntime,
   const service = new LifeContextService({
     store,
     ...(now ? { now } : {}),
-    onRevisionChange: () => {
+    onRevisionChange: (_revision, meta = {}) => {
+      if (meta.companionshipAffected === false) return;
       // 授权/内容变化让依赖旧生活资料的未播串词作废；歌曲、进度与历史不动。
+      if (typeof playbackRuntime?.invalidateAllPreparedNarrations === 'function') {
+        void Promise.resolve(playbackRuntime.invalidateAllPreparedNarrations({ includeCurrent: true })).catch(() => {});
+        return;
+      }
       const snapshot = playbackRuntime.snapshot();
       const sessions = [snapshot.activeListeningSessionId, ...Object.keys(snapshot.suspendedSessions || {})];
       for (const sessionId of new Set(sessions)) void playbackRuntime.invalidatePreparedNarrations(sessionId, { includeCurrent: true });

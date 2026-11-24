@@ -1,16 +1,38 @@
+import { sanitizeSpeechForTts } from '../chat/roleplaySpeech.js';
+
+function findProjectedVoiceBeat(voiceBeats, beat, arrayIndex) {
+  if (!Array.isArray(voiceBeats) || !voiceBeats.length) return null;
+  const targetIndex = Number.isInteger(beat?.index) ? beat.index : arrayIndex;
+  const byIndex = voiceBeats.find((vb, idx) => (Number.isInteger(vb?.index) ? vb.index : idx) === targetIndex);
+  return byIndex || voiceBeats[arrayIndex] || null;
+}
+
+function isSpeakableBeat(beat, arrayIndex = 0, voiceBeats = null) {
+  const projected = findProjectedVoiceBeat(voiceBeats, beat, arrayIndex);
+  if (typeof projected?.canSynthesize === 'boolean') return projected.canSynthesize;
+  if (typeof beat?.canSynthesize === 'boolean') return beat.canSynthesize;
+  const rawSource = typeof beat?.spoken === 'string' && beat.spoken.trim()
+    ? beat.spoken
+    : (typeof beat?.say === 'string' ? beat.say : '');
+  const stripped = rawSource.replace(/\{[^{}]*\}/g, '');
+  return Boolean(sanitizeSpeechForTts(stripped));
+}
+
 /** Browsing a room preserves the independently selected listening session. */
 export function createConversationController({ store, apiClient, storage = null, onChanged = () => {}, onBeforeSend = () => {}, onAfterSend = () => {}, onError = () => {},
-  setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = handle => clearTimeout(handle) } = {}) {
+  setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = handle => clearTimeout(handle), now = () => Date.now() } = {}) {
   let rooms = [];
   let loadGeneration = 0;
   let restoredSelection = false;
   const local = new Map();
   const pending = new Map();
+  const pendingStartedAt = new Map();
+  const pendingPhase = new Map();
   const cancelled = new Set();
   // 「正在输入」（服务端 presence-activity）：只是瞬时提示，不进转写、不碰播放。
   // sid → personId → { correlationId, timer }；同一人更新的 correlation 覆盖旧的，迟到的 idle 被丢弃。
   const composing = new Map();
-  const COMPOSING_MAX_MS = 30_000;
+  const COMPOSING_MAX_MS = 65_000;
   const BUBBLE_GRACE_MS = 8_000;
   // 「安静点」（服务端 presence-listener-quiet / status）：哪个听歌来源这次一起听不主动开口；只是可见事实 + 一键恢复。
   let listenerQuietSessionId = null;
@@ -30,7 +52,9 @@ export function createConversationController({ store, apiClient, storage = null,
     return local.get(sid);
   }
   const composingIds = sid => [...(composing.get(sid)?.keys() || [])];
-  function snapshot() { return { rooms, room: room(), sessionId: id(), local: stateFor(id()), pending: pending.has(id()), composing: composingIds(id()),
+  function snapshot() { return { rooms, room: room(), sessionId: id(), local: stateFor(id()), pending: pending.has(id()),
+    pendingSince: pendingStartedAt.get(id()) ?? null, pendingPhase: pendingPhase.get(id()) || 'chat',
+    composing: composingIds(id()),
     listenerQuiet: Boolean(listenerQuietSessionId) && listenerQuietSessionId === id(), restoringQuiet }; }
   function consumeListenerQuiet(payload = {}) {
     const { sessionId: sid, quiet } = payload || {};
@@ -86,10 +110,12 @@ export function createConversationController({ store, apiClient, storage = null,
     composing.set(sid, people);
   }
   function consumeActivity(payload = {}) {
-    const { sessionId: sid, personId, correlationId, state, outcome } = payload || {};
+    const { sessionId: sid, personId, correlationId, state, outcome, phase } = payload || {};
     if (!sid || !personId || !correlationId || !rooms.some(item => item.sessionId === sid && item.memberIds?.includes(personId))) return false;
-    if (state === 'composing') holdComposing(sid, personId, correlationId, COMPOSING_MAX_MS);
-    else if (state === 'idle') {
+    if (state === 'composing') {
+      if (phase === 'music') pendingPhase.set(sid, 'music');
+      holdComposing(sid, personId, correlationId, COMPOSING_MAX_MS);
+    } else if (state === 'idle') {
       const current = composing.get(sid)?.get(personId);
       if (current?.correlationId !== correlationId) return false;
       // 已入账：气泡还在路上（语音合成等），撑到气泡出现或短暂兜底；没入账就立即收起。
@@ -105,14 +131,63 @@ export function createConversationController({ store, apiClient, storage = null,
     Object.assign(view, { draft, scroll });
     try { storage?.setItem(`lunara.room:${id()}`, JSON.stringify({ draft, scroll, retry: view.retry })); } catch {}
   }
+  function mergeBeatArrays(prevBeats, nextBeats) {
+    if (!Array.isArray(nextBeats)) return prevBeats;
+    if (!Array.isArray(prevBeats) || !prevBeats.length) {
+      return nextBeats.map((beat, index) => ({
+        ...beat,
+        index: Number.isInteger(beat?.index) ? beat.index : index,
+      }));
+    }
+    const byIndex = new Map();
+    prevBeats.forEach((beat, index) => {
+      const idx = Number.isInteger(beat?.index) ? beat.index : index;
+      byIndex.set(idx, { ...beat, index: idx });
+    });
+    nextBeats.forEach((beat, index) => {
+      const idx = Number.isInteger(beat?.index) ? beat.index : index;
+      const existing = byIndex.get(idx) || {};
+      byIndex.set(idx, { ...existing, ...beat, index: idx });
+    });
+    return [...byIndex.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, beat]) => beat);
+  }
   function mergeTurns(sid, turns, { replace = false } = {}) {
     const view = stateFor(sid);
+    const prevById = new Map(view.turns.map(turn => [turn.turnId, turn]));
     const merged = new Map((replace ? [] : view.turns).map(turn => [turn.turnId, turn]));
-    for (const turn of turns) if (turn.turnId) merged.set(turn.turnId, turn);
+    for (const turn of turns) {
+      if (!turn?.turnId) continue;
+      if (!replace && merged.has(turn.turnId)) {
+        const prev = merged.get(turn.turnId);
+        const nextTurn = {
+          ...prev,
+          ...turn,
+          ...(Array.isArray(turn.beats) ? { beats: mergeBeatArrays(prev.beats, turn.beats) } : {}),
+          sequence: prev.sequence ?? turn.sequence,
+          createdAt: prev.createdAt ?? turn.createdAt,
+        };
+        if (!('beatProgress' in turn) && Array.isArray(turn.beats) && prev.beatProgress) {
+          delete nextTurn.beatProgress;
+        }
+        if (prev.__liveArrival || turn.__liveArrival) {
+          Object.defineProperty(nextTurn, '__liveArrival', { value: true, configurable: true });
+        }
+        merged.set(turn.turnId, nextTurn);
+      } else {
+        const prevExisting = prevById.get(turn.turnId);
+        const nextTurn = prevExisting?.__liveArrival && !turn.__liveArrival ? { ...turn } : turn;
+        if (prevExisting?.__liveArrival && !nextTurn.__liveArrival) {
+          Object.defineProperty(nextTurn, '__liveArrival', { value: true, configurable: true });
+        }
+        merged.set(turn.turnId, nextTurn);
+      }
+    }
     view.turns = [...merged.values()].sort((a, b) => (a.sequence || a.createdAt) - (b.sequence || b.createdAt)).slice(-500);
     view.loaded = true;
   }
-  async function loadTranscript(sid, { older = false } = {}) {
+  async function loadTranscript(sid, { older = false, markNewAssistantLive = null } = {}) {
     const view = stateFor(sid);
     const generation = ++view.generation;
     const before = older ? `&before=${view.turns.find(turn => Number.isInteger(turn.sequence))?.sequence || 1}` : '';
@@ -120,6 +195,16 @@ export function createConversationController({ store, apiClient, storage = null,
     if (result.sessionId !== sid || view.generation !== generation) return;
     const optimistic = !older && pending.has(sid) ? view.turns.find(turn => turn.turnId === pending.get(sid)) : null;
     mergeTurns(sid, result.turns || [], { replace: !older });
+    let hasNewLiveAssistant = false;
+    if (markNewAssistantLive instanceof Set) {
+      for (const loadedTurn of view.turns) {
+        if (loadedTurn?.role === 'assistant' && loadedTurn.turnId && !markNewAssistantLive.has(loadedTurn.turnId)) {
+          Object.defineProperty(loadedTurn, '__liveArrival', { value: true, configurable: true });
+          hasNewLiveAssistant = true;
+        }
+      }
+    }
+    Object.defineProperty(view.turns, '__fromHistoryLoad', { value: !hasNewLiveAssistant, configurable: true });
     if (optimistic && !view.turns.some(turn => turn.role === 'user' && turn.text === optimistic.text
       && turn.createdAt >= optimistic.createdAt - 1000)) view.turns.push(optimistic);
     view.hasOlder = result.turns?.length === 100;
@@ -160,7 +245,11 @@ export function createConversationController({ store, apiClient, storage = null,
     emit();
   }
   async function create(input) {
-    const result = await apiClient.post('/api/conversations', input);
+    const payload = {
+      ...input,
+      ...(input?.hostId ? { hostId: input.hostId } : {}),
+    };
+    const result = await apiClient.post('/api/conversations', payload);
     await refresh(); await select(result.conversation.sessionId);
     return result.conversation;
   }
@@ -216,18 +305,41 @@ export function createConversationController({ store, apiClient, storage = null,
   function consume(message) {
     const sid = message.conversationId || message.sessionId;
     if (!sid) return false;
-    const messages = message.messages || (message.message?.say ? [message.message] : []);
+    const messages = message.messages || ((message.message?.say || message.message?.beats?.length) ? [message.message] : []);
     if (!messages.length) return false;
     const view = stateFor(sid);
-    const nextSequence = Math.max(0, ...view.turns.map(turn => turn.sequence || 0));
-    mergeTurns(sid, messages.filter(item => item.sourceTurnId).map((item, i) => ({ turnId: item.sourceTurnId,
-      role: 'assistant', text: item.say, speakerVirtualPersonId: item.virtualPersonId,
-      presentation: item.presentation, queueItemId: item.queueItemId, tracks: item.tracks,
-      ...(item.groupFloor ? { groupFloor: item.groupFloor } : {}),
-      ...(item.hostSuggestion ? { hostSuggestion: item.hostSuggestion } : {}),
-      ...(item.webSources ? { webSources: item.webSources } : {}),
-      ...(item.musicRecommendation ? { musicRecommendation: item.musicRecommendation } : {}),
-      sequence: item.sequence || nextSequence + i + 1, createdAt: Date.now() })));
+    const existingById = new Map(view.turns.map(turn => [turn.turnId, turn]));
+    let seqCursor = Math.max(0, ...view.turns.map(turn => turn.sequence || 0));
+    mergeTurns(sid, messages.filter(item => item.sourceTurnId).map(item => {
+      const existing = existingById.get(item.sourceTurnId);
+      const sequence = existing?.sequence ?? item.sequence ?? (++seqCursor);
+      const createdAt = existing?.createdAt ?? now();
+      const text = item.say ?? (Array.isArray(item.beats)
+        ? item.beats.map(beat => [beat?.action, beat?.say].filter(Boolean).join(' ')).filter(Boolean).join('\n')
+        : '');
+      const turn = {
+        turnId: item.sourceTurnId,
+        role: 'assistant',
+        text,
+        speakerVirtualPersonId: item.virtualPersonId,
+        presentation: item.presentation,
+        queueItemId: item.queueItemId,
+        tracks: item.tracks,
+        ...(item.groupFloor ? { groupFloor: item.groupFloor } : {}),
+        ...(item.hostSuggestion ? { hostSuggestion: item.hostSuggestion } : {}),
+        ...(item.webSources ? { webSources: item.webSources } : {}),
+        ...(item.musicRecommendation ? { musicRecommendation: item.musicRecommendation } : {}),
+        ...(item.segments ? { segments: item.segments } : {}),
+        ...(Array.isArray(item.beats) ? { beats: item.beats } : {}),
+        ...(item.beatProgress ? { beatProgress: item.beatProgress } : {}),
+        ...(item.voice ? { voice: item.voice } : {}),
+        sequence,
+        createdAt,
+      };
+      if (!existing) Object.defineProperty(turn, '__liveArrival', { value: true, configurable: true });
+      return turn;
+    }));
+    Object.defineProperty(view.turns, '__fromHistoryLoad', { value: false, configurable: true });
     // 气泡到了：这位的「正在输入」随之收起。
     for (const item of messages) if (item.virtualPersonId) stopComposing(sid, item.virtualPersonId);
     view.unread = sid !== id();
@@ -319,7 +431,7 @@ export function createConversationController({ store, apiClient, storage = null,
     const optimistic = { turnId: requestId, role: 'user', text, sequence: Math.max(0, ...view.turns.map(turn => turn.sequence || 0)) + 1, createdAt: Date.now() };
     view.turns.push(optimistic); view.draft = ''; view.scroll = null;
     try { storage?.setItem(`lunara.room:${sid}`, JSON.stringify({ draft: '', scroll: null })); } catch {}
-    pending.set(sid, requestId); emit(); onBeforeSend({ sessionId: sid, requestId });
+    pending.set(sid, requestId); pendingStartedAt.set(sid, now()); pendingPhase.set(sid, 'chat'); emit(); onBeforeSend({ sessionId: sid, requestId });
     try {
       const heard = heardOccurrence(sid);
       const payload = { message: text, sessionId: sid, requestId,
@@ -327,7 +439,8 @@ export function createConversationController({ store, apiClient, storage = null,
         ...(heard ? { playbackIdentity: heard } : {}) };
       await apiClient.chat(payload);
       if (cancelled.has(requestId) || pending.get(sid) !== requestId) return true;
-      await loadTranscript(sid);
+      const knownBeforeLoad = new Set(view.turns.map(turn => turn.turnId));
+      await loadTranscript(sid, { markNewAssistantLive: knownBeforeLoad });
       view.retry = null;
       stateFor(sid).unread = sid !== id();
     } catch (error) {
@@ -340,12 +453,137 @@ export function createConversationController({ store, apiClient, storage = null,
         if (sid === id()) onError(error);
       }
     } finally {
-      if (pending.get(sid) === requestId) pending.delete(sid);
+      if (pending.get(sid) === requestId) { pending.delete(sid); pendingStartedAt.delete(sid); pendingPhase.delete(sid); }
       cancelled.delete(requestId);
       onAfterSend({ sessionId: sid, requestId });
       emit();
     }
     return true;
+  }
+  function markMusicPhase(sid = id()) {
+    if (!sid || pendingPhase.get(sid) === 'music') return;
+    pendingPhase.set(sid, 'music');
+    if (sid === id()) emit();
+  }
+  async function synthesizeTurnSpeech(turnId, sid = id()) {
+    if (!sid || !turnId) throw new Error('找不到要朗读的消息。');
+    const result = await apiClient.post(
+      `/api/conversations/${encodeURIComponent(sid)}/turns/${encodeURIComponent(turnId)}/speech`,
+      {},
+    );
+    const turn = stateFor(sid).turns.find(item => item.turnId === turnId);
+    if (turn) {
+      const prevVoiceBeats = Array.isArray(turn.voice?.beats) ? turn.voice.beats : null;
+      if (Array.isArray(result?.beats) && result.beats.length) {
+        if (Array.isArray(turn.beats) && turn.beats.length) {
+          const byIndex = new Map(result.beats.map((beat, i) => [Number.isInteger(beat?.index) ? beat.index : i, beat]));
+          turn.beats = turn.beats.map((beat, i) => {
+            const idx = Number.isInteger(beat?.index) ? beat.index : i;
+            const synthBeat = byIndex.get(idx);
+            if (!synthBeat) return beat;
+            return {
+              ...beat,
+              index: idx,
+              ...(synthBeat.audioUrl ? { audioUrl: synthBeat.audioUrl } : {}),
+              ...(synthBeat.hash ? { hash: synthBeat.hash } : {}),
+              ...(Number.isFinite(Number(synthBeat.durationMs)) ? { durationMs: Number(synthBeat.durationMs) } : {}),
+              ...(Number.isFinite(Number(synthBeat.pauseAfterMs)) ? { pauseAfterMs: Number(synthBeat.pauseAfterMs) } : {}),
+            };
+          });
+        } else {
+          turn.beats = result.beats.map((beat, i) => ({
+            ...beat,
+            index: Number.isInteger(beat?.index) ? beat.index : i,
+          }));
+        }
+      }
+      const hasBeatAudio = Array.isArray(turn.beats) && turn.beats.some(beat => Boolean(beat?.audioUrl));
+      const allBeatsReady = Array.isArray(turn.beats) && turn.beats.length > 0
+        && turn.beats.every((beat, i) => !isSpeakableBeat(beat, i, prevVoiceBeats) || Boolean(beat?.audioUrl));
+      const primaryUrl = result?.audioUrl
+        || (hasBeatAudio ? turn.beats.find(beat => beat?.audioUrl)?.audioUrl : null)
+        || null;
+      if (primaryUrl || hasBeatAudio) {
+        let nextVoiceBeats;
+        if (Array.isArray(turn.beats) && turn.beats.length > 0) {
+          nextVoiceBeats = turn.beats.map((beat, i) => {
+            const idx = Number.isInteger(beat?.index) ? beat.index : i;
+            const projected = findProjectedVoiceBeat(prevVoiceBeats, beat, i);
+            const resultBeat = findProjectedVoiceBeat(result?.beats, beat, i);
+            const canSynthesize = typeof resultBeat?.canSynthesize === 'boolean'
+              ? resultBeat.canSynthesize
+              : isSpeakableBeat(beat, i, prevVoiceBeats);
+            const audioUrl = beat?.audioUrl || resultBeat?.audioUrl || null;
+            const rawDuration = beat?.durationMs ?? resultBeat?.durationMs ?? projected?.durationMs;
+            const durationMs = audioUrl && Number.isFinite(Number(rawDuration)) ? Number(rawDuration) : null;
+            return {
+              index: idx,
+              canSynthesize,
+              status: (!canSynthesize && !audioUrl) ? 'none' : (audioUrl ? 'ready' : 'missing'),
+              audioUrl,
+              durationMs,
+            };
+          });
+        } else if (Array.isArray(result?.beats)) {
+          nextVoiceBeats = result.beats;
+        }
+        turn.voice = {
+          ...(turn.voice || {}),
+          canSynthesize: true,
+          status: Array.isArray(turn.beats) && turn.beats.length > 0
+            ? (allBeatsReady ? 'ready' : (hasBeatAudio ? 'partial' : 'missing'))
+            : 'ready',
+          url: primaryUrl,
+          audioUrl: primaryUrl,
+          durationMs: result?.durationMs ?? turn.voice?.durationMs ?? null,
+          ...(nextVoiceBeats ? { beats: nextVoiceBeats } : {}),
+        };
+      }
+    }
+    return result;
+  }
+  async function touchTurnSpeech(turnId, sid = id()) {
+    if (!sid || !turnId) return { touched: false, exists: false, audioUrl: null };
+    const result = await apiClient.post(
+      `/api/conversations/${encodeURIComponent(sid)}/turns/${encodeURIComponent(turnId)}/speech/touch`,
+      {},
+    );
+    if (result?.exists === false) {
+      const turn = stateFor(sid).turns.find(item => item.turnId === turnId);
+      if (turn?.voice) {
+        const clearedVoiceBeats = Array.isArray(turn.voice.beats)
+          ? turn.voice.beats.map((vb, i) => {
+            if (!vb || typeof vb !== 'object') return vb;
+            const beat = Array.isArray(turn.beats) ? turn.beats[i] : null;
+            const canSynth = typeof vb.canSynthesize === 'boolean'
+              ? vb.canSynthesize
+              : (beat ? isSpeakableBeat(beat, i, turn.voice.beats) : true);
+            return {
+              ...vb,
+              canSynthesize: canSynth,
+              audioUrl: null,
+              durationMs: null,
+              status: canSynth ? 'missing' : 'none',
+            };
+          })
+          : undefined;
+        turn.voice = {
+          ...turn.voice,
+          url: null,
+          audioUrl: null,
+          status: 'missing',
+          ...(clearedVoiceBeats ? { beats: clearedVoiceBeats } : {}),
+        };
+      }
+      if (Array.isArray(turn?.beats)) {
+        turn.beats = turn.beats.map(beat => {
+          if (!beat || typeof beat !== 'object') return beat;
+          const { audioUrl, hash, ...rest } = beat;
+          return rest;
+        });
+      }
+    }
+    return result;
   }
   async function cancel() {
     const sid = id(), requestId = pending.get(sid);
@@ -354,8 +592,8 @@ export function createConversationController({ store, apiClient, storage = null,
     finally { onAfterSend({ sessionId: sid, requestId }); }
     // Keep the room serialized until its aborted response has reached a terminal state.
   }
-  return { refresh, select, create, update, updateRoomById, deleteRoomById, member, host, acceptRecommendation, send, cancel, consume, consumeActivity,
-    beginEdit, cancelEdit, fork,
+  return { refresh, select, create, createRoom: create, update, updateRoomById, deleteRoomById, member, host, acceptRecommendation, send, cancel, consume, consumeActivity,
+    beginEdit, cancelEdit, fork, markMusicPhase, synthesizeTurnSpeech, touchTurnSpeech,
     consumeListenerQuiet, refreshListenerQuiet, restoreListenerQuiet, saveView, loadTranscript,
     stateFor, roomName, snapshot, person, isPending: () => pending.has(id()),
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); } };

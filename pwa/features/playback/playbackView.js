@@ -36,6 +36,8 @@ export function createPlaybackView({
   /** 卡片指的歌已经不在当前队列里：什么都不做，但必须让用户知道。 */
   onCardUnavailable = () => {},
   onError = error => console.warn('[playback-control]', error.message),
+  /** 还缺哪项配置（'llm' | 'source-settings' | 'source-login' | null）：续播失败时用来说清原因。 */
+  getSetupGap = () => null,
   schedule = globalThis.setTimeout?.bind(globalThis),
   cancelSchedule = globalThis.clearTimeout?.bind(globalThis),
 } = {}) {
@@ -57,6 +59,8 @@ export function createPlaybackView({
   // 上一个**按曲目渲染过**的队列出现位置。与 visiblePresentationKey 分开：后者会被
   // 串词的表现覆盖，而标题态要不要重播只取决于“这首歌是不是刚成为当前曲目”。
   let visibleTrackKey = null;
+  let scrubbing = null;
+  let suppressProgressClick = false;
 
   // 系统媒体键桥（init 时创建；测试与无媒体会话环境里可以是空实现）
   let mediaSessionControls = null;
@@ -152,33 +156,68 @@ export function createPlaybackView({
     if (thinking) thinking.style.display = state === 'thinking' ? 'flex' : 'none';
   }
 
+  let lastLinePresentation = null;
+
   function updateLineText() {
     const current = $('#player-line-text');
     const next = $('#player-line-next');
     if (!current) return;
-    current.classList?.remove('idle', 'speaking', 'title', 'lyric', 'notice', 'marquee');
-    next?.classList?.remove('idle', 'speaking', 'title', 'lyric', 'notice', 'marquee');
     let currentText = '';
     let nextText = '';
+    let currentClass = 'idle';
+    let nextClass = '';
     if (lineMode === 'title') {
       currentText = `♪ ${trackTitle}`;
-      current.classList?.add('title');
+      currentClass = 'title';
     } else if (lineMode === 'lyric' && lyricLines.length) {
       const index = Math.max(0, activeLyricIndex);
       currentText = lyricLines[index]?.text || '♪';
       const notice = isInstrumentalNotice(currentText);
       nextText = notice ? '' : lyricLines[index + 1]?.text || '';
-      current.classList?.add(notice ? 'notice' : 'lyric');
-      if (!notice) next?.classList?.add('lyric');
+      currentClass = notice ? 'notice' : 'lyric';
+      if (!notice) nextClass = 'lyric';
     } else if (lineMode === 'lyric' && trackTitle) {
       currentText = '暂无同步歌词';
-      current.classList?.add('idle');
+      currentClass = 'idle';
     } else {
-      currentText = '未在播放';
-      current.classList?.add('idle');
+      currentText = '从一首歌开始';
+      currentClass = 'idle';
     }
-    current.textContent = currentText;
-    if (next) next.textContent = nextText;
+    if (
+      lastLinePresentation
+      && lastLinePresentation.current === current
+      && lastLinePresentation.next === next
+      && lastLinePresentation.lineMode === lineMode
+      && lastLinePresentation.lyricsIdentity === lyricsIdentity
+      && lastLinePresentation.activeLyricIndex === activeLyricIndex
+      && lastLinePresentation.lyricCount === lyricLines.length
+      && lastLinePresentation.currentClass === currentClass
+      && lastLinePresentation.nextClass === nextClass
+      && lastLinePresentation.currentText === currentText
+      && lastLinePresentation.nextText === nextText
+      && current.textContent === currentText
+      && (!next || next.textContent === nextText)
+    ) {
+      return;
+    }
+    lastLinePresentation = {
+      current,
+      next,
+      lineMode,
+      lyricsIdentity,
+      activeLyricIndex,
+      lyricCount: lyricLines.length,
+      currentClass,
+      nextClass,
+      currentText,
+      nextText,
+    };
+    current.classList?.remove('idle', 'speaking', 'title', 'lyric', 'notice', 'marquee');
+    next?.classList?.remove('idle', 'speaking', 'title', 'lyric', 'notice', 'marquee');
+    current.classList?.add(currentClass);
+    if (nextClass) next?.classList?.add(nextClass);
+    if (current.textContent !== currentText) current.textContent = currentText;
+    if (next && next.textContent !== nextText) next.textContent = nextText;
     updateMarquee(current);
     updateMarquee(next);
     syncListeningLyric(lineMode, currentText);
@@ -228,31 +267,37 @@ export function createPlaybackView({
   function syncListeningLyric(mode, text) {
     const lyric = documentLike.querySelector?.('#listening-lyric');
     if (!lyric) return;
-    const sameSource = !state().sessionId || !state().runtimeState?.activeListeningSessionId
-      || state().sessionId === state().runtimeState.activeListeningSessionId;
-    const hasLyric = sameSource && mode === 'lyric' && lyricLines.length > 0 && text && !text.startsWith('♪')
-      && text !== '暂无同步歌词';
+    const hasLyric = mode === 'lyric' && lyricLines.length > 0 && text && !text.startsWith('♪') && text !== '暂无同步歌词';
     const notice = hasLyric && isInstrumentalNotice(text);
-    if (lyric.dataset) lyric.dataset.kind = notice ? 'notice' : 'lyric';
-    lyric.hidden = !hasLyric;
-    lyric.textContent = hasLyric ? text : '';
+    const nextKind = notice ? 'notice' : 'lyric';
+    if (lyric.dataset && lyric.dataset.kind !== nextKind) lyric.dataset.kind = nextKind;
+    const nextHidden = !hasLyric;
+    if (lyric.hidden !== nextHidden) lyric.hidden = nextHidden;
+    const nextLyricText = hasLyric ? text : '';
+    if (lyric.textContent !== nextLyricText) lyric.textContent = nextLyricText;
     for (const [id, index] of [['#listening-lyric-previous', activeLyricIndex - 1], ['#listening-lyric-next', activeLyricIndex + 1]]) {
       const node = $(id);
-      if (node) { node.hidden = !hasLyric || notice || !lyricLines[index]; node.textContent = hasLyric && !notice ? lyricLines[index]?.text || '' : ''; }
+      if (node) {
+        const lineHidden = !hasLyric || notice || !lyricLines[index];
+        const lineText = hasLyric && !notice ? lyricLines[index]?.text || '' : '';
+        if (node.hidden !== lineHidden) node.hidden = lineHidden;
+        if (node.textContent !== lineText) node.textContent = lineText;
+      }
     }
     syncInterlude();
   }
 
   function syncInterlude() {
-    const sameSource = !state().sessionId || state().sessionId === state().runtimeState?.activeListeningSessionId;
     const notice = isInstrumentalNotice(lyricLines[Math.max(0, activeLyricIndex)]?.text);
     const seconds = !notice && lyricLines.length
       ? lyricGap(lyricLines.filter(line => !isInstrumentalNotice(line.text)), Number(musicAudio.currentTime) || 0) : null;
     for (const id of ['#listening-interlude', '#focus-interlude']) {
       const node = $(id);
       if (node) {
-        node.hidden = seconds == null || (id === '#listening-interlude' && !sameSource);
-        node.textContent = node.hidden ? '' : `〔 间奏 〕 · 约 ${seconds} 秒后下一句回来`;
+        const nextHidden = seconds == null;
+        const nextText = nextHidden ? '' : `〔 间奏 〕 · 约 ${seconds} 秒后下一句回来`;
+        if (node.hidden !== nextHidden) node.hidden = nextHidden;
+        if (node.textContent !== nextText) node.textContent = nextText;
       }
     }
   }
@@ -310,8 +355,7 @@ export function createPlaybackView({
       else break;
     }
     if (index === activeLyricIndex) {
-      // 浏览来源变化不一定推进歌词索引，但应立即撤下旧来源的听歌列歌词。
-      // 只刷新只读镜像，不重进标题态，也不改全局播放器的歌词。
+      // 歌词索引未推进时也刷新只读镜像，保持与全局播放器当前行同步，不重进标题态。
       syncListeningLyric(lineMode, $('#player-line-text')?.textContent || '');
       return;
     }
@@ -482,6 +526,7 @@ export function createPlaybackView({
     }
     const nextLine = $('#player-line-next');
     if (nextLine) nextLine.textContent = '';
+    lastLinePresentation = null;
   }
 
   /**
@@ -507,7 +552,7 @@ export function createPlaybackView({
     // 人声音频的进度永远不映射到播放器进度条：聊天朗读、串词的裸 timeupdate
     // 任何情况下都不落笔，纯聊天没放歌时也不例外（以前这里只在“有歌加载中”
     // 时才挡，没放歌就把 0:03 这类人声进度画上了进度条）。
-    if (audio === narrationAudio) return;
+    if (audio === narrationAudio || scrubbing) return;
     paintTimeline(audio.currentTime || 0, audio.duration || 0);
   }
 
@@ -549,11 +594,28 @@ export function createPlaybackView({
     if (slider.value !== next) slider.value = next;
   }
 
+  function applyMusicVolumeFromInput(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value < 0 || value > 1) return false;
+    const playback = controller();
+    const applied = typeof playback?.applyMusicVolume === 'function'
+      ? playback.applyMusicVolume(value)
+      : (musicAudio.volume = setMusicVolumePreference(value));
+    if (musicAudio.muted && value > 0) {
+      musicAudio.muted = false;
+      narrationAudio.muted = false;
+    }
+    syncMixer();
+    updateVolumeButton();
+    return applied;
+  }
+
   function toggleMuted() {
     const muted = !(musicAudio.muted && narrationAudio.muted);
     musicAudio.muted = muted;
     narrationAudio.muted = muted;
-    updateVolumeButton();
+    if (!muted && getMusicVolumePreference() === 0) applyMusicVolumeFromInput(0.5);
+    else updateVolumeButton();
   }
 
   function seekTo(nextTime) {
@@ -623,7 +685,7 @@ export function createPlaybackView({
       if (title) title.textContent = '未在播放';
       if (subtitle) subtitle.textContent = '';
       if (album) album.textContent = '';
-      documentLike.querySelectorAll?.('[data-np-title]')?.forEach(node => { node.textContent = '—'; node.title = ''; });
+      documentLike.querySelectorAll?.('[data-np-title]')?.forEach(node => { node.textContent = '未在播放'; node.title = ''; });
       documentLike.querySelectorAll?.('[data-np-meta]')?.forEach(node => { node.textContent = ''; });
       setPlayerArtwork('/icon.png');
       resetLineMode();
@@ -706,15 +768,17 @@ export function createPlaybackView({
       return;
     } else if (command === 'louder') {
       const target = !musicAudio.paused ? musicAudio : narrationAudio;
-      target.volume = Math.min(1, target.volume + 0.15);
-      // 调的是主音乐通道时同步本地偏好，避免滑杆回显漂移。
-      if (target === musicAudio) setMusicVolumePreference(target.volume);
+      // 调的是主音乐通道时走统一偏好与 ducking 折算，避免跨源直改 volume。
+      if (target === musicAudio) applyMusicVolumeFromInput(Math.min(1, getMusicVolumePreference() + 0.15));
+      else target.volume = Math.min(1, target.volume + 0.15);
     } else if (command === 'softer') {
       const target = !musicAudio.paused ? musicAudio : narrationAudio;
-      target.volume = Math.max(0, target.volume - 0.15);
       if (target === musicAudio) {
-        setMusicVolumePreference(target.volume);
-        playback.setDuckLevel(Math.max(0.05, target.volume * 0.3));
+        const next = Math.max(0, getMusicVolumePreference() - 0.15);
+        applyMusicVolumeFromInput(next);
+        playback.setDuckLevel(Math.max(0.05, next * 0.3));
+      } else {
+        target.volume = Math.max(0, target.volume - 0.15);
       }
     }
   }
@@ -766,9 +830,13 @@ export function createPlaybackView({
     const failed = effectiveOn && continuation?.status === 'failed';
     const waiting = effectiveOn && continuation?.status === 'requested';
     const status = $('#continuation-status');
-    if (status) { status.hidden = !failed && !waiting; status.textContent = failed ? '续播没成功，可以重试' : waiting ? '正在准备下一首…' : ''; }
+    // 还没接模型或音乐账号时，重试不会好：说清缺什么，不给一个注定失败的按钮。
+    const gap = failed ? getSetupGap() : null;
+    const failedCopy = gap === 'llm' ? '还没接上模型，暂时选不了歌'
+      : gap ? '还没登录音乐账号，暂时选不了歌' : '续播没成功，可以重试';
+    if (status) { status.hidden = !failed && !waiting; status.textContent = failed ? failedCopy : waiting ? '正在准备下一首…' : ''; }
     const retry = $('#continuation-retry');
-    if (retry) { retry.hidden = !failed; retry.disabled = radioChanging; }
+    if (retry) { retry.hidden = !failed || Boolean(gap); retry.disabled = radioChanging; }
   }
 
   async function changeRadioMode(enabled) {
@@ -802,6 +870,11 @@ export function createPlaybackView({
    * 快捷键另写一份必然与这里分叉，所以只允许调用，不允许复制。
    */
   function togglePlayPause() {
+    const playback = controller();
+    if (musicAudio.paused && !narrationAudio.paused && playback?.getSnapshot?.().overlayActive) {
+      playback.stopOverlayNarrations?.();
+      return;
+    }
     const phase = state().runtimeState?.phase;
     if (phase === 'error') void runtime()?.retry?.();
     else if (!musicAudio.paused && realSource(musicAudio, locationHref)) void runtime()?.pause?.();
@@ -943,14 +1016,11 @@ export function createPlaybackView({
     });
     listen($('#mixer-bed'), 'input', event => {
       // 音乐通道：主音乐音量，本地设备偏好，换歌与压低恢复后保持。
-      musicAudio.volume = setMusicVolumePreference(Number(event.target?.value));
+      applyMusicVolumeFromInput(event.target?.value);
     });
     // 传输控制区的音乐音量：与混音区「音乐」通道同源（同一偏好）。
     listen($('#player-volume-slider'), 'input', event => {
-      const value = Number(event.target?.value);
-      if (!Number.isFinite(value) || value < 0 || value > 1) return;
-      musicAudio.volume = setMusicVolumePreference(value);
-      updateVolumeButton();
+      applyMusicVolumeFromInput(event.target?.value);
     });
     listen(musicAudio, 'volumechange', updateVolumeButton);
     listen(narrationAudio, 'volumechange', updateVolumeButton);
@@ -961,7 +1031,56 @@ export function createPlaybackView({
       void changeCompanionMode(source?.value ?? '');
     });
     listen($('#continuation-retry'), 'click', () => { void retryContinuation(); });
-    listen($('#progress-bar'), 'click', event => {
+    const progressTimeAt = (target, clientX, total) => {
+      const rect = target?.getBoundingClientRect?.();
+      if (!rect?.width || !Number.isFinite(Number(clientX))) return null;
+      const ratio = Math.min(1, Math.max(0, (Number(clientX) - rect.left) / rect.width));
+      return ratio * total;
+    };
+    const finishProgressScrub = (event, commit = true) => {
+      if (!scrubbing) return;
+      if (event?.pointerId != null && scrubbing.pointerId != null && event.pointerId !== scrubbing.pointerId) return;
+      const active = scrubbing;
+      if (commit && event?.clientX != null) {
+        const nextTime = progressTimeAt(active.target, event.clientX, active.total);
+        if (nextTime != null) active.previewTime = nextTime;
+      }
+      scrubbing = null;
+      active.target.classList?.remove?.('is-scrubbing');
+      if (active.pointerId != null) active.target.releasePointerCapture?.(active.pointerId);
+      if (commit) {
+        suppressProgressClick = true;
+        schedule?.(() => { suppressProgressClick = false; }, 0);
+        seekTo(active.previewTime);
+      } else {
+        timeUpdate(musicAudio);
+      }
+    };
+    const progressBar = $('#progress-bar');
+    listen(progressBar, 'pointerdown', event => {
+      if (event.button != null && event.button !== 0) return;
+      const total = Number(musicAudio.duration) || 0;
+      if (!total) return;
+      const previewTime = progressTimeAt(event.currentTarget, event.clientX, total);
+      if (previewTime == null) return;
+      event.preventDefault?.();
+      scrubbing = { pointerId: event.pointerId ?? null, target: event.currentTarget, previewTime, total };
+      event.currentTarget.classList?.add?.('is-scrubbing');
+      if (event.pointerId != null) event.currentTarget.setPointerCapture?.(event.pointerId);
+      paintTimeline(previewTime, total);
+    });
+    listen(progressBar, 'pointermove', event => {
+      if (!scrubbing || (scrubbing.pointerId != null && event.pointerId !== scrubbing.pointerId)) return;
+      const previewTime = progressTimeAt(scrubbing.target, event.clientX, scrubbing.total);
+      if (previewTime == null) return;
+      scrubbing.previewTime = previewTime;
+      paintTimeline(previewTime, scrubbing.total);
+    });
+    listen(progressBar, 'pointerup', event => finishProgressScrub(event, true));
+    listen(progressBar, 'pointercancel', event => finishProgressScrub(event, false));
+    listen(progressBar, 'lostpointercapture', event => finishProgressScrub(event, true));
+    listen(progressBar, 'click', event => {
+      if (suppressProgressClick) { suppressProgressClick = false; return; }
       if (!musicAudio.duration) return;
       const rect = event.currentTarget.getBoundingClientRect();
       if (!rect.width) return;
@@ -997,6 +1116,9 @@ export function createPlaybackView({
   function destroy() {
     if (!initialized) return;
     initialized = false;
+    lastLinePresentation = null;
+    scrubbing = null;
+    suppressProgressClick = false;
     if (lineTimer != null) cancelSchedule?.(lineTimer);
     lineTimer = null;
     cleanups.splice(0).forEach(cleanup => cleanup());

@@ -37,15 +37,16 @@ export function createFailoverChat({ chat, resolveEndpoint, resolveFallbacks = r
     const startedAt = now();
     const outer = options.signal;
     if (outer?.aborted) throw abortError(outer);
-    const primary = options.endpoint || await resolveEndpoint(options);
-    const readTargets = async () => {
+    const routingCache = {};
+    const primary = options.endpoint || await resolveEndpoint({ ...options, _routingCache: routingCache });
+    const readTargets = async (cache = null) => {
       if (options.failover === false || options.endpoint) return [];
       try {
-        const list = await resolveFallbacks(primary, options);
+        const list = await resolveFallbacks(primary, cache ? { ...options, _routingCache: cache } : options);
         return Array.isArray(list) ? list.filter(item => item?.baseUrl && item?.model).slice(0, 2) : [];
       } catch { return []; } // unreadable consent never authorizes another destination
     };
-    const targets = await readTargets();
+    const targets = await readTargets(routingCache);
     if (outer?.aborted) throw abortError(outer);
     const totalMs = positive(options.timeoutMs) || positive(resolveTimeout(options)) || DEFAULT_FAILOVER_TIMEOUT_MS;
     const limitMs = Math.min(totalMs, positive(options.failoverTimeoutMs) || totalMs);

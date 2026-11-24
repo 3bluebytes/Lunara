@@ -121,3 +121,179 @@ test('带推荐的一句：实时下发的消息带推荐卡片（不含内部 s
     assert.ok(payload.message.turnId);
   } finally { h.close(); }
 });
+
+test('silent multi-beat presence turn publishes beats, beatProgress and missing voice metadata without TTS', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-ambient-beats-silent-'));
+  const store = new ConversationStore({ dbPath: join(dir, 'state.db') }).initialize();
+  store.createRoom({ sessionId: 'room', memberIds: ['lunara'], hostId: 'lunara', interactionMode: 'roleplay' });
+  const published = [], synthesized = [];
+  const beats = [
+    { index: 0, action: '垂眼看了看桌角', say: '刚才说到一半就没声了。', pauseAfterMs: 650 },
+    { index: 1, say: '忙完了再跟我说。', pauseAfterMs: 0 },
+  ];
+  const onWake = createAmbientPresence({
+    runtime: {
+      conversationStore: store,
+      async handleAmbientTurn(input) {
+        const turn = store.recordPresenceTurn({
+          sessionId: input.sessionId,
+          personId: input.personId,
+          triggerKey: input.wake.id,
+          kind: 'ambient',
+          text: '（垂眼看了看桌角）\n刚才说到一半就没声了。\n\n忙完了再跟我说。',
+          extra: { beats },
+        });
+        const delivery = await input.deliver({ turn, entity: person, isCurrent: input.isCurrent });
+        return { action: 'speak', turn, entity: person, delivery };
+      },
+    },
+    presentationService: new PresentationService({
+      synthesize: async input => { synthesized.push(input); return { url: '/tts/never.mp3' }; },
+    }),
+    queueService: { publishSnapshot: payload => published.push(payload) },
+    canSpeakAloud: () => false,
+    isWakeCurrent: () => true,
+    logger: { warn() {} },
+  });
+  try {
+    const res = await onWake({ ...wake, id: 'app_open:room:100', reason: 'app_open' });
+    assert.deepEqual(res, { outcome: 'text-only', reason: 'delivered', lines: 1 });
+    assert.equal(synthesized.length, 0);
+    assert.equal(published.length, 1);
+    const [payload] = published;
+    assert.equal(payload.overlayNarrations, undefined);
+    assert.equal(payload.message.beats.length, 2);
+    assert.deepEqual(payload.message.beatProgress, { deliveredCount: 2, totalCount: 2, done: true });
+    assert.deepEqual(payload.message.voice, {
+      canSynthesize: true,
+      status: 'missing',
+      url: null,
+      audioUrl: null,
+      durationMs: null,
+      beats: [
+        { index: 0, canSynthesize: true, status: 'missing', audioUrl: null, durationMs: null },
+        { index: 1, canSynthesize: true, status: 'missing', audioUrl: null, durationMs: null },
+      ],
+    });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('voiced multi-beat presence turn synthesizes each beat with performance and emits turn ducking lease overlays', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-ambient-beats-voiced-'));
+  const store = new ConversationStore({ dbPath: join(dir, 'state.db') }).initialize();
+  store.createRoom({ sessionId: 'room', memberIds: ['lunara'], hostId: 'lunara' });
+  const published = [], synthesized = [];
+  const beats = [
+    { index: 0, say: '这首刚起调就蛮亮。', voice: { pace: 'slow', direction: '声音放轻' }, pauseAfterMs: 700 },
+    { index: 1, say: '你正好能歇一口气。', pauseAfterMs: 0 },
+  ];
+  const onWake = createAmbientPresence({
+    runtime: {
+      conversationStore: store,
+      async handleAmbientTurn(input) {
+        const turn = store.recordPresenceTurn({
+          sessionId: input.sessionId,
+          personId: input.personId,
+          triggerKey: input.wake.id,
+          kind: 'ambient',
+          text: '这首刚起调就蛮亮。\n\n你正好能歇一口气。',
+          extra: { beats },
+        });
+        const delivery = await input.deliver({ turn, entity: person, isCurrent: input.isCurrent });
+        return { action: 'speak', turn, entity: person, delivery };
+      },
+    },
+    presentationService: new PresentationService({
+      synthesize: async input => {
+        synthesized.push(input);
+        const n = synthesized.length;
+        return { url: `/tts/beat${n}.mp3`, hash: `beat${n}`, durationMs: 1200, source: 'tts' };
+      },
+    }),
+    queueService: { publishSnapshot: payload => published.push(payload) },
+    canSpeakAloud: () => true,
+    isWakeCurrent: () => true,
+    logger: { warn() {} },
+  });
+  try {
+    const res = await onWake(wake);
+    assert.deepEqual(res, { outcome: 'spoken', reason: 'delivered', lines: 1 });
+    assert.equal(synthesized.length, 2);
+    assert.deepEqual(synthesized[0].performance, { pace: 'slow', direction: '声音放轻' });
+    assert.equal(synthesized[1].performance, undefined);
+    const [payload] = published;
+    assert.equal(payload.overlayNarrations.length, 2);
+    assert.equal(payload.overlayNarrations[0].turnDuckLeaseId, payload.message.turnId);
+    assert.equal(payload.overlayNarrations[0].holdDuckLease, true);
+    assert.equal(payload.overlayNarrations[0].delayBeforeMs, 0);
+    assert.equal(payload.overlayNarrations[1].holdDuckLease, false);
+    assert.equal(payload.overlayNarrations[1].delayBeforeMs, 700);
+    assert.equal(payload.message.voice.status, 'ready');
+    assert.equal(payload.message.voice.audioUrl, '/tts/beat1.mp3');
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('multi-beat presence turn recomputes overlay lease when trailing beat is silent or fails synthesis', async () => {
+  for (const mode of ['trailing-silent', 'trailing-synth-null']) {
+    const dir = mkdtempSync(join(tmpdir(), `lunara-ambient-beats-${mode}-`));
+    const store = new ConversationStore({ dbPath: join(dir, 'state.db') }).initialize();
+    store.createRoom({ sessionId: 'room', memberIds: ['lunara'], hostId: 'lunara' });
+    const published = [];
+    const beats = mode === 'trailing-silent'
+      ? [
+        { index: 0, say: '这一句能念出来。', pauseAfterMs: 500 },
+        { index: 1, say: '……', spoken: '{叹气}', pauseAfterMs: 0 },
+      ]
+      : [
+        { index: 0, say: '第一句成功了。', pauseAfterMs: 500 },
+        { index: 1, say: '第二句合成失败。', pauseAfterMs: 0 },
+      ];
+    let synthIdx = 0;
+    const onWake = createAmbientPresence({
+      runtime: {
+        conversationStore: store,
+        async handleAmbientTurn(input) {
+          const turn = store.recordPresenceTurn({
+            sessionId: input.sessionId,
+            personId: input.personId,
+            triggerKey: `${input.wake.id}:${mode}`,
+            kind: 'ambient',
+            text: beats.map(b => b.say).join('\n\n'),
+            extra: { beats },
+          });
+          const delivery = await input.deliver({ turn, entity: person, isCurrent: input.isCurrent });
+          return { action: 'speak', turn, entity: person, delivery };
+        },
+      },
+      presentationService: new PresentationService({
+        synthesize: async () => {
+          synthIdx += 1;
+          if (mode === 'trailing-synth-null' && synthIdx === 2) return null;
+          return { url: `/tts/${mode}_${synthIdx}.mp3`, hash: `${mode}_${synthIdx}`, durationMs: 800, source: 'tts' };
+        },
+      }),
+      queueService: { publishSnapshot: payload => published.push(payload) },
+      canSpeakAloud: () => true,
+      isWakeCurrent: () => true,
+      logger: { warn() {} },
+    });
+    try {
+      const res = await onWake({ ...wake, id: `ambient:${mode}` });
+      assert.deepEqual(res, { outcome: 'spoken', reason: 'delivered', lines: 1 });
+      const [payload] = published;
+      assert.equal(payload.overlayNarrations.length, 1);
+      assert.equal(payload.overlayNarrations[0].beatCount, 1);
+      assert.equal(payload.overlayNarrations[0].isLastBeat, true);
+      assert.equal(payload.overlayNarrations[0].holdDuckLease, false);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

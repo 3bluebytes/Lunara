@@ -312,7 +312,9 @@ test('next dialogue reads committed context without waiting for the reflection m
   assert.equal(entered, true);
   await composition.runtime.handleTurn({ sessionId: 'dialogue', requestId: 'd2', userText: '你记得我刚才说什么吗？', speak: false });
   assert.ok(seen[1].some(message => message.role === 'user' && message.content === '今晚安静听歌。'));
-  assert.ok(seen[1].some(message => message.role === 'assistant' && message.content.includes('安静听歌')));
+  // 自己的分拍回复可能以 deliver_reply 调用回放（replay-replies-as-delivered-beats），内容在调用参数里。
+  assert.ok(seen[1].some(message => message.role === 'assistant'
+    && `${message.content || ''}${message.tool_calls?.[0]?.function?.arguments || ''}`.includes('安静听歌')));
   release(response);
   await settle();
 });
@@ -338,4 +340,18 @@ test('authoritative operational outcomes remain available when reflection is dis
   assert.equal(outcomes.length, 1);
   assert.equal(outcomes[0].outcome, 'completed');
   assert.equal(outcomes[0].virtualPersonId, undefined);
+});
+
+test('洞察的原话证据只带来源与原话，不复制角色回应', async t => {
+  const f = await fixture(t, { shortWindow: 1, llm: { askText: async prompt => JSON.stringify({ ...JSON.parse(response),
+    evidence: [prompt.match(/turn:[\w:-]+/u)?.[0]].filter(Boolean) }) } });
+  complete(f.ledger, 'slim-1');
+  await f.worker.sweep();
+  const row = f.memory.store.db.prepare("SELECT evidence FROM memories WHERE namespace = 'person:lunara' AND tags LIKE '%reflection-insight%'").get();
+  const originals = JSON.parse(row.evidence).originalEvidence;
+  assert.equal(originals.length, 1);
+  assert.match(originals[0].data.userText, /今天只想安静听歌/u);
+  assert.ok(originals[0].data.userTurnId);
+  assert.deepEqual(Object.keys(originals[0].data).sort(), ['userText', 'userTurnId']);
+  assert.doesNotMatch(row.evidence, /我们安静听一会儿/u);
 });

@@ -32,14 +32,20 @@ const HOST_REASON_KINDS = ['persona_self_description', 'listener_request'];
 const HOST_REASON_MAX_CHARS = 60;
 
 const INTRO_MAX_CHARS = 120;
+const TEMPLATE_H2_RE = /(?:^|\r?\n)##(?!#)[ \t]*(?:我是谁|我的故事|我说话的方式|我喜欢的音乐|我对这个用户的态度)[ \t]*(?:\r?\n|$)/u;
 
 function personaSection(personaDocument, title) {
-  const match = String(personaDocument || '').match(new RegExp(`(?:^|\\n)##\\s*${title}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'u'));
+  const match = String(personaDocument || '').match(new RegExp(`(?:^|\\r?\\n)##(?!#)[ \\t]*${title}[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##(?!#)|$)`, 'u'));
   return match ? match[1] : '';
 }
 
 // 生成器兜底写的占位（「（待补充）」等）不是自述。
 const bounded = (text, max) => (/^（(?:待补充|未填写)/u.test(text) ? '' : text.length > max ? `${text.slice(0, max)}…` : text);
+
+function firstParagraphBounded(raw, max) {
+  const first = String(raw || '').trim().split(/\r?\n[ \t]*\r?\n/u)[0] || '';
+  return bounded(first.replace(/\s+/gu, ' ').trim(), max);
+}
 
 /** persona「## 我喜欢的音乐」小节：成员自述、房间内公开人设；其余小节与私人记忆一律不取。 */
 export function personaSelfDescription(personaDocument = '') {
@@ -47,13 +53,20 @@ export function personaSelfDescription(personaDocument = '') {
 }
 
 /**
- * persona「## 我是谁」的第一段：房间内公开的人设底色。只取第一段——后面的「我的故事」
- * 与「我对这个用户的态度」不算公开自述，不进别人的提示词。
+ * persona 公开简介：优先取「## 我是谁」第一段（后面的「我的故事」与「我对这个用户的态度」不公开）；
+ * 当用户手写无「## 我是谁 / ## 我喜欢的音乐」的自由文本（或默认 lunara）时，从去掉顶层 # 标题后的首段提取兜底。
  */
-export function personaIntro(personaDocument = '') {
-  const first = personaSection(personaDocument, '我是谁').trim().split(/\n\s*\n/u)[0] || '';
-  const text = first.replace(/\s+/gu, ' ').trim();
-  return bounded(text, INTRO_MAX_CHARS);
+export function personaIntro(personaDocument = '', maxChars = INTRO_MAX_CHARS) {
+  const doc = String(personaDocument || '');
+  if (/(?:^|\r?\n)##(?!#)[ \t]*我是谁[ \t]*(?:\r?\n|$)/u.test(doc)) {
+    return firstParagraphBounded(personaSection(doc, '我是谁'), maxChars);
+  }
+  const withoutH1 = doc.replace(/^\s*#(?!#)[^\r\n]*(?:\r?\n|$)/u, '');
+  const beforeFirstH2 = withoutH1.split(/(?:^|\r?\n)##(?!#)/u)[0] || '';
+  const lead = firstParagraphBounded(beforeFirstH2, maxChars);
+  if (lead || TEMPLATE_H2_RE.test(doc)) return lead;
+  const strippedHeadings = withoutH1.replace(/(?:^|\r?\n)#{1,6}[ \t]*[^\r\n]*/gu, '\n');
+  return firstParagraphBounded(strippedHeadings, maxChars);
 }
 
 /** 证据来源随公开自述变化：自述被改写后旧引用自然失效。 */

@@ -1,5 +1,5 @@
 // 陪伴模式：一份版本化预设，两类职责。Runtime 据此判定自动串词资格与频率，
-// Agent/串词消费同一预设的长度与表达目标。模式不重写 persona、不改选歌硬条件、
+// Agent/串词消费同一预设的表达说明：资格是许可不是义务，不带句数字数。模式不重写 persona、不改选歌硬条件、
 // 不触发定时闲聊，也不改变视觉专注模式。
 
 export const COMPANION_MODE_IDS = Object.freeze(['music_only', 'occasional', 'conversational']);
@@ -22,14 +22,14 @@ const COMPANION_MODE_POLICIES = Object.freeze({
     label: '偶尔介绍',
     automaticNarration: true,
     cadence: 3,
-    promptGuide: '当前是偶尔介绍模式：自动串词保持克制，通常 1-2 句、约 40-100 个汉字，聚焦音乐本身，少向听众提问。该目标只约束自动串词，不限制你对用户主动对话的回应长度。',
+    promptGuide: '当前是偶尔介绍模式：隔几首歌会轮到一次自动开口机会；有想分享的音乐细节或感受就简短聊聊音乐本身，其余时候让歌安静地放就好。这只关乎自动串词，用户主动对话时按你的人设正常交流。',
   }),
   conversational: Object.freeze({
     id: 'conversational',
     label: '多聊一点',
     automaticNarration: true,
     cadence: 1,
-    promptGuide: '当前是多聊一点模式：自动串词通常 2-4 句、约 80-180 个汉字，允许与音乐自然相关的联想，但不强制每次提问或关照式结尾，也不要编造听众的生活状态。该目标只约束自动串词，不限制你对用户主动对话的回应长度。',
+    promptGuide: '当前是多聊一点模式：每首歌开始时你都可以按自己的性格聊聊这首歌、联想到的事或此刻的气氛，长短随你；确实没什么想补充时也可以让歌安静地放。描述以已知上下文和歌曲事实为准。这只关乎自动串词，用户主动对话时按你的人设正常交流。',
   }),
 });
 

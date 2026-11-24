@@ -40,10 +40,16 @@ function normalizedArtist(artist) {
   return String(artist || '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
 }
 
-export function chooseFamiliarArtistClasses({ pool, recentPlays, likedArtists, count }) {
+const providerOf = track => String(track?.source || track?.provider || '').split(/[:-]/)[0];
+
+export function chooseFamiliarArtistClasses({ pool, recentPlays, likedArtists, likedTrackKeys = null, count }) {
   const liked = new Set((likedArtists || []).map(normalizedArtist).filter(Boolean));
   for (const track of pool) {
-    if (/(?:^|:)liked(?:$|:)/u.test(String(track.candidateOrigin || ''))) liked.add(normalizedArtist(track.artist));
+    const songId = String(track?.songId ?? track?.song_id ?? '');
+    const key = songId ? `${providerOf(track)}:${songId}` : '';
+    if (/(?:^|:)liked(?:$|:)/u.test(String(track.candidateOrigin || '')) || (key && likedTrackKeys?.has?.(key))) {
+      liked.add(normalizedArtist(track.artist));
+    }
   }
   const recent = Array.isArray(recentPlays) ? recentPlays : [];
   const playsByArtist = new Map();

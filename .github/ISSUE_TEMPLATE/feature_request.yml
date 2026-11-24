@@ -1,0 +1,24 @@
+name: 功能建议
+description: 提出新功能想法、体验改进或新服务协议支持
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题或使用场景
+      description: 在什么场景下需要这个能力？目前缺少它哪里不顺手？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的行为或方案
+      description: 你希望 Lunara 如何表现或交互？
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 其他补充或替代思路（可选）
+      description: 有没有其他参考做法、兼容约束或取舍？

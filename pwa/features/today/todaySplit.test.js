@@ -34,8 +34,12 @@ function harness({ stored, desktop = true, handle } = {}) {
     removeEventListener(type) { listeners.delete(type); },
   };
   const storage = { getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) };
+  const winListeners = new Map();
   const windowLike = {
     matchMedia: () => ({ matches: desktop }),
+    addEventListener(type, fn) { winListeners.set(type, fn); },
+    removeEventListener(type) { winListeners.delete(type); },
+    fire(type, event = {}) { winListeners.get(type)?.(event); },
     MutationObserver: class {
       constructor(callback) { this.callback = callback; observers.push(this); }
       observe() {}
@@ -49,7 +53,7 @@ function harness({ stored, desktop = true, handle } = {}) {
     ...event,
   });
   return {
-    split, panel, props, values, rootClasses, observers, fire,
+    split, panel, props, values, rootClasses, observers, fire, windowLike,
     setHandle(next) { current = next; },
     listenerCount: () => listeners.size,
   };
@@ -132,4 +136,21 @@ test('narrow screens ignore drags and keys; destroy releases listeners and drag 
   assert.equal(h.listenerCount(), 0);
   assert.equal(h.rootClasses.has('today-splitting'), false);
   assert.equal(h.observers[0].disconnected, true);
+});
+
+test('lostpointercapture and blur cleanly release today split drag state', () => {
+  const h = harness({ stored: '400' });
+  h.fire('pointerdown', { button: 0, pointerId: 2, clientX: 400 });
+  h.fire('pointermove', { pointerId: 2, clientX: 440 });
+  assert.ok(h.rootClasses.has('today-splitting'));
+  h.fire('lostpointercapture', { pointerId: 2 });
+  assert.equal(h.rootClasses.has('today-splitting'), false);
+  assert.equal(h.values.get(STORAGE_KEYS.todayListWidth), '440');
+
+  h.fire('pointerdown', { button: 0, pointerId: 6, clientX: 440 });
+  h.fire('pointermove', { pointerId: 6, clientX: 470 });
+  h.windowLike.fire('blur');
+  assert.equal(h.rootClasses.has('today-splitting'), false);
+  assert.equal(h.values.get(STORAGE_KEYS.todayListWidth), '470');
+  h.split.destroy();
 });

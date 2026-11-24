@@ -15,6 +15,8 @@
 // 对外的 stats 只有各部分条数与总长度。
 // 第 1–3 部分（本轮要求、显式反馈、口味画像）永不截断。
 
+import { personaIntro } from '../virtual-person/floorTools.js';
+
 export const BRIEF_PRIORITY_NOTE = '选歌简报。优先级：本轮明确要求 > 显式反馈 > 口味画像 > 推断与近期观察。'
   + '冲突时以高优先级为准；简报只帮你挑序号，不放宽任何硬条件。';
 const DEFAULT_MAX_CHARS = 6000;
@@ -77,6 +79,8 @@ function scopeLabel(row, now) {
   const policy = row.policy || evidence.policy || {};
   const parts = [row.namespace === 'station' ? '所有伙伴共享' : '你和用户之间'];
   if (policy.onlyConversationId) parts.push('仅限本聊天');
+  if (policy.disclosure === 'private') parts.push('对方私下跟你说的');
+  if (policy.sensitive === true) parts.push('比较私人的事');
   const until = Number(policy.until || row.expiresAt) || 0;
   if (until > now) parts.push(`有效至 ${new Date(until).toISOString().slice(0, 10)}`);
   return `来源：用户亲口说的；范围：${parts.join('，')}`;
@@ -196,12 +200,16 @@ export function buildSelectionBrief({ request, context, personaTaste = '', liste
 
 /**
  * 角色自己的音乐审美：人格文档的「## 我喜欢的音乐」小节（群聊自述 floorTools 读的也是它），
- * 没有该小节时退到「音乐审美：」行。记忆 v2 已移除 persona 类型，这里不再查记忆。
+ * 没有该小节时退到「音乐审美：」行；若都未写（如自由格式人设或默认 lunara），退到公开简介（≤160 字）作为选歌气质参考。
  * 生成器兜底的占位（「（待补充）」等）不算审美；读不到就是空串，简报省略这一项。
  */
 export function personaMusicTaste({ entity = null } = {}) {
   const document = String(entity?.personaDocument || '');
-  const section = (document.match(/(?:^|\n)##\s*我喜欢的音乐\s*\n([\s\S]*?)(?=\n##\s|$)/u) || [])[1]?.trim()
-    || (document.match(/音乐审美[：:]\s*([^\n]+)/u) || [])[1]?.trim() || '';
-  return /^（(?:待补充|未填写)/u.test(section) ? '' : section;
+  const musicSectionMatch = document.match(/(?:^|\r?\n)##(?!#)[ \t]*我喜欢的音乐[ \t]*\r?\n([\s\S]*?)(?=\r?\n##(?!#)|$)/u);
+  const explicitLineMatch = !musicSectionMatch && document.match(/音乐审美[：:]\s*([^\r\n]+)/u);
+  if (musicSectionMatch || explicitLineMatch) {
+    const section = (musicSectionMatch ? musicSectionMatch[1] : explicitLineMatch[1] || '').trim();
+    return /^（(?:待补充|未填写)/u.test(section) ? '' : section;
+  }
+  return personaIntro(document, 160);
 }

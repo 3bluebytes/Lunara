@@ -84,3 +84,35 @@ test('IntentRouter decides when a music batch made no progress, across rounds of
     assert.equal(plan.noProgressOutcome(), outcome);
   }
 });
+
+test('IntentRouter 5 级排序：节律 → 联网 → 非终结写操作 → select_music → 全部终结性工具', () => {
+  const router = new IntentRouter();
+  const calls = [
+    { id: 'decline', function: { name: 'decline_floor', arguments: '{}' } },
+    { id: 'narrate', function: { name: 'narrate_current_track', arguments: '{}' } },
+    { id: 'control', function: { name: 'control_listening', arguments: '{}' } },
+    { id: 'commit', function: { name: 'commit_music_selection', arguments: '{}' } },
+    { id: 'remember', function: { name: 'remember_person_fact', arguments: '{}' } },
+    { id: 'feedback', function: { name: 'record_music_feedback', arguments: '{}' } },
+    { id: 'select', function: { name: 'select_music', arguments: '{}' } },
+    { id: 'web', function: { name: 'web_search', arguments: '{}' } },
+    { id: 'cadence', function: { name: 'set_familiar_artist_cadence', arguments: '{}' } },
+  ];
+  assert.deepEqual(router.plan(calls).calls.map(c => c.id), [
+    'cadence', 'web', 'remember', 'feedback', 'select', 'decline', 'narrate', 'control', 'commit',
+  ]);
+});
+
+test('IntentRouter guides ordinary turns to call deliver_reply when reply.structured capability is present', () => {
+  const router = new IntentRouter();
+  const promptWithStructured = router.extendSystemPrompt('基础人设', {
+    capabilities: [MUSIC_CAPABILITY, 'reply.structured'],
+  });
+  assert.doesNotMatch(promptWithStructured, /普通对话不必调用工具/u);
+  assert.match(promptWithStructured, /deliver_reply\(\{ beats \}\)/u);
+
+  const promptWithoutMusic = router.extendSystemPrompt('基础人设', {
+    capabilities: ['reply.structured'],
+  });
+  assert.equal(promptWithoutMusic, '基础人设');
+});

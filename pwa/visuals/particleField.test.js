@@ -105,7 +105,7 @@ test('star field reads theme tokens, builds halo sprites, and honours reduced mo
   field.destroy();
 });
 
-test('star field falls back to plain arcs when no sprite canvas is available and freezes drift under reduced motion', () => {
+test('star field falls back to plain arcs when no sprite canvas is available and stops rAF under reduced motion', () => {
   const frames = [];
   const calls = { drawImage: 0, arc: 0 };
   const positions = [];
@@ -138,12 +138,142 @@ test('star field falls back to plain arcs when no sprite canvas is available and
   });
 
   field.init();
-  frames[0]();
+  assert.equal(frames.length, 0, 'reduced motion paints static stars once and schedules zero rAF frames');
   assert.equal(calls.arc, 4, 'fallback draws one arc per particle');
   assert.equal(calls.drawImage, 0, 'fallback never uses sprites');
   const firstDraw = positions.slice(0, 4);
-  frames[1]();
+  field.setAmplitude(0.9);
+  assert.equal(frames.length, 0, 'amplitude updates do not restart rAF under reduced motion');
+  field.refreshTheme();
   const secondDraw = positions.slice(4, 8);
   assert.deepEqual(secondDraw, firstDraw, 'reduced motion freezes star drift');
+  assert.equal(frames.length, 0);
   field.destroy();
+});
+
+test('particle field stops rAF when document.hidden or reduced-motion activates and resumes when cleared', () => {
+  const winListeners = new Map();
+  const docListeners = new Map();
+  const motionListeners = new Set();
+  const documentLike = {
+    hidden: false,
+    visibilityState: 'visible',
+    addEventListener(type, fn) { docListeners.set(type, fn); },
+    removeEventListener(type, fn) { if (docListeners.get(type) === fn) docListeners.delete(type); },
+    emit(type) { docListeners.get(type)?.(); },
+  };
+  const motionQuery = {
+    matches: false,
+    addEventListener(type, fn) { if (type === 'change') motionListeners.add(fn); },
+    removeEventListener(type, fn) { if (type === 'change') motionListeners.delete(fn); },
+    emitChange() { for (const fn of motionListeners) fn(); },
+  };
+  const windowLike = {
+    innerWidth: 900,
+    innerHeight: 600,
+    devicePixelRatio: 1,
+    addEventListener(type, fn) { winListeners.set(type, fn); },
+    removeEventListener(type, fn) { if (winListeners.get(type) === fn) winListeners.delete(type); },
+    matchMedia: () => motionQuery,
+  };
+  const context = {
+    setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {},
+    set fillStyle(_value) {},
+  };
+  const canvas = { style: {}, getContext: () => context };
+  let nextFrameId = 0;
+  const activeFrames = new Map();
+
+  const field = createParticleField({
+    canvas,
+    documentLike,
+    windowLike,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    requestFrame: fn => { const id = ++nextFrameId; activeFrames.set(id, fn); return id; },
+    cancelFrame: id => activeFrames.delete(id),
+    spriteCanvasFactory: () => null,
+    random: () => 0.5,
+    now: () => 1000,
+    count: 3,
+  }).init();
+
+  assert.equal(activeFrames.size, 1, '活跃且可见时启动 rAF');
+
+  documentLike.hidden = true;
+  documentLike.visibilityState = 'hidden';
+  documentLike.emit('visibilitychange');
+  assert.equal(activeFrames.size, 0, 'document.hidden 时取消 rAF');
+
+  field.setAmplitude(0.75);
+  assert.equal(activeFrames.size, 0, '后台隐藏时幅度更新不唤醒 rAF');
+
+  documentLike.hidden = false;
+  documentLike.visibilityState = 'visible';
+  documentLike.emit('visibilitychange');
+  assert.equal(activeFrames.size, 1, '页面重新可见时恢复 rAF');
+
+  motionQuery.matches = true;
+  motionQuery.emitChange();
+  assert.equal(activeFrames.size, 0, '切到减少动态时取消 rAF');
+
+  motionQuery.matches = false;
+  motionQuery.emitChange();
+  assert.equal(activeFrames.size, 1, '关闭减少动态时恢复 rAF');
+
+  field.destroy();
+  assert.equal(activeFrames.size, 0);
+  assert.equal(winListeners.size, 0);
+  assert.equal(docListeners.size, 0);
+  assert.equal(motionListeners.size, 0);
+});
+
+test('particle field skips rAF loop when particle count is 0, opacity is 0, or container is hidden', () => {
+  const tokens = { '--particle-count': '0', '--particle-opacity': '1' };
+  const container = { hidden: false, style: {} };
+  const canvas = {
+    style: {},
+    getContext: () => ({
+      setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {},
+      set fillStyle(_value) {},
+    }),
+  };
+  let nextFrameId = 0;
+  const activeFrames = new Map();
+  const field = createParticleField({
+    canvas,
+    container,
+    root: {},
+    windowLike: {
+      innerWidth: 800,
+      innerHeight: 600,
+      devicePixelRatio: 1,
+      addEventListener() {},
+      removeEventListener() {},
+      matchMedia: () => ({ matches: false }),
+    },
+    getComputedStyle: () => ({ getPropertyValue: name => tokens[name] ?? '' }),
+    requestFrame: fn => { const id = ++nextFrameId; activeFrames.set(id, fn); return id; },
+    cancelFrame: id => activeFrames.delete(id),
+    spriteCanvasFactory: () => null,
+    random: () => 0.5,
+  }).init();
+
+  assert.equal(activeFrames.size, 0, '--particle-count: 0 时不启动 rAF');
+
+  tokens['--particle-count'] = '12';
+  tokens['--particle-opacity'] = '0';
+  field.refreshTheme();
+  assert.equal(activeFrames.size, 0, '--particle-opacity: 0 时不启动 rAF');
+
+  tokens['--particle-opacity'] = '1';
+  container.hidden = true;
+  field.refreshTheme();
+  assert.equal(activeFrames.size, 0, '容器 hidden 时不启动 rAF');
+
+  container.hidden = false;
+  field.start();
+  assert.equal(activeFrames.size, 1, '容器变为可见且非空后按需启动 rAF');
+
+  field.destroy();
+  assert.equal(activeFrames.size, 0);
 });

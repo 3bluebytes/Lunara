@@ -17,7 +17,6 @@ export function initSourceMenu({
 } = {}) {
   const launcher = documentLike.querySelector('#source-menu-open');
   const menu = documentLike.querySelector('#source-menu');
-  const label = documentLike.querySelector('#source-menu-label');
   if (!launcher || !menu) return { refresh() {}, destroy() {} };
   let open = false;
   let stateTexts = new Map();
@@ -42,10 +41,9 @@ export function initSourceMenu({
       }
       node.textContent = text;
     }
-    // 入口本身只表达「有几个源在等你处理」，不显示数量：有故障时加一个状态点。
+    // 入口状态点只表达故障提醒；#source-menu-label 登录态文案统一由 authView 单一写入。
     const hasTrouble = SOURCE_ORDER.some(source => stateTexts.get(source));
     launcher.classList.toggle('needs-attention', hasTrouble);
-    if (label) label.textContent = '音乐源';
   }
 
   function applySnapshot(snapshot) {
@@ -90,7 +88,8 @@ export function initSourceMenu({
 
   function keydown(event) {
     if (event.key !== 'Escape' || !open) return;
-    event.stopPropagation();
+    event.preventDefault?.();
+    event.stopImmediatePropagation?.();
     close({ restoreFocus: true });
   }
 

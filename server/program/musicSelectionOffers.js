@@ -65,11 +65,15 @@ function stable(value) {
  * 让一份仍然合法的批次作废。真正的硬条件（mode/delivery/constraints/数量）
  * 全部参与签名，采用时还会重新做 canonical 解析与硬约束校验。
  */
-export function prewarmBatchKey({ request = null, sessionId = '', personId = '' } = {}) {
+export function prewarmBatchKey({ request = null, sessionId = '', personId = '', likesRevision = null, skipMomentumBucket = 0 } = {}) {
   const { preferredArtists: _softAnchor, ...durable } = request || {};
-  return createHash('sha256').update(JSON.stringify(stable({ request: durable,
-    sessionId: String(sessionId || ''), personId: String(personId || '') })))
-    .digest('hex');
+  return createHash('sha256').update(JSON.stringify(stable({
+    request: durable,
+    sessionId: String(sessionId || ''),
+    personId: String(personId || ''),
+    likesRevision: likesRevision == null ? null : String(likesRevision),
+    skipMomentumBucket: Number(skipMomentumBucket) >= 1 ? 1 : 0,
+  }))).digest('hex');
 }
 
 export function initializeMusicSelectionOffers(db) {
@@ -119,6 +123,7 @@ export function initializeMusicSelectionPrepared(db) {
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_music_selection_prepared_session
     ON music_selection_prepared(session_id, person_id, created_at)`);
+  ensureColumn(db, 'music_selection_prepared', 'lines_json', 'lines_json TEXT');
 }
 
 /** 面向上帝视角的 canonical 候选：只保留稳定身份与展示字段，1 起始序号。 */
@@ -308,6 +313,8 @@ function hydratePrepared(row) {
     membershipRevision: Number(row.membership_revision) || 0,
     status: row.status,
     result: row.result_json ? parseJson(row.result_json, null) : null,
+    // 预热时写好的串词：{ 序号: { text, spokenText, performance, about, voiceProfileId, writtenAt, membershipRevision } }。
+    lines: row.lines_json ? parseJson(row.lines_json, null) : null,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   });
@@ -373,6 +380,24 @@ export class MusicSelectionPreparedStore {
     return hydratePrepared(this.db.prepare('SELECT * FROM music_selection_prepared WHERE prepared_id = ?').get(String(preparedId || '')));
   }
 
+  /** 只给还没被采用的批次记串词：边界已经采用的话，这段话晚了，留着也不会再用。 */
+  saveLine({ preparedId, index, line } = {}) {
+    this.initialize();
+    const row = this.db.prepare(`SELECT lines_json FROM music_selection_prepared
+      WHERE prepared_id = ? AND status = 'prepared' AND expires_at > ?`).get(String(preparedId || ''), this.now());
+    if (!row) return false;
+    const lines = { ...(row.lines_json ? parseJson(row.lines_json, null) : null), [String(index)]: line };
+    return this.db.prepare(`UPDATE music_selection_prepared SET lines_json = ?
+      WHERE prepared_id = ? AND status = 'prepared'`).run(JSON.stringify(lines), String(preparedId || '')).changes === 1;
+  }
+
+  /** 表达偏好或记忆变了：还没说出口的串词作废，批次本身还能用（到时候安静播放）。 */
+  clearLines({ sessionId } = {}) {
+    this.initialize();
+    return this.db.prepare(`UPDATE music_selection_prepared SET lines_json = NULL
+      WHERE session_id = ? AND status = 'prepared' AND lines_json IS NOT NULL`).run(String(sessionId || '')).changes;
+  }
+
   /** 待采用批次：同一会话 + 同一角色，按创建时间从新到旧；是否可用由调用方逐项核对。 */
   listReady({ sessionId, personId = null } = {}) {
     this.initialize();
@@ -394,13 +419,14 @@ export class MusicSelectionPreparedStore {
       WHERE prepared_id = ?`).run(result ? JSON.stringify(result) : null, this.now(), String(preparedId || '')).changes === 1;
   }
 
-  /** 记忆/标签/曲库或会话失效：待采用批次立刻作废（单次使用，不可复活）。 */
-  invalidate({ sessionId = null } = {}) {
+  /** 记忆/标签/曲库/红心或会话失效：待采用批次立刻作废（单次使用，不可复活）。 */
+  invalidate({ sessionId = null, personId = null } = {}) {
     this.initialize();
-    return (sessionId
-      ? this.db.prepare(`UPDATE music_selection_prepared SET status = 'invalidated'
-          WHERE status = 'prepared' AND session_id = ?`).run(String(sessionId))
-      : this.db.prepare(`UPDATE music_selection_prepared SET status = 'invalidated' WHERE status = 'prepared'`).run()).changes;
+    const clauses = [`status = 'prepared'`];
+    const params = [];
+    if (sessionId) { clauses.push('session_id = ?'); params.push(String(sessionId)); }
+    if (personId) { clauses.push('person_id = ?'); params.push(String(personId)); }
+    return this.db.prepare(`UPDATE music_selection_prepared SET status = 'invalidated' WHERE ${clauses.join(' AND ')}`).run(...params).changes;
   }
 
   invalidateById(preparedId) {

@@ -66,10 +66,16 @@ export function initAuthView({
     qrTimer = null;
   }
 
+  function clearQrImage(image) {
+    if (!image) return;
+    image.removeAttribute?.('src');
+    image.hidden = true;
+  }
+
   function closeOverlay() {
     stopQrPolling();
     $('#qr-overlay').style.display = 'none';
-    $('#qr-img').src = '';
+    clearQrImage($('#qr-img'));
     const opener = qrOpener?.isConnected === false && qrOpener.dataset?.sourceLogin
       ? documentLike.querySelector(`[data-source-login="${qrOpener.dataset.sourceLogin}"]`) : qrOpener;
     opener?.focus?.({ preventScroll: true });
@@ -103,11 +109,16 @@ export function initAuthView({
     $('#cookie-hint').textContent = '';
     refresh.style.display = 'none';
     hint.textContent = '正在生成二维码…';
-    image.src = '';
+    clearQrImage(image);
     try {
       const qr = await controller.createQr(source);
       if (run !== qrRun) return;
-      image.src = qr.qrimg;
+      if (qr?.qrimg) {
+        image.src = qr.qrimg;
+        image.hidden = false;
+      } else {
+        clearQrImage(image);
+      }
       hint.textContent = source === 'qq' ? '请使用 QQ App 扫码并确认' : '请使用网易云音乐 App 扫码';
       let elapsed = 0;
       let checking = false;

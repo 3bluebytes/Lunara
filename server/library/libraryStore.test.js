@@ -95,6 +95,8 @@ store.reconcileTracks('ncm', 'U', { id: 'liked', name: '我喜欢的音乐', tra
   [{ song_id: 'liked-song', title: 'Liked', artist: 'Familiar Artist' }], { complete: true });
 assert(store.listLikedArtists().includes('Familiar Artist'), 'liked playlist artist is familiarity evidence');
 assert(!store.listLikedArtists().includes('B'), 'ordinary imported playlist is not familiarity evidence');
+assert(store.artistsForSongs([{ provider: 'ncm', songId: 'shared' }]).includes('Singer'), 'artistsForSongs resolves canonical provider + songId');
+assert(!store.artistsForSongs([{ provider: 'qq', songId: 'shared' }]).includes('Singer'), 'artistsForSongs never merges across providers');
 
 store.setSourceState('ncm', 'V', { import_status: 'importing', run_started_at: 9 });
 assert(store.recoverStaleRuns() === 1, 'stale persisted run is detected');

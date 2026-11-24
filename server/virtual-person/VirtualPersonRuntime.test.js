@@ -5,17 +5,27 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentLoop } from './AgentLoop.js';
 import { ContextBudgeter } from './ContextBudgeter.js';
+import { isSummaryMessage, turnContextOf, withoutTurnContext } from './contextBlocks.js';
 import { ConversationStore } from './ConversationStore.js';
 import { PresentationService } from './PresentationService.js';
 import { PromptAssembler } from './PromptAssembler.js';
 import { VirtualPersonRegistry } from './VirtualPersonRegistry.js';
-import { VirtualPersonRuntime, keepCompleteToolProtocol } from './VirtualPersonRuntime.js';
+import { VirtualPersonRuntime } from './VirtualPersonRuntime.js';
+import { keepCompleteToolProtocol } from './TurnContextAssembler.js';
 import { VirtualPersonToolRegistry } from './VirtualPersonToolRegistry.js';
 import { registerMusicTools } from './musicTools.js';
 import { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY } from '../program/musicSelectionRequest.js';
 import { getFamiliarArtistCadence } from '../program/familiarArtistCadence.js';
 
-function createHarness(chat, options = {}) {
+// 这里的测试看对话与工具行为：模型替身拿到的是去掉「本轮背景」之后的消息（最后一条就是原话），
+// 每次调用的背景正文另存在 harness.contexts（下标与模型调用一一对应）。
+// 背景块本身的位置与逐字节稳定性由 VirtualPersonRuntime.context / .summary 测试覆盖。
+function createHarness(modelStub, options = {}) {
+  const contexts = [];
+  const chat = (messages, ...rest) => {
+    contexts.push(turnContextOf(messages));
+    return modelStub(withoutTurnContext(messages), ...rest);
+  };
   const dir = mkdtempSync(join(tmpdir(), 'lunara-vp-'));
   const dbPath = join(dir, 'state.db');
   const registry = new VirtualPersonRegistry({ dbPath });
@@ -40,13 +50,23 @@ function createHarness(chat, options = {}) {
     logger: options.logger || { error() {}, warn() {} },
   }).initialize();
   return {
-    runtime, registry, conversationStore, tools,
+    runtime, registry, conversationStore, tools, contexts,
     close() {
       conversationStore.close();
       registry.close();
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+
+// 自己的分拍回复以 deliver_reply 回放（replay-replies-as-delivered-beats）：比对对话脉络时还原成「谁说了什么」。
+function transcriptEntry(message) {
+  if (message.role === 'tool' && String(message.tool_call_id || '').startsWith('replay_')) return [];
+  const replay = message.role === 'assistant' && message.tool_calls?.length === 1
+    && String(message.tool_calls[0].id || '').startsWith('replay_') ? message.tool_calls[0] : null;
+  if (replay) return [['assistant', JSON.parse(replay.function.arguments).beats.map(beat => beat.say).join('\n')]];
+  return [[message.role, message.content]];
 }
 
 test('a second HTTP-style request receives the prior user and assistant turns', async () => {
@@ -60,7 +80,7 @@ test('a second HTTP-style request receives the prior user and assistant turns', 
     await harness.runtime.handleTurn({ sessionId: 'session-1', requestId: 'request-1', userText: '我今天有点累', speak: false });
     await harness.runtime.handleTurn({ sessionId: 'session-1', requestId: 'request-2', userText: '你还记得我刚才说的吗？', speak: false });
     assert.equal(calls.length, 2);
-    assert.deepEqual(calls[1].slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(calls[1].slice(1).flatMap(transcriptEntry), [
       ['user', '我今天有点累'],
       ['assistant', '听起来这一天消耗了你不少。'],
       ['user', '你还记得我刚才说的吗？'],
@@ -70,6 +90,50 @@ test('a second HTTP-style request receives the prior user and assistant turns', 
   } finally {
     harness.close();
   }
+});
+
+test('roleplay dialogue survives terminal selection and replay; a cancelled result keeps only its receipt', async () => {
+  const dialogue = '（把杯子放回桌上）我刚才不是不想回答你。' + '我只是在想怎么把这件事说清楚，而不是把猜测当成你的想法。'.repeat(9);
+  const receipt = '好，已经安排了《夜曲》。';
+  const controller = new AbortController();
+  let modelCalls = 0;
+  const selections = [];
+  const args = { mode: 'exact', delivery: 'replace_now', targets: [{ title: '夜曲' }] };
+  const harness = createHarness(async () => {
+    modelCalls++;
+    return { message: { role: 'assistant', content: '', tool_calls: [
+      { id: 'exact', type: 'function', function: { name: 'select_music', arguments: JSON.stringify({ ...args, dialogue }) } },
+    ] } };
+  }, {
+    capabilityResolver: () => [MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY],
+    registerTools(tools) {
+      registerMusicTools(tools, () => ({ execute: async input => {
+        selections.push(input);
+        if (selections.length === 2) controller.abort();
+        return { ok: true, code: 'MUSIC_COMMITTED', terminal: true, tracks: [{ title: '夜曲' }], userMessage: receipt };
+      } }));
+    },
+  });
+  try {
+    assert.ok([...dialogue].length > 200);
+    const room = harness.conversationStore.createRoom({ title: '私语测试', memberIds: ['lunara'], hostId: 'lunara', interactionMode: 'roleplay' });
+    const input = { sessionId: room.sessionId, requestId: 'mixed-reply-1', userText: '你刚才为什么回避我？再帮我放《夜曲》。' };
+    const response = await harness.runtime.handleTurn(input);
+    const expected = dialogue + '\n\n' + receipt;
+    assert.equal(response.ok, true);
+    assert.equal(response.displayText, expected);
+    assert.equal(response.presentation.speak, false);
+    assert.equal(harness.conversationStore.getTurn(response.presentation.sourceTurnId).visibleText, expected);
+    assert.equal((await harness.runtime.handleTurn(input)).displayText, expected);
+    assert.equal(modelCalls, 1);
+    assert.deepEqual(selections, [args]);
+
+    const cancelled = await harness.runtime.handleTurn({ ...input, requestId: 'mixed-reply-2', signal: controller.signal });
+    assert.equal(cancelled.displayText, receipt);
+    assert.equal(cancelled.presentation.speak, false);
+    assert.equal(modelCalls, 2);
+    assert.deepEqual(selections, [args, args]);
+  } finally { harness.close(); }
 });
 
 test('familiar-artist feedback reaches the model and is saved by a source-backed typed tool', async () => {
@@ -444,6 +508,22 @@ test('a turn that times out while correcting a music action says it timed out, n
   }
 });
 
+test('没接模型（LLM_NOT_CONFIGURED）时把人引到设置，而不是让他再说一次', async () => {
+  const harness = createHarness(async () => {
+    throw Object.assign(new Error('No LLM endpoint configured'), { name: 'LLMNotConfiguredError', code: 'LLM_NOT_CONFIGURED' });
+  });
+  try {
+    const response = await harness.runtime.handleTurn({ sessionId: 'llm-missing', requestId: 'llm-missing-r',
+      userText: '放首歌', speak: false });
+    assert.equal(response.ok, false);
+    assert.equal(response.failureCode, 'LLM_NOT_CONFIGURED');
+    assert.match(response.displayText, /设置 → 模型与连接/u);
+    assert.doesNotMatch(response.displayText, /没能接住|endpoint|LLM_/u);
+  } finally {
+    harness.close();
+  }
+});
+
 test('a model attempt timeout (LLM_TIMEOUT) shows the timeout copy, not the generic failure', async () => {
   const harness = createHarness(async () => {
     throw Object.assign(new Error('LLM request deadline exceeded'), { name: 'TimeoutError', code: 'LLM_TIMEOUT' });
@@ -659,7 +739,8 @@ test('memory retrieval receives the current user text as query', async () => {
     await harness.runtime.handleTurn({ sessionId: 's', requestId: 'r', userText: '我现在想听安静一点的', speak: false });
     assert.equal(queries[0].query, '我现在想听安静一点的');
     assert.equal(queries[0].namespace, 'person:lunara');
-    assert.doesNotMatch(calls[0][0].content, /我现在想听安静一点的/);
+    assert.doesNotMatch(`${calls[0][0].content}\n${harness.contexts[0]}`, /我现在想听安静一点的/);
+    assert.match(harness.contexts[0], /相关记忆/);
     assert.equal(calls[0].filter(message => message.content === '我现在想听安静一点的').length, 1);
   } finally {
     harness.close();
@@ -707,8 +788,10 @@ test('runtime persists an auditable compaction summary without deleting transcri
     assert.equal(summaries[0].fromSequence, 1);
     assert(summaries[0].toSequence < harness.conversationStore.getSession('compact').nextSequence);
     assert.equal(harness.conversationStore.listTurns('compact', { visibleOnly: true }).length, 8);
-    assert.match(calls.at(-1)[0].content, /较早对话摘要/);
-    assert.match(calls.at(-1)[0].content, /第1轮/);
+    // 摘要是历史的第一条消息，不在系统提示里。
+    assert.ok(isSummaryMessage(calls.at(-1)[1]));
+    assert.match(calls.at(-1)[1].content, /第1轮/);
+    assert.doesNotMatch(calls.at(-1)[0].content, /第1轮/);
   } finally {
     harness.close();
   }
@@ -749,17 +832,18 @@ test('single-speaker handoff keeps shared transcript but retrieves only the acti
     ]);
     assert.match(calls[1][0].content, /夜航/);
     assert.match(calls[1][0].content, /说话克制/);
-    assert.match(calls[1][0].content, /private:radiohost:radiohost-night/);
-    assert.doesNotMatch(calls[1][0].content, /private:person:lunara/);
-    assert.match(calls[2][0].content, /private:radiohost:radiohost-morning/);
+    // 检索到的记忆在本轮背景里（每轮都变的内容不进系统提示）。
+    assert.match(harness.contexts[1], /private:radiohost:radiohost-night/);
+    assert.doesNotMatch(`${calls[1][0].content}\n${harness.contexts[1]}`, /private:person:lunara/);
+    assert.match(harness.contexts[2], /private:radiohost:radiohost-morning/);
     assert.match(calls[2][0].content, /清醒、轻快/);
-    assert.doesNotMatch(calls[2][0].content, /private:radiohost:radiohost-night/);
+    assert.doesNotMatch(`${calls[2][0].content}\n${harness.contexts[2]}`, /private:radiohost:radiohost-night/);
     // 别人说过的话是 user 角色里的同伴信封，与相邻的用户发言合并成一条。
-    assert.deepEqual(calls[1].slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(calls[1].slice(1).flatMap(transcriptEntry), [
       ['user', '我今天有点累\n\n<peer_message from="Lunara" member="lunara" round="earlier">\nLunara 在这里。\n</peer_message>\n\n换你来接着聊'],
     ]);
     // 自己说过的话保持 assistant 且不加标注：模型看到自己的话带标签，会照着格式把标签说出来。
-    assert.deepEqual(calls[3].slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(calls[3].slice(1).flatMap(transcriptEntry), [
       ['user', '我今天有点累'],
       ['assistant', 'Lunara 在这里。'],
       ['user', '换你来接着聊\n\n<peer_message from="夜航" member="radiohost-night" round="earlier">\n夜航接住了刚才的话。\n</peer_message>\n\n晨雾也接一下\n\n<peer_message from="晨雾" member="radiohost-morning" round="earlier">\n晨雾也知道我们聊到哪里。\n</peer_message>\n\nLunara 回来吧'],
@@ -797,7 +881,7 @@ test('speaker labels the model imitates are stripped from replies and from store
     assert.deepEqual(stored, ['先听这首吧。', '我接着说。']);
     harness.conversationStore.setActiveVirtualPerson('label', 'lunara');
     await harness.runtime.handleTurn({ sessionId: 'label', requestId: 'label-3', userText: '回来', speak: false });
-    assert.deepEqual(calls[2].slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(calls[2].slice(1).flatMap(transcriptEntry), [
       ['user', '你好'],
       ['assistant', '先听这首吧。'],
       ['user', '换你\n\n<peer_message from="夜航" member="radiohost-night" round="earlier">\n我接着说。\n</peer_message>\n\n回来'],
@@ -829,7 +913,7 @@ test('legacy stored replies that already carry a speaker label are projected onc
     harness.conversationStore.setActiveVirtualPerson('legacy', 'lunara');
     await harness.runtime.handleTurn({ sessionId: 'legacy', requestId: 'legacy-3', userText: '回来', speak: false });
     // 旧账本里漏进正文的标签在投影时剥掉，再按真实说话人投影一次。
-    assert.deepEqual(calls.at(-1).slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(calls.at(-1).slice(1).flatMap(transcriptEntry), [
       ['user', '你好'],
       ['assistant', '旧的话。'],
       ['user', '换你\n\n<peer_message from="夜航" member="radiohost-night" round="earlier">\n夜航的旧话。\n</peer_message>\n\n回来'],
@@ -855,7 +939,8 @@ test('long sessions reload a cumulative persisted summary instead of forgetting 
       });
     }
     assert.ok(harness.conversationStore.listTurns('long-context', { limit: 500 }).length > 100);
-    assert.match(calls.at(-1)[0].content, /CODEWORD-719/);
+    assert.ok(isSummaryMessage(calls.at(-1)[1]));
+    assert.match(calls.at(-1)[1].content, /CODEWORD-719/);
   } finally {
     harness.close();
   }
@@ -957,7 +1042,7 @@ test('recent correction is resolved before one contextual radio tool execution',
     assert.equal(response.displayText, '改成粤语的《明年今日》了。');
     assert.deepEqual(toolCalls, [{ request: '播放陈奕迅的粤语歌《明年今日》，不要播放国语歌《十年》' }]);
     assert.equal(modelCalls.length, 3);
-    assert.deepEqual(modelCalls[1].slice(1).map(message => [message.role, message.content]), [
+    assert.deepEqual(modelCalls[1].slice(1).flatMap(transcriptEntry), [
       ['user', '想听陈奕迅的十年，不过先别放'],
       ['assistant', '记下陈奕迅《十年》，先不播放。'],
       ['user', '不是国语那首，要它的粤语版本，现在放'],
@@ -1006,7 +1091,7 @@ test('a turn that requests track narration hands the voice to the narration inst
 test('environment snapshot reaches the prompt; failures never block the turn', async () => {
   const seen = [];
   const harness = createHarness(async messages => {
-    seen.push(String(messages[0]?.content || ''));
+    seen.push(harness.contexts.at(-1));
     return { message: { role: 'assistant', content: '外面在下雨呢。' } };
   }, {
     getEnvironment: async () => ({ available: true, cityName: '上海 · 上海市 · 中国', summaryZh: '雨', tempC: 24 }),
@@ -1027,5 +1112,189 @@ test('environment snapshot reaches the prompt; failures never block the turn', a
     assert.ok(result);
   } finally {
     failing.close();
+  }
+});
+
+test('VirtualPersonRuntime deliver_reply, batch ordering/deferral, <25m vocal echo vs >=25m reset, and PromptAssembler capability gating', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { AgentLoop } = await import('./AgentLoop.js');
+  const { ContextBudgeter } = await import('./ContextBudgeter.js');
+  const { ConversationStore } = await import('./ConversationStore.js');
+  const { PresentationService } = await import('./PresentationService.js');
+  const { PromptAssembler } = await import('./PromptAssembler.js');
+  const { VirtualPersonRegistry } = await import('./VirtualPersonRegistry.js');
+  const { VirtualPersonRuntime } = await import('./VirtualPersonRuntime.js');
+  const { VirtualPersonToolRegistry } = await import('./VirtualPersonToolRegistry.js');
+  const { createToolOutcome, ToolOutcomeKind } = await import('./VirtualPersonTypes.js');
+  const { REPLY_CAPABILITY, registerDeliverReplyTool } = await import('./replyBeats.js');
+
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-vp-beats-rt-'));
+  const dbPath = join(dir, 'state.db');
+  const registry = new VirtualPersonRegistry({ dbPath });
+  const conversationStore = new ConversationStore({ dbPath });
+  const tools = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  registerDeliverReplyTool(tools);
+  let allowSideEffectFail = false;
+  let sideEffectCount = 0;
+  tools.register('side_note', {
+    capability: 'test.cap',
+    definition: {
+      description: 'side_note',
+      parameters: { type: 'object', additionalProperties: false, properties: { text: { type: 'string' } } },
+    },
+    handler: async () => {
+      if (allowSideEffectFail) {
+        return createToolOutcome({
+          kind: ToolOutcomeKind.BUSINESS_FAILURE,
+          code: 'NOTE_FAILED',
+          modelContext: '先修一下再重试。',
+          presentation: { displayText: '先等等。', speak: false, retryable: true },
+        });
+      }
+      sideEffectCount += 1;
+      return createToolOutcome({ kind: ToolOutcomeKind.SUCCESS, code: 'NOTE_OK', modelContext: '已记好。' });
+    },
+  });
+
+  const baseClockMs = Date.now() + 1000;
+  let clockMs = baseClockMs;
+  const calls = [];
+  let responder = async () => ({ message: { role: 'assistant', content: '默认回复。' } });
+  const budgeter = new ContextBudgeter({ maxBytes: 30_000, maxMessages: 30 });
+  const runtime = new VirtualPersonRuntime({
+    registry,
+    conversationStore,
+    promptAssembler: new PromptAssembler({ now: () => new Date(clockMs) }),
+    contextBudgeter: budgeter,
+    agentLoop: new AgentLoop({
+      chat: async messages => {
+        calls.push(structuredClone(messages));
+        return responder(messages);
+      },
+      toolRegistry: tools,
+      contextBudgeter: budgeter,
+    }),
+    presentationService: new PresentationService(),
+    capabilityResolver: () => ['test.cap', REPLY_CAPABILITY],
+    retrieveMemories: async () => [],
+    getRuntimeState: () => null,
+    logger: { error() {}, warn() {} },
+  }).initialize();
+
+  try {
+    const rpRoom = conversationStore.createRoom({ title: '私语结构化', memberIds: ['lunara'], hostId: 'lunara', interactionMode: 'roleplay' });
+
+    // 1. Mixed batch with deliver_reply first + side_note second executes side_note first, deliver_reply last, zero internal ledger rows
+    responder = async () => ({
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call_deliver',
+            type: 'function',
+            function: {
+              name: 'deliver_reply',
+              arguments: JSON.stringify({
+                beats: [
+                  { action: '轻靠窗边', say: '先看看这首《明年今日（2007 Live）》。', voice: { pace: 'slow', intensity: 'soft', direction: '声音放轻带气声' } },
+                  { say: '今夜风有点凉。', voice: { pace: 'slow', intensity: 'calm', direction: '声线沉下来一点' } },
+                ],
+              }),
+            },
+          },
+          { id: 'call_note', type: 'function', function: { name: 'side_note', arguments: JSON.stringify({ text: '记一下' }) } },
+        ],
+      },
+    });
+    const r1 = await runtime.handleTurn({ sessionId: rpRoom.sessionId, requestId: 'req-1', userText: '今晚听什么', speak: false });
+    assert.equal(r1.ok, true);
+    assert.equal(sideEffectCount, 1);
+    assert.equal(r1.presentation.speak, false);
+    assert.equal(r1.presentation.beats.length, 2);
+    assert.match(r1.displayText, /（轻靠窗边）\n先看看这首《明年今日（2007 Live）》。/);
+    const allTurns1 = conversationStore.listTurns(rpRoom.sessionId, { limit: 50, visibleOnly: false });
+    assert.equal(allTurns1.some(t => JSON.stringify(t.message).includes('deliver_reply')), false, 'deliver_reply 不写入账本内部轮');
+    assert.match(calls[0].at(-1).content, /## 结构化分拍与发声控制/);
+    assert.doesNotMatch(calls[0].at(-1).content, /## 场景表/);
+
+    // 2. Deferral when earlier tool fails in same batch
+    allowSideEffectFail = true;
+    let step = 0;
+    responder = async () => {
+      step += 1;
+      if (step === 1) {
+        return {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'c_fail', type: 'function', function: { name: 'side_note', arguments: JSON.stringify({ text: 'x' }) } },
+              { id: 'c_del', type: 'function', function: { name: 'deliver_reply', arguments: JSON.stringify({ beats: [{ say: '过早交付' }] }) } },
+            ],
+          },
+        };
+      }
+      allowSideEffectFail = false;
+      return {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'c_del2', type: 'function', function: { name: 'deliver_reply', arguments: JSON.stringify({ beats: [{ say: '纠正后正式回复。', voice: { direction: '语气稳一点' } }] }) } },
+          ],
+        },
+      };
+    };
+    const r2 = await runtime.handleTurn({ sessionId: rpRoom.sessionId, requestId: 'req-2', userText: '再试', speak: false });
+    assert.equal(step, 2);
+    assert.equal(r2.displayText, '纠正后正式回复。');
+
+    // 3. Turn 3 -> <25m echo cap at max 2 recent own assistant turns with voice cues (hidden from visibleText)
+    responder = async () => ({
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c_3', type: 'function', function: { name: 'deliver_reply', arguments: JSON.stringify({ beats: [{ say: '第三轮平稳回答。', voice: { intensity: 'warm' } }] }) } }],
+      },
+    });
+    const r3 = await runtime.handleTurn({ sessionId: rpRoom.sessionId, requestId: 'req-3', userText: '嗯呢', speak: false });
+    assert.equal(r3.displayText, '第三轮平稳回答。');
+
+    // Turn 4 at +4m (<25m): sees vocal echo only on last 2 own turns (r3 and r2), NOT r1
+    clockMs = baseClockMs + 4 * 60_000;
+    let capturedBefore25m = null;
+    responder = async msgs => {
+      capturedBefore25m = msgs;
+      return { message: { role: 'assistant', content: '纯文本兜底测试。' } };
+    };
+    const r4 = await runtime.handleTurn({ sessionId: rpRoom.sessionId, requestId: 'req-4', userText: '继续聊', speak: false });
+    assert.equal(r4.presentation.beats.length, 1);
+    assert.equal(r4.presentation.beats[0].say, '纯文本兜底测试。');
+    const echoMsgs = capturedBefore25m.filter(m => m.role === 'tool' && /\[当时你的发声状态：/.test(m.content));
+    assert.equal(echoMsgs.length, 2, '最多只给最近 2 条自己的历史消息附带发声状态回显');
+    const replayed = capturedBefore25m.filter(m => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'deliver_reply');
+    assert.ok(replayed.length >= 3, '自己的分拍回复以 deliver_reply 调用回放');
+    assert.ok(replayed.every(m => !/当时你的发声状态|spoken|voice/.test(m.tool_calls[0].function.arguments)), '回放参数不带发声控制');
+    assert.doesNotMatch(r3.displayText, /当时你的发声状态/);
+
+    // Turn 5 at +30m (>=25m): deterministically strips ALL vocal echoes + emits real-clock reset notice
+    clockMs = baseClockMs + 30 * 60_000;
+    let capturedAfter25m = null;
+    responder = async msgs => {
+      capturedAfter25m = msgs;
+      return { message: { role: 'assistant', content: '我休息好了。' } };
+    };
+    await runtime.handleTurn({ sessionId: rpRoom.sessionId, requestId: 'req-5', userText: '我回来了', speak: false });
+    const echoAfter25m = capturedAfter25m.filter(m => (m.role === 'assistant' || m.role === 'tool') && /\[当时你的发声状态：/.test(m.content));
+    assert.equal(echoAfter25m.length, 0);
+    assert.match(capturedAfter25m.at(-1).content, /已过 30 分钟[\s\S]*平复归零/);
+  } finally {
+    runtime.shutdown?.();
+    conversationStore.close();
+    registry.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

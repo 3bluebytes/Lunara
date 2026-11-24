@@ -2,9 +2,9 @@
  *
  * 设计语言：Late-night Listening Salon
  *   · 统一画布 + 漂移极光氛围层（不再有"侧栏暗 / 主区白"的硬切割）
- *   · 玻璃浮层 + 1px hairline 替代实底分隔
- *   · Fraunces 衬线作"主角文字"（品牌 / 标题 / 当前歌词 / Boot 标题）
- *     Geist 正文 / Geist Mono 数字与状态
+ *   · 1px hairline 分隔 + 主题语义表面
+ *   · --font-display 作"主角文字"（品牌 / 标题 / 当前歌词 / 页面标题）
+ *     --font-ui 界面正文 / --font-mono 数字与状态
  *   · gutter 48px 统一对齐 wave / chat / dock 左右
  *
  * 色彩系统：当前歌曲封面生成环境色场，深色语义 token 保证文字与控件对比度。
@@ -143,6 +143,7 @@
 
   /* —— 间距 —— */
   --gutter: 48px;
+  --page-top: 20px;
 
   /* —— 浮层卡片背景（让 overlay modal 也能跟随主题） —— */
   --card-bg: linear-gradient(180deg, rgba(28, 22, 40, .92), rgba(12, 8, 20, .92));
@@ -174,7 +175,7 @@ html, body {
   height: 100%; overflow: hidden;
   background: var(--ink-0);
   color: var(--t-hi);
-  font-family: "Geist", -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-family: var(--font-ui);
   font-weight: 400;
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
@@ -248,19 +249,30 @@ html, body {
 }
 
 /* ============================================================
-   Electron 拖动条
+   Electron 拖动条（仅桌面壳 data-desktop-shell="1" 或 Windows 桌面壳启用高度与偏移）
    ============================================================ */
+:root[data-desktop-shell="1"],
+html.electron-win {
+  --page-top: 34px;
+}
 #drag-bar {
+  display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
-  height: 28px;
+  height: 0;
   z-index: 9999;
+  pointer-events: none;
+}
+:root[data-desktop-shell="1"] #drag-bar,
+html.electron-win #drag-bar {
+  display: block;
+  height: 28px;
   -webkit-app-region: drag;
   app-region: drag;
   pointer-events: auto;
 }
 
-/* Windows 桌面壳（frame:false）的自绘窗控：与系统窗控同布局（右上三键），配色随主题暖白。 */
+/* Windows 桌面壳（frame:false）的自绘窗控：与系统窗控同布局（右上三键），配色跟随当前主题前景。 */
 html.electron-win #drag-bar { height: 34px; }
 #win-controls {
   position: absolute;
@@ -278,12 +290,12 @@ html:not(.electron-win) #win-controls { display: none; }
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #e8e4d8;
+  color: var(--text, var(--t-hi));
   display: grid;
   place-items: center;
 }
-#win-controls button:hover { background: rgba(255, 255, 255, 0.09); }
-#win-controls button:active { background: rgba(255, 255, 255, 0.16); }
+#win-controls button:hover { background: color-mix(in srgb, var(--text, var(--t-hi)) 10%, transparent); }
+#win-controls button:active { background: color-mix(in srgb, var(--text, var(--t-hi)) 18%, transparent); }
 #win-controls #win-close:hover { background: #e81123; color: #fff; }
 #win-controls svg { width: 12px; height: 12px; }
 /* 最大化 ⇄ 还原图标切换（主进程推送状态，html.is-maximized 拟合） */
@@ -334,16 +346,12 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   to   { transform: rotate(360deg); }
 }
 .sb-brand {
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: 18px;
   letter-spacing: -0.018em;
-  font-variation-settings: "opsz" 144, "SOFT" 100;
   line-height: 1;
-  background: linear-gradient(180deg, var(--t-hi) 0%, color-mix(in srgb, var(--amber) 85%, transparent) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--t-hi);
 }
 .sb-cog {
   margin-left: auto;
@@ -374,9 +382,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-ui);
   font-size: 10px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--t-mid);
 }
@@ -403,12 +411,13 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: var(--glass-1);
   color: var(--t-lo);
   cursor: pointer;
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   transition: border-color .25s, background .25s, color .25s;
 }
+.radio-toggle .radio-chev { display: none; }
 .radio-toggle svg {
   width: 12px; height: 12px;
   color: currentColor;
@@ -436,33 +445,39 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: 999px;
   background: var(--glass-1);
   color: var(--t-lo);
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 .companion-mode-control:hover { border-color: var(--hair-strong); background: var(--glass-2); }
 .companion-mode-control .source-label {
+  flex-shrink: 0;
+  white-space: nowrap;
   text-transform: uppercase;
   color: var(--t-dim);
 }
 #companion-mode {
-  appearance: none;
-  -webkit-appearance: none;
   border: 0;
   background: transparent;
   color: var(--t-mid);
   font: inherit;
   letter-spacing: inherit;
-  padding: 2px 0;
+  padding: 2px 4px;
   cursor: pointer;
   min-width: 0;
+  white-space: nowrap;
+  color-scheme: inherit;
+}
+#companion-mode option {
+  background: var(--ink-1, var(--bg-raised));
+  color: var(--t-hi, var(--text));
 }
 #companion-mode:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 4px; }
 #companion-mode:disabled { opacity: .55; cursor: wait; }
 @media (max-width: 700px) {
-  .companion-mode-control { max-width: 46vw; }
-  #companion-mode { width: 100%; text-overflow: ellipsis; }
+  .companion-mode-control { max-width: 56vw; }
+  #companion-mode { flex: 1 1 auto; width: auto; text-overflow: ellipsis; }
 }
 @media (prefers-reduced-motion: reduce) {
   #companion-mode, .companion-mode-control { transition: none; }
@@ -478,10 +493,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 8px;
   padding: 0 4px;
-  font-family: "Geist Mono", monospace;
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
   color: var(--amber);
 }
 .thinking-text { color: var(--amber); }
@@ -508,9 +522,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 10px;
   padding: 0 4px;
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-ui);
   font-size: 10px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--t-lo);
 }
@@ -532,8 +546,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   display: flex;
   flex-direction: column;
   gap: 14px;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
 }
 .sb-now::before {
   content: '';
@@ -576,9 +588,8 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .sb-now-meta { min-width: 0; }
 .sb-now-title {
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 500;
-  font-variation-settings: "opsz" 144;
   font-size: 15px;
   letter-spacing: -0.012em;
   line-height: 1.25;
@@ -622,7 +633,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 .sb-q-item.active { background: var(--glass-2); }
 .sb-q-item.played { opacity: .35; }
 .sb-q-num {
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--t-xlo);
   width: 16px;
@@ -671,9 +682,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 6px;
   padding: 0 6px;
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
   color: var(--t-lo);
   text-transform: uppercase;
 }
@@ -695,9 +706,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--t-mid);
   transition: border-color .2s, background .2s, color .2s;
@@ -715,7 +726,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: var(--glass-2);
   color: var(--amber);
 }
-.sb-taste-label { letter-spacing: 0.18em; }
+.sb-taste-label { letter-spacing: 0.1em; }
 .sb-taste-time {
   flex: 1;
   font-size: 10px;
@@ -731,11 +742,10 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   bottom: calc(100% + 8px);
   left: 0; right: 0;
   padding: 28px 14px 12px;
-  background: rgba(20, 16, 28, 0.94);
   border: 1px solid var(--hair-strong);
   border-radius: 14px;
   background: var(--card-bg);
-  font-family: "Geist", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11.5px;
   color: var(--t-hi);
   line-height: 1.5;
@@ -745,8 +755,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   gap: 10px;
   max-height: 280px;
   overflow-y: auto;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
   box-shadow: 0 16px 50px -16px rgba(0, 0, 0, calc(0.6 + var(--shadow-boost, 0)));
   z-index: 5;
 }
@@ -767,7 +775,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   transition: color .2s, background .2s;
 }
 .sb-taste-popover-close:hover {
-  color: #fff;
+  color: var(--t-hi);
   background: var(--glass-2);
 }
 .sb-taste-popover-row {
@@ -775,7 +783,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-left: 2px solid var(--amber);
 }
 .sb-taste-popover-when {
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -954,9 +962,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 6px;
   margin: 0 0 6px 8px;
-  font-family: "Geist Mono", monospace;
-  font-size: 9px;
-  letter-spacing: 0.14em;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--t-lo);
 }
@@ -1007,8 +1015,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border: 1px solid var(--hair-strong);
   color: var(--t-hi);
   border-bottom-left-radius: 6px;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 4px 20px -6px rgba(0, 0, 0, .4);
 }
 .chat-msg.user .chat-bubble {
@@ -1031,7 +1037,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .chat-time {
   margin-top: 5px;
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.06em;
   color: var(--t-xlo);
@@ -1041,13 +1047,13 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 
 /* —— segments 样式 —— */
 .chat-segment { margin-bottom: 6px; }
-.chat-seg-opening { font-family: "Fraunces", serif; font-size: 15px; font-weight: 500; letter-spacing: 0.02em; }
+.chat-seg-opening { font-family: var(--font-display); font-size: 15px; font-weight: 500; letter-spacing: 0.02em; }
 .chat-seg-talk { font-size: 13px; }
 .chat-seg-story { font-size: 13px; font-style: italic; opacity: 0.9; }
 .chat-seg-song_intro { font-size: 12px; opacity: 0.75; }
 .chat-seg-transition { font-size: 12px; opacity: 0.7; font-style: italic; }
 .chat-seg-listener_response { font-size: 13px; }
-.chat-seg-closing { font-family: "Fraunces", serif; font-size: 14px; font-weight: 400; opacity: 0.8; }
+.chat-seg-closing { font-family: var(--font-display); font-size: 14px; font-weight: 400; opacity: 0.8; }
 
 /* —— 曲目卡片（嵌在 assistant 气泡内） —— */
 .chat-tracks {
@@ -1065,7 +1071,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border: 1px solid var(--hair);
   border-radius: 12px;
   cursor: pointer;
-  transition: all .25s cubic-bezier(.2, .8, .2, 1);
+  transition: background-color .25s cubic-bezier(.2, .8, .2, 1), border-color .25s cubic-bezier(.2, .8, .2, 1), transform .25s cubic-bezier(.2, .8, .2, 1);
   text-align: left;
 }
 .chat-track:hover {
@@ -1099,7 +1105,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   color: inherit;
   cursor: pointer;
   font-size: 12px;
-  transition: all .2s ease;
+  transition: background-color .2s ease, border-color .2s ease, color .2s ease;
 }
 .pb-transition button:hover { background: var(--track-bg-hover); border-color: var(--hair-warm); }
 .pb-transition button[data-choice="now"] {
@@ -1181,8 +1187,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   letter-spacing: 0.03em;
 }
 .player-line-text.title {
-  font-family: "Fraunces", serif;
-  font-variation-settings: "opsz" 144;
+  font-family: var(--font-display);
   font-size: 14.5px;
   font-weight: 500;
   letter-spacing: -0.005em;
@@ -1268,9 +1273,8 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   flex-shrink: 0;
 }
 .np-title {
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 500;
-  font-variation-settings: "opsz" 144;
   font-size: 13.5px;
   letter-spacing: -0.01em;
   color: var(--t-hi);
@@ -1369,7 +1373,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 
 .np-time {
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--t-mid);
@@ -1463,8 +1467,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .lyric-line.active .lyric-orig {
   color: var(--amber);
-  font-family: "Fraunces", serif;
-  font-variation-settings: "opsz" 144;
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: 15px;
 }
@@ -1500,8 +1503,8 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   /* 与聊天列页边距同源（--page-edge 定义在 conversations.css 的 :root）。 */
   margin: 10px var(--page-edge, var(--gutter)) 0;
   padding: 11px 16px;
-  font-family: "Geist Mono", monospace;
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--t-lo);
   background: var(--glass-1);
@@ -1535,8 +1538,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: var(--glass-2);
   border: 1px solid var(--hair);
   border-radius: 22px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
   box-shadow: var(--shadow-deep);
   flex-shrink: 0;
   position: relative;
@@ -1639,8 +1640,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 .qr-overlay {
   position: fixed; inset: 0;
   background: var(--studio-scrim);
-  backdrop-filter: blur(18px) saturate(115%);
-  -webkit-backdrop-filter: blur(18px) saturate(115%);
   z-index: 180;
   display: flex; align-items: center; justify-content: center;
   animation: surfaceFade .3s ease-out;
@@ -1650,8 +1649,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: var(--studio-surface);
   border: 1px solid var(--studio-line);
   border-radius: var(--studio-radius);
-  backdrop-filter: blur(26px);
-  -webkit-backdrop-filter: blur(26px);
   box-shadow: var(--studio-shadow);
   padding: 28px 26px 20px;
   text-align: center;
@@ -1746,7 +1743,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   border-radius: var(--studio-field-radius);
   color: var(--t-hi);
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   box-sizing: border-box;
   transition: border-color .2s, box-shadow .2s;
@@ -1795,7 +1792,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 .shell-page-title {
   margin: 0;
   color: var(--t-hi);
-  font: 500 clamp(19px, 1.7vw, 23px)/1.3 "Songti SC", Fraunces, serif;
+  font: 500 clamp(19px, 1.7vw, 23px)/1.3 var(--font-display);
   letter-spacing: .04em;
   text-shadow: var(--text-lift);
 }
@@ -1806,9 +1803,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   letter-spacing: .03em;
 }
 .shell-page-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
-/* 今日页的页面容器统一给 --page-top/--page-edge，页眉只保留排版与底部留白，
-   不再叠一层页边距；设置页页眉则自带页边距（它的容器是零 padding 的 flex 列）。 */
-.today-panel .today-header.shell-page-head { min-height: 0; padding: 0 0 12px; }
 .shell-primary {
   border: 1px solid var(--studio-primary-border);
   background: var(--studio-primary-bg);
@@ -1833,7 +1827,88 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 /* 窄视口页眉与聊天页眉同一节奏（conversations.css 对 .chat-header 的同档覆盖）。 */
 @media (max-width: 960px) {
   .shell-page-head { min-height: 62px; padding: 12px 16px 8px; }
-  .today-panel .today-header.shell-page-head { min-height: 0; padding: 0 0 8px; }
+}
+
+.chat-scroll > .shell-page-head[data-onboarding-card] {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 auto var(--page-edge, var(--gutter));
+  border: 1px solid var(--hair);
+  border-radius: var(--studio-card-radius);
+  background: var(--ink-1);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex-wrap: wrap;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-page-copy,
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-page-title,
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-page-sub {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-page-actions {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  min-width: 0;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-primary {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-page-title {
+  font-size: 19px;
+  line-height: 1.3;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-primary[data-emphasis="secondary"] {
+  border-color: var(--hair);
+  background: transparent;
+  box-shadow: none;
+}
+.chat-scroll > .shell-page-head[data-onboarding-card] .shell-primary[data-complete="true"] {
+  background: transparent;
+  box-shadow: none;
+  color: var(--t-mid);
+}
+/* 卡片里只留一个实心按钮：免费声音是可选项，退成描边。 */
+.chat-scroll > .shell-page-head[data-onboarding-card] .free-voice-quick .shell-primary {
+  border-color: var(--hair);
+  background: transparent;
+  box-shadow: none;
+}
+/* 没有歌在放时，喜欢/不想听没有对象：整组收起，不留一排点了没反应的按钮。 */
+[data-reactions][hidden] { display: none !important; }
+.free-voice-quick {
+  grid-column: 1 / -1;
+  max-width: 100%;
+  min-width: 0;
+}
+.free-voice-quick[hidden] { display: none; }
+.chat-scroll > .shell-page-head[data-onboarding-card] .free-voice-quick {
+  flex: 1 1 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.free-voice-quick p {
+  overflow-wrap: anywhere;
+  margin: 8px 0 0;
+  color: var(--t-mid);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.free-voice-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+.free-voice-quick .shell-primary {
+  max-width: 100%;
+  white-space: normal;
 }
 
 /* ============================================================
@@ -1907,6 +1982,18 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .settings-nav-item:hover { background: var(--glass-2); color: var(--t-hi); }
 .settings-nav-item.active { background: var(--glass-3); color: var(--t-hi); }
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+}
+.settings-nav-label {
+  padding: 8px 12px 2px;
+  color: var(--t-placeholder);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
 .settings-content {
   min-height: 0;
   overflow-y: auto;
@@ -1978,7 +2065,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 13px/1.4 "Geist", sans-serif;
+  font: 13px/1.4 var(--font-ui);
   letter-spacing: 0;
   transition: border-color .2s, box-shadow .2s;
 }
@@ -1996,7 +2083,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 13px/1.4 "Geist", sans-serif;
+  font: 13px/1.4 var(--font-ui);
 }
 .boot-location-row input:focus { border-color: var(--studio-accent-ink); }
 .boot-location-row input::placeholder { color: var(--t-placeholder); }
@@ -2282,7 +2369,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: transparent;
   color: var(--t-hi);
-  font: 13px/1.4 "Geist", sans-serif;
+  font: 13px/1.4 var(--font-ui);
   transition: border-color .2s;
 }
 .tts-custom-voice-row input[type="text"]:focus {
@@ -2307,7 +2394,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 13px/1.4 "Geist", sans-serif;
+  font: 13px/1.4 var(--font-ui);
 }
 .tts-custom-manual-row input:focus { border-color: var(--studio-accent-ink); }
 /* 待选名单工具栏：筛选 + 全选 + 批量移除。几百个声音时先筛再选。 */
@@ -2327,7 +2414,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 12px/1.4 "Geist", sans-serif;
+  font: 12px/1.4 var(--font-ui);
 }
 .tts-custom-voice-toolbar input[type="search"]:focus {
   outline: none;
@@ -2406,7 +2493,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   min-width: 0;
   padding: 8px 0;
   color: var(--t-hi);
-  font: 13px/1.4 "Geist", sans-serif;
+  font: 13px/1.4 var(--font-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2437,7 +2524,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 13px/1.55 "Geist", sans-serif;
+  font: 13px/1.55 var(--font-ui);
   resize: vertical;
 }
 .tts-recipe textarea:focus { border-color: var(--studio-accent-ink); }
@@ -2534,7 +2621,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-field-radius);
   background: color-mix(in srgb, var(--ink-0) 26%, transparent);
   color: var(--t-hi);
-  font: 13px/1.55 "Geist", sans-serif;
+  font: 13px/1.55 var(--font-ui);
   resize: vertical;
 }
 .tts-custom-design-description textarea:focus { border-color: var(--studio-accent-ink); }
@@ -2587,6 +2674,14 @@ html.is-maximized #win-max .glyph-restore { display: block; }
     border-bottom: 1px solid var(--studio-line);
   }
   .settings-nav-item { flex: 0 0 auto; min-height: 36px; padding: 7px 11px; font-size: 12px; }
+  .settings-nav-group {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 0;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  .settings-nav-label { padding: 0 4px 0 8px; flex: 0 0 auto; white-space: nowrap; }
   .settings-content { padding: 20px 16px 40px; }
   .settings-card { padding: 15px; }
 }
@@ -2686,7 +2781,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: var(--studio-primary-radius);
   padding: 10px 18px;
   min-height: 40px;
-  font-family: "Geist", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -2719,9 +2814,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   align-items: center;
   gap: 10px;
   padding: 0 4px;
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-ui);
   font-size: 10px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--t-lo);
   transition: color .2s;
@@ -2750,7 +2845,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   animation: dotPulse 2.4s ease-in-out infinite;
 }
 .radiohost-h-count {
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   color: var(--t-xlo);
@@ -2798,8 +2893,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: var(--glass-1);
   position: relative;
   overflow: hidden;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 .radiohost-active::before {
   content: '';
@@ -2810,9 +2903,8 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .radiohost-active-meta { min-width: 0; flex: 1; }
 .radiohost-active-name {
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 500;
-  font-variation-settings: "opsz" 144;
   font-size: 14px;
   letter-spacing: -0.01em;
   color: var(--t-hi);
@@ -2820,9 +2912,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 }
 .radiohost-active-voice {
   margin-top: 2px;
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--t-lo);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -2839,7 +2931,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
     radial-gradient(circle at 30% 25%, color-mix(in srgb, var(--radiohost-hue, var(--coral)) 95%, white 12%) 0%,
                     color-mix(in srgb, var(--radiohost-hue, var(--coral)) 80%, black 12%) 70%);
   color: var(--grad-text-on);
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 600;
   font-size: 12.5px;
   letter-spacing: -0.02em;
@@ -2926,9 +3018,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .radiohost-row .radiohost-voice {
-  font-family: "Geist Mono", monospace;
-  font-size: 9px;
-  letter-spacing: 0.1em;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
   color: var(--t-lo);
   text-transform: uppercase;
   white-space: nowrap;
@@ -2950,9 +3042,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   background: transparent;
   border-radius: 12px;
   color: var(--t-lo);
-  font-family: "Geist Mono", monospace;
-  font-size: 10px;
-  letter-spacing: 0.18em;
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   cursor: pointer;
   transition: color .2s, border-color .2s, background .2s, transform .2s;
@@ -2995,9 +3087,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   padding: 2px 6px;
   border-radius: 6px;
   color: var(--t-lo);
-  font-family: "Geist Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
   transition: color .2s, background .2s;
@@ -3014,8 +3106,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 .cast-overlay {
   position: fixed; inset: 0;
   background: var(--studio-scrim);
-  backdrop-filter: blur(20px) saturate(115%);
-  -webkit-backdrop-filter: blur(20px) saturate(115%);
   z-index: 190;
   display: flex; align-items: center; justify-content: center;
   animation: surfaceFade .3s ease-out;
@@ -3024,12 +3114,11 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   position: relative;
   width: 94%; max-width: 760px;
   max-height: 88vh;
+  overflow-y: auto;
   display: flex; flex-direction: column;
   background: var(--studio-surface);
   border: 1px solid var(--studio-line);
   border-radius: var(--studio-radius);
-  backdrop-filter: blur(26px);
-  -webkit-backdrop-filter: blur(26px);
   box-shadow: var(--studio-shadow);
   padding: 26px 28px 22px;
   color: var(--t-hi);
@@ -3096,6 +3185,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   text-align: center;
   font-size: 12px;
   color: var(--t-mid);
+  overflow-wrap: anywhere;
 }
 .cast-voice {
   display: flex;
@@ -3219,7 +3309,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border-radius: 999px;
   background: var(--studio-accent);
   color: var(--studio-accent-on);
-  font-family: "Geist", sans-serif;
+  font-family: var(--font-ui);
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -3528,8 +3618,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   line-height: 1.5;
   max-width: 340px;
   box-shadow: var(--studio-shadow);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
   transform: translateY(6px);
   opacity: 0;
   animation: toastIn .35s cubic-bezier(.2, .8, .2, 1) forwards;
@@ -3557,7 +3645,7 @@ html.is-maximized #win-max .glyph-restore { display: block; }
 .toast.info .toast-status { background: var(--violet); }
 .toast-count {
   min-width: 22px;
-  font-family: "Geist Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--t-lo);
   text-align: right;
@@ -3615,8 +3703,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   text-align: left;
   white-space: normal;
   box-shadow: var(--studio-shadow);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
   pointer-events: none;
 }
 .ui-tip[hidden] { display: none; }
@@ -3644,8 +3730,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   border: 1px solid var(--hair);
   border-radius: 12px;
   background: var(--glass-1);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   transition: border-color .2s, background .2s;
 }
 .radiohost-chip:hover {
@@ -3665,9 +3749,8 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   gap: 1px;
 }
 .radiohost-chip-name {
-  font-family: "Fraunces", serif;
+  font-family: var(--font-display);
   font-weight: 500;
-  font-variation-settings: "opsz" 144;
   font-size: 12.5px;
   letter-spacing: -0.005em;
   color: var(--t-hi);
@@ -3675,9 +3758,9 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   line-height: 1.2;
 }
 .radiohost-chip-voice {
-  font-family: "Geist Mono", monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.12em;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--t-lo);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -3795,137 +3878,6 @@ html.is-maximized #win-max .glyph-restore { display: block; }
   }
   .toast { opacity: 1; transform: none; }
   .toast.dismiss { animation: none; opacity: 0; }
-}
-
-/* ---- 今日主页面的通用控件；布局由 conversations.css 维护 ---- */
-.today-panel {
-  overflow-y: auto;
-  padding: 10px 12px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.today-header h2 {
-  margin: 0;
-  font-size: 13px;
-  letter-spacing: .18em;
-  color: var(--t-mid);
-}
-.today-fieldset {
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-}
-.today-fieldset legend {
-  font-size: 10px;
-  letter-spacing: .16em;
-  color: var(--t-dim);
-  padding: 0 6px;
-}
-.today-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-}
-.today-row label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--t-lo);
-  min-width: 0;
-}
-.today-row input, .today-row select {
-  background: var(--glass-1);
-  border: 1px solid var(--hair);
-  border-radius: 6px;
-  color: var(--t-hi);
-  font-size: 12px;
-  padding: 4px 6px;
-  max-width: 100%;
-}
-.today-row input:focus-visible, .today-row select:focus-visible,
-.today-panel button:focus-visible {
-  outline: 2px solid var(--amber);
-  outline-offset: 1px;
-}
-.today-weekday { font-size: 11px; }
-.today-hint {
-  margin: 0;
-  font-size: 10.5px;
-  color: var(--t-dim);
-  line-height: 1.5;
-}
-.today-entries, .today-scenes {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.today-entry {
-  border: 1px solid var(--hair);
-  border-radius: 8px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.today-entry.done .today-entry-title { text-decoration: line-through; color: var(--t-dim); }
-.today-entry.overdue { border-color: var(--hair-warm); }
-.today-entry-main {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.today-entry-title { font-size: 12.5px; color: var(--t-hi); word-break: break-word; }
-.today-entry-meta { font-size: 10.5px; color: var(--t-dim); }
-.today-entry-scope {
-  font-size: 9.5px;
-  color: var(--amber);
-  border: 1px solid var(--hair-warm);
-  border-radius: 999px;
-  padding: 1px 7px;
-}
-.today-entry-actions { display: flex; gap: 8px; }
-.today-add summary { cursor: pointer; font-size: 11.5px; color: var(--t-mid); }
-.today-add { display: flex; flex-direction: column; gap: 8px; }
-.today-scene {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--hair);
-  border-radius: 8px;
-  padding: 8px;
-  font-size: 12px;
-  color: var(--t-mid);
-}
-.today-panel button {
-  cursor: pointer;
-  border: 1px solid var(--hair-strong);
-  border-radius: 999px;
-  background: var(--glass-1);
-  color: var(--t-mid);
-  font-size: 11px;
-  padding: 4px 10px;
-}
-.today-panel button:hover { background: var(--glass-2); color: var(--t-hi); }
-.today-scope { font-size: 11px; color: var(--t-lo); }
-@media (max-width: 700px) {
-  .today-panel { padding: 8px; }
-  .today-row label { flex: 1 1 100%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .today-panel, .today-fieldset, .today-entry { transition: none; animation: none; }
 }
 
 /* 键盘焦点在所有播放控件上可见。 */

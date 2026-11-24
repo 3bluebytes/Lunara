@@ -4,6 +4,7 @@ import * as consolidator from './consolidator.js';
 import { MemoryConsolidator } from './memory/MemoryConsolidator.js';
 import { MemoryType } from './memory/types.js';
 import { TasteSchemaService, stationMemoryTarget, stationPersonIds } from './memory/TasteSchemaService.js';
+import { RelationshipDigestService } from './virtual-person/relationshipDigest.js';
 import { generateDailySummary, generateWeeklySummary } from './memory/summary.js';
 import { trace } from './trace.js';
 import * as ncm from './ncm.js';
@@ -13,6 +14,7 @@ import { runBackfill } from './songtags/backfill.js';
 let _station = null;  // v2: 需要拿到 station 来遍历伙伴
 let _librarySyncService = null;
 let _tasteSchemaService = null;
+let _relationshipDigestService = null;
 let _started = false;
 const _scheduledTasks = [];
 
@@ -26,6 +28,7 @@ export function detach() {
   _station = null;
   _librarySyncService = null;
   _tasteSchemaService = null;
+  _relationshipDigestService = null;
 }
 
 function _schedule(expression, callback) {
@@ -40,6 +43,17 @@ function _schedule(expression, callback) {
  */
 async function _runWorkingSweep() {
   if (!_station) return;
+  // Lunara 与共享记忆在主记忆服务里（person:lunara、station），也要清过期行：
+  // 每次读取本来就过滤过期行，这里只防表无界增长。不做 working 超量淘汰，免得挤掉仍生效的临时要求。
+  const main = _station.stationMemory;
+  for (const namespace of ['person:lunara', 'station']) {
+    try {
+      const expired = main?.getStore?.()?.deleteExpired(namespace) || 0;
+      if (expired > 0) trace(`[memory-sweep] namespace=${namespace} expired=${expired}`);
+    } catch (e) {
+      console.warn(`[memory-sweep] namespace=${namespace} failed:`, e.message);
+    }
+  }
   const radiohosts = _station.listRadioHosts?.() || [];
   for (const radiohost of radiohosts) {
     try {
@@ -155,6 +169,8 @@ async function _runSongTagBackfillTick() {
 }
 
 // 测试可见 hook（注入 + 重置时间戳，便于单测驱动 tick）
+export const _workingSweepInternals = { run: () => _runWorkingSweep() };
+
 export const _songTagBackfillInternals = {
   tick: _runSongTagBackfillTick,
   resetClock: () => { _lastSongTagBackfillAt = 0; },
@@ -201,6 +217,28 @@ export async function runTasteSchemaDistill({ personIds = null, manual = true } 
     } catch (e) {
       console.warn(`[taste-schema] person=${id} failed:`, e.message);
       results.push({ personId: id, ok: false, code: 'DISTILL_FAILED' });
+    }
+  }
+  return { ok: true, results };
+}
+
+// ===== 关系记忆目录（add-relationship-memory-digest）=====
+//
+// 每 30 分钟检查各角色：只有出现超出预算、还没整理的关系事实时才调用 LLM；来源失效的条目
+// 直接删掉，不调模型。默认开启，RELATIONSHIP_DIGEST_AUTO=0 可关。交互回合从不等它。
+
+export async function runRelationshipDigest({ personIds = null } = {}) {
+  if (!_station) return { ok: false, code: 'STATION_UNAVAILABLE' };
+  _relationshipDigestService ||= new RelationshipDigestService({ memoryTarget: id => stationMemoryTarget(_station, id) });
+  const results = [];
+  for (const id of personIds?.length ? personIds : stationPersonIds(_station)) {
+    try {
+      const result = await _relationshipDigestService.refresh(id);
+      results.push({ personId: id, ...result });
+      if (['UPDATED', 'CLEANED'].includes(result.code)) trace(`[relationship-digest] person=${id} ${result.code} entries=${result.entries}`);
+    } catch (e) {
+      console.warn(`[relationship-digest] person=${id} failed:`, e.message);
+      results.push({ personId: id, ok: false, code: 'DIGEST_FAILED' });
     }
   }
   return { ok: true, results };
@@ -276,6 +314,15 @@ export function start() {
   console.log(process.env.TASTE_SCHEMA_AUTO === '0'
     ? '[scheduler] taste-schema distillation OFF (TASTE_SCHEMA_AUTO=0)'
     : '[scheduler] taste-schema distillation registered (daily 09:20, per person once/day)');
+
+  // 关系记忆目录：每 30 分钟检查，默认开（RELATIONSHIP_DIGEST_AUTO=0 关）
+  _schedule('7,37 * * * *', () => {
+    if (process.env.RELATIONSHIP_DIGEST_AUTO === '0') return;
+    runRelationshipDigest().catch(e => console.warn('[relationship-digest] tick error:', e.message));
+  });
+  console.log(process.env.RELATIONSHIP_DIGEST_AUTO === '0'
+    ? '[scheduler] relationship digest OFF (RELATIONSHIP_DIGEST_AUTO=0)'
+    : '[scheduler] relationship digest registered (every 30 min, model call only for new facts beyond budget)');
 
   // 后台增量打标（song-structured-tags）：每 15 分钟 tick 一次，内部用间隔闸控真实节奏。
   // 默认 OFF —— 整库回填会烧 LLM token，先让用户用 SONG_TAG_BACKFILL_CRON=1 主动开。

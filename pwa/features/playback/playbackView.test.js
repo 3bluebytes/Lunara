@@ -130,12 +130,12 @@ test('repeated occurrences and cross-provider equal ids replace cached lyric lin
   } finally { view.destroy(); }
 });
 
-test('D interlude is a lyric timestamp projection and browsing another source hides its lyric', () => {
+test('D interlude is a lyric timestamp projection and browsing another source preserves its lyric', () => {
   const nodes = new Map(['#listening-lyric','#listening-lyric-previous','#listening-lyric-next',
     '#listening-interlude','#focus-interlude','#player-line-text','#player-line-next'].map(id=>[id,element()]));
   const store = createAppState({sessionId:'A'});
   reduceServerMessage(store,{type:'runtime-state',state:{version:1,queue:[{queueItemId:'q',songId:'song',title:'歌',artist:'人',url:'/x',
-    lyric:{lrc:'[00:00]第一句\\n[00:40]下一句'}}],currentIndex:0,currentSongId:'song',activeListeningSessionId:'A',phase:'playing'}});
+    lyric:{lrc:'[00:00]第一句\n[00:40]下一句'}}],currentIndex:0,currentSongId:'song',activeListeningSessionId:'A',phase:'playing'}});
   const music = {paused:false,src:'/x',currentTime:15,duration:100,volume:1};
   const view = createPlaybackView({store,musicAudio:music,narrationAudio:{paused:true,volume:1},
     documentLike:{querySelector:id=>nodes.get(id)||element(),querySelectorAll:()=>[]},schedule:()=>null});
@@ -143,8 +143,10 @@ test('D interlude is a lyric timestamp projection and browsing another source hi
   assert.match(nodes.get('#listening-interlude').textContent,/约 25 秒/);
   assert.equal(nodes.get('#listening-lyric').hidden,false);
   store.update({sessionId:'B'});view.refresh();
-  assert.equal(nodes.get('#listening-lyric').hidden,true);
-  assert.equal(nodes.get('#listening-interlude').hidden,true);
+  assert.equal(nodes.get('#listening-lyric').hidden,false);
+  assert.equal(nodes.get('#listening-lyric').textContent,'第一句');
+  assert.equal(nodes.get('#listening-interlude').hidden,false);
+  assert.match(nodes.get('#listening-interlude').textContent,/约 25 秒/);
   assert.equal(store.getState().runtimeState.activeListeningSessionId,'A');
   view.destroy();
 });
@@ -197,7 +199,9 @@ test('auto-continue shows server state, pending selection, and a recoverable ret
   const errors = [];
   let retried = 0;
   let finish;
+  let setupGap = null;
   const view = createPlaybackView({ store, musicAudio: { paused: true }, narrationAudio: { paused: true },
+    getSetupGap: () => setupGap,
     documentLike: { querySelector: id => nodes.get(id) || element(), querySelectorAll: () => [] },
     getRuntimeClient: () => ({
       setRadioMode: () => new Promise(resolve => { finish = resolve; }),
@@ -216,6 +220,14 @@ test('auto-continue shows server state, pending selection, and a recoverable ret
   view.refresh();
   assert.equal(nodes.get('#continuation-retry').hidden, false);
   assert.equal(nodes.get('#continuation-status').textContent, '续播没成功，可以重试');
+  // 没接模型/没登录音乐账号时，重试不会好：说清原因并收起重试。
+  setupGap = 'llm'; view.refresh();
+  assert.equal(nodes.get('#continuation-status').textContent, '还没接上模型，暂时选不了歌');
+  assert.equal(nodes.get('#continuation-retry').hidden, true);
+  setupGap = 'source-login'; view.refresh();
+  assert.equal(nodes.get('#continuation-status').textContent, '还没登录音乐账号，暂时选不了歌');
+  setupGap = null; view.refresh();
+  assert.equal(nodes.get('#continuation-retry').hidden, false);
   nodes.get('#continuation-retry').emit('click');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(retried, 1);
@@ -1367,7 +1379,9 @@ test('long title sizing and instrumental notice styling reset on a real lyric or
     assert.equal(nodes.get('#listening-interlude').hidden, true);
     store.update({ sessionId: 'B' });
     view.refresh();
-    assert.equal(nodes.get('#listening-lyric').hidden, true);
+    assert.equal(nodes.get('#listening-lyric').hidden, false);
+    assert.equal(nodes.get('#listening-lyric').textContent, '此歌曲为没有填词的纯音乐，请您欣赏');
+    assert.equal(nodes.get('#listening-lyric').dataset.kind, 'notice');
     store.update({ sessionId: 'A' });
     show('枫叶城', '[00:00]我听着纯音乐，请欣赏这场雨\n[00:40]下一句');
     assert.equal(title.dataset.titleSize, 'normal');
@@ -1415,5 +1429,139 @@ test('the lyric line carries its own time span so the menu bar can sweep', () =>
     setTrayTextMode('title');
     f.view.destroy();
     resetTrayTextModeForTest();
+  }
+});
+
+test('togglePlayPause stops foreground overlay narration instead of resuming music, and progress bar supports pointer scrubbing', () => {
+  const nodes = new Map([
+    ['#big-play', element()], ['#skip-btn', element()], ['#radio-toggle', element()],
+    ['#player-volume', element()], ['#progress-bar', Object.assign(element(), {
+      getBoundingClientRect: () => ({ left: 100, width: 200 }),
+      setPointerCapture(id) { this.captured = id; },
+      releasePointerCapture(id) { this.released = id; },
+    })],
+    ['#progress-fill', element()], ['#np-time', element()], ['#np-duration', element()],
+  ]);
+  const documentLike = {
+    querySelector: id => nodes.get(id) || element(),
+    querySelectorAll: () => [],
+    createElement: () => element(),
+    body: element(),
+  };
+  const music = Object.assign(element(), { paused: true, src: 'http://localhost/one.mp3', currentTime: 10, duration: 200 });
+  const narration = Object.assign(element(), { paused: false, src: 'http://localhost/voice.mp3', currentTime: 2, duration: 10 });
+  let resumed = 0;
+  let overlayStopped = 0;
+  let overlayActive = true;
+  const view = createPlaybackView({
+    store: createAppState({ queue: [], cursor: -1, runtimeState: { phase: 'paused', currentSongId: 'one', queue: [] } }),
+    narrationAudio: narration,
+    musicAudio: music,
+    documentLike,
+    locationHref: 'http://localhost/',
+    getController: () => ({
+      getSnapshot: () => ({ overlayActive }),
+      stopOverlayNarrations: () => { overlayStopped += 1; overlayActive = false; narration.paused = true; return true; },
+      hasRealMusicPlaying: () => false,
+      flushOutcomeQueue() {},
+      reportPartial() {},
+    }),
+    getRuntimeClient: () => ({
+      resume: async () => { resumed += 1; },
+      pause: async () => {},
+      setRadioMode: async () => {},
+    }),
+  });
+  view.init();
+
+  // Foreground narration playing while music paused -> big play stops speech without calling runtime resume.
+  nodes.get('#big-play').emit('click');
+  assert.equal(overlayStopped, 1);
+  assert.equal(resumed, 0);
+
+  // Pointer scrubbing previews without immediate music seek, ignores intervening timeUpdate, then seeks on pointerup.
+  const bar = nodes.get('#progress-bar');
+  bar.emit('pointerdown', { button: 0, pointerId: 4, clientX: 200 });
+  assert.equal(bar.captured, 4);
+  assert.equal(music.currentTime, 10);
+  assert.equal(nodes.get('#np-time').textContent, '1:40');
+  music.currentTime = 12;
+  music.emit('timeupdate');
+  assert.equal(nodes.get('#np-time').textContent, '1:40', '拖拽期间不被后台 timeupdate 回跳');
+  bar.emit('pointermove', { pointerId: 4, clientX: 250 });
+  assert.equal(nodes.get('#np-time').textContent, '2:30');
+  bar.emit('pointerup', { pointerId: 4, clientX: 250 });
+  assert.equal(music.currentTime, 150);
+  assert.equal(bar.released, 4);
+
+  view.destroy();
+});
+
+test('onTimeUpdate without lyrics skips redundant DOM updates and scrollWidth/clientWidth layout reads', () => {
+  let layoutReads = 0;
+  const attachLayoutCounters = node => {
+    const viewport = {
+      get clientWidth() { layoutReads += 1; return 200; },
+    };
+    node.parentElement = viewport;
+    Object.defineProperty(node, 'scrollWidth', {
+      configurable: true,
+      get() { layoutReads += 1; return 120; },
+    });
+    return node;
+  };
+  const nodes = new Map([
+    ['#np-title', element()], ['#np-sub', element()], ['#np-album', element()], ['#player-cover', element()],
+    ['#player-line-text', attachLayoutCounters(element())],
+    ['#player-line-next', attachLayoutCounters(element())],
+    ['#listening-lyric', element()], ['#listening-lyric-previous', element()], ['#listening-lyric-next', element()],
+    ['#listening-interlude', element()], ['#focus-interlude', element()],
+    ['#np-time', element()], ['#np-duration', element()], ['#progress-fill', element()], ['#progress-bar', element()],
+  ]);
+  const timers = [];
+  const store = createAppState({ sessionId: 'A' });
+  const music = { paused: false, src: '/no-lyric.mp3', currentTime: 1, duration: 200, volume: 1 };
+  const view = createPlaybackView({
+    store,
+    musicAudio: music,
+    narrationAudio: { paused: true, currentTime: 0 },
+    documentLike: { querySelector: id => nodes.get(id) || element(), querySelectorAll: () => [] },
+    schedule: fn => { timers.push(fn); return timers.length; },
+    cancelSchedule: () => {},
+  });
+  try {
+    reduceServerMessage(store, {
+      type: 'runtime-state',
+      state: {
+        version: 1,
+        queue: [{ queueItemId: 'q:1', songId: 's1', title: '纯伴奏测试', artist: '某人', url: '/no-lyric.mp3', lyric: null }],
+        currentIndex: 0,
+        currentSongId: 's1',
+        activeListeningSessionId: 'A',
+        phase: 'playing',
+      },
+    });
+    view.refresh();
+    const readsAfterRefresh = layoutReads;
+    assert.ok(readsAfterRefresh > 0, 'initial line paint checks marquee once');
+
+    for (let i = 0; i < 10; i += 1) {
+      music.currentTime += 0.25;
+      view.callbacks.onTimeUpdate(music);
+    }
+    assert.equal(layoutReads, readsAfterRefresh, 'title phase timeupdate must not re-read scrollWidth/clientWidth');
+
+    timers.forEach(fn => fn());
+    assert.equal(nodes.get('#player-line-text').textContent, '暂无同步歌词');
+    const readsAfterSwitch = layoutReads;
+    assert.ok(readsAfterSwitch > readsAfterRefresh, 'switching to no-lyric placeholder measures marquee once');
+
+    for (let i = 0; i < 20; i += 1) {
+      music.currentTime += 0.25;
+      view.callbacks.onTimeUpdate(music);
+    }
+    assert.equal(layoutReads, readsAfterSwitch, 'repeated no-lyric timeupdate must not read scrollWidth/clientWidth');
+  } finally {
+    view.destroy();
   }
 });

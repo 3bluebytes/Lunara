@@ -1,6 +1,9 @@
 import { reflectionText } from '../station/ReflectionObservationStore.js';
 import { parseEvidence } from './memoryPolicy.js';
 
+// 近况记忆（add-person-life-notes）：反思从 open loop 另存的伙伴级记忆，由 ReflectionAgent 写入。
+export const LIFE_NOTE_TAG = 'reflection-life';
+
 const DAY = 24 * 60 * 60 * 1000;
 const injectLimit = () => Math.max(1, Math.min(10, Number.parseInt(process.env.REFLECTION_INJECT_LIMIT, 10) || 3));
 
@@ -18,16 +21,21 @@ function claimOf(row) {
  * (accumulated evidence) outrank keyless factual notes, confidence and recency
  * break ties, and one claim+polarity occupies at most one slot.
  */
-export function recentReflectionInsights(service, namespace, { now = Date.now(), limit } = {}) {
+export function recentReflectionInsights(service, namespace, { now = Date.now(), limit, accept = null } = {}) {
   if (!service?.store || !namespace) return [];
   const cap = limit ?? injectLimit();
-  const rows = service.searchMemory(undefined, { namespace, type: 'semantic', tags: 'reflection-insight', limit: 50 })
-    .filter(row => row.createdAt >= now - 7 * DAY
+  // 洞察的"新近"按最后一次累积证据的时间算：同一 claim 不断被合并强化的洞察不因首次写入满 7 天就消失。
+  const freshAt = row => Number(parseEvidence(row)?.lastMergedAt) || row.createdAt;
+  const rows = service.store.search({ namespace, type: 'semantic', tags: 'reflection-insight',
+    excludeTags: ['revoked', 'superseded'], orderBy: 'updated_at_desc', limit: 50 })
+    .filter(row => freshAt(row) >= now - 7 * DAY
       && (!row.expiresAt || row.expiresAt > now)
-      && !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || ''));
+      && !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '')
+      // 调用方的适用面判断在取前 cap 条之前做：群聊里滤掉的私密洞察不占名额。
+      && (!accept || accept(row)));
   const scored = rows.map(row => {
     const claim = claimOf(row);
-    const ageDays = (now - row.createdAt) / DAY;
+    const ageDays = (now - freshAt(row)) / DAY;
     const score = (claim ? 1 : 0) + Math.max(0, Number(row.confidence) || 0) + Math.max(0, 1 - ageDays / 7);
     return { row, claim, score };
   }).sort((a, b) => b.score - a.score);
@@ -58,4 +66,34 @@ export function recentReflectionInsights(service, namespace, { now = Date.now(),
       scope: reflectionText(evidence.scope || 'historical-observation-not-a-fixed-preference', 120),
     };
   });
+}
+
+/**
+ * 在聊天里把 open_loop 了结后，把同一批次（或同源同文）生成的伙伴级 reflection-life 记忆同步退场：
+ * 打上 superseded 标签并即时过期，避免伙伴在其他聊天继续把已翻篇的事当近况提起。
+ */
+export function retireSettledLifeNotes(service, { namespace, lifeWriteKey = null, sessionId = null, text = null,
+  turnIds = null, status = 'resolved', now = Date.now() } = {}) {
+  if (!service?.store || !namespace) return 0;
+  const rows = service.store.search({ namespace, type: 'semantic', tags: LIFE_NOTE_TAG,
+    excludeTags: ['revoked', 'superseded'], limit: 200 });
+  let count = 0;
+  for (const row of rows) {
+    if (/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '')) continue;
+    const evidence = parseEvidence(row);
+    const keyMatched = Boolean(lifeWriteKey && evidence.writeKey === lifeWriteKey);
+    const fallbackMatched = !lifeWriteKey
+      && (!text || row.content === text)
+      && (!sessionId || evidence.originSessionId === sessionId || evidence.sessions?.includes(sessionId))
+      && (!turnIds?.size || (Array.isArray(evidence.sourceTurnIds) && evidence.sourceTurnIds.some(id => turnIds.has(String(id)))));
+    if (!keyMatched && !fallbackMatched) continue;
+    const tags = [...new Set([...String(row.tags || '').split(',').map(tag => tag.trim()).filter(Boolean), 'superseded'])].join(',');
+    const updated = service.store.update(row.id, {
+      tags,
+      expiresAt: now - 1,
+      evidence: JSON.stringify({ ...evidence, settledStatus: status, settledAt: now }),
+    });
+    if (updated) count += 1;
+  }
+  return count;
 }

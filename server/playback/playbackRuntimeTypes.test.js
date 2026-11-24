@@ -9,6 +9,8 @@ import {
   normalizeOrderedTarget,
   normalizeRuntimeTrack,
   validatePlaybackEvent,
+  publicRuntimeState,
+  wireRuntimeState,
 } from './playbackRuntimeTypes.js';
 import { createPlaybackRuntimeState, hydratePlaybackRuntimeState } from './PlaybackRuntime.js';
 
@@ -191,4 +193,97 @@ test('recommendedBy 随队列项保留；旧队列项没有这个字段时按无
   const legacy = normalizeRuntimeTrack({ ...track(), virtualPersonId: 'member' });
   assert.equal(legacy.recommendedBy, null);
   assert.equal(legacy.virtualPersonId, 'member');
+});
+
+test('publicRuntimeState：没说出口的串词不出 runtime，被挂起的聊天也一样', () => {
+  const unspoken = { queueItemId: 'q1', title: '歌', narration: { status: 'ready', text: '还没说的话', spokenText: '还没说的话{笑}', spoken: false, ttsUrl: '/tts/1.mp3', performance: { emotion: 'calm' } } };
+  const said = { queueItemId: 'q2', title: '歌', narration: { status: 'ready', text: '说过的话', spoken: true, ttsUrl: '/tts/2.mp3' } };
+  const state = { version: 1, queue: [unspoken, said], suspendedSessions: { other: { phase: 'paused', queue: [unspoken] }, empty: { phase: 'idle' } } };
+  const visible = publicRuntimeState(state);
+  assert.doesNotMatch(JSON.stringify(visible), /还没说的话/u);
+  assert.equal(visible.queue[1].narration.text, '说过的话', '说出口之后已经入账');
+  assert.equal(visible.queue[0].title, '歌', '别的字段不动');
+  assert.equal(visible.suspendedSessions.empty.phase, 'idle');
+  assert.equal(state.queue[0].narration.text, '还没说的话', '不改 runtime 自己的状态');
+  assert.equal(publicRuntimeState(null), null);
+});
+
+test('wireRuntimeState：仅保留当前与下一首歌词、清空未说出口串词并保留挂起会话元数据与无 lyric 键形态', () => {
+  const unspoken = (id, withLyric = true) => ({
+    queueItemId: `q-${id}`,
+    songId: `song-${id}`,
+    title: `歌 ${id}`,
+    artist: `歌手 ${id}`,
+    ...(withLyric ? { lyric: `[00:01] 歌词 ${id}` } : {}),
+    narration: { status: 'ready', text: `还没说 ${id}`, spokenText: `还没说 ${id}{笑}`, about: '备忘', spoken: false, ttsUrl: `/tts/${id}.mp3`, performance: { emotion: 'calm' } },
+  });
+  const spoken = id => ({
+    queueItemId: `q-${id}`,
+    songId: `song-${id}`,
+    title: `歌 ${id}`,
+    artist: `歌手 ${id}`,
+    lyric: `[00:01] 歌词 ${id}`,
+    narration: { status: 'ready', text: `已说过 ${id}`, about: '秘密备忘', spoken: true, ttsUrl: `/tts/${id}.mp3` },
+  });
+  const state = {
+    version: 5,
+    currentIndex: 1,
+    queue: [spoken('0'), unspoken('1'), unspoken('2'), unspoken('3'), unspoken('4', false)],
+    suspendedSessions: {
+      other: {
+        phase: 'paused',
+        currentIndex: 0,
+        currentSongId: 'song-s0',
+        positionSeconds: 42,
+        listeningPlan: { request: { mode: 'discovery' } },
+        companionModeId: 'conversational',
+        lastOutputTrack: { songId: 'song-s0', title: '歌 s0', artist: '歌手 s0' },
+        queue: [unspoken('s0'), unspoken('s1', false)],
+      },
+      empty: { phase: 'idle' },
+    },
+  };
+
+  const wired = wireRuntimeState(state);
+  assert.equal(wireRuntimeState(null), null);
+  assert.equal(wired.queue[0].lyric, null, '已播曲目清空歌词');
+  assert.equal(wired.queue[1].lyric, '[00:01] 歌词 1', '当前曲保留歌词');
+  assert.equal(wired.queue[2].lyric, '[00:01] 歌词 2', '下一首保留歌词');
+  assert.equal(wired.queue[3].lyric, null, '更后待播清空歌词');
+  assert.equal(Object.hasOwn(wired.queue[4], 'lyric'), false, '原本没有 lyric 键时不新增 lyric: null');
+
+  assert.equal(wired.queue[0].narration.text, '已说过 0', '已说出口保留正文');
+  assert.equal(Object.hasOwn(wired.queue[0].narration, 'about'), false, '备忘始终剥离');
+  assert.equal(Object.hasOwn(wired.queue[1].narration, 'text'), false, '未说出口剥离正文');
+
+  const suspended = wired.suspendedSessions.other;
+  assert.equal(suspended.phase, 'paused');
+  assert.equal(suspended.currentIndex, 0);
+  assert.equal(suspended.currentSongId, 'song-s0');
+  assert.equal(suspended.positionSeconds, 42);
+  assert.deepEqual(suspended.listeningPlan, { request: { mode: 'discovery' } });
+  assert.equal(suspended.companionModeId, 'conversational');
+  assert.deepEqual(suspended.lastOutputTrack, { songId: 'song-s0', title: '歌 s0', artist: '歌手 s0' });
+  assert.equal(suspended.queue[0].queueItemId, 'q-s0');
+  assert.equal(suspended.queue[0].songId, 'song-s0');
+  assert.equal(suspended.queue[0].title, '歌 s0');
+  assert.equal(suspended.queue[0].artist, '歌手 s0');
+  assert.equal(suspended.queue[0].lyric, null, '挂起会话全部曲目清空歌词');
+  assert.equal(Object.hasOwn(suspended.queue[0].narration, 'text'), false);
+  assert.equal(Object.hasOwn(suspended.queue[1], 'lyric'), false, '挂起会话原本无 lyric 键时不新增');
+  assert.equal(wired.suspendedSessions.empty.phase, 'idle');
+
+  // currentIndex < 0 时仅保留第 0 首的歌词
+  const idleWired = wireRuntimeState({
+    currentIndex: -1,
+    queue: [unspoken('a'), unspoken('b')],
+  });
+  assert.equal(idleWired.queue[0].lyric, '[00:01] 歌词 a');
+  assert.equal(idleWired.queue[1].lyric, null);
+
+  // publicRuntimeState 保持原样继续保留所有曲目的 lyric
+  const pub = publicRuntimeState(state);
+  assert.equal(pub.queue[0].lyric, '[00:01] 歌词 0');
+  assert.equal(pub.queue[3].lyric, '[00:01] 歌词 3');
+  assert.equal(pub.suspendedSessions.other.queue[0].lyric, '[00:01] 歌词 s0');
 });

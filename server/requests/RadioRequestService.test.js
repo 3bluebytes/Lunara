@@ -12,7 +12,7 @@ import { VirtualPersonToolRegistry } from '../virtual-person/VirtualPersonToolRe
 import { PlaybackRuntimeHost } from '../playback/PlaybackRuntimeHost.js';
 import { ProgramCommitService } from '../program/ProgramCommitService.js';
 import { MusicSelectionService } from '../program/MusicSelectionService.js';
-import { createMusicSelectionAgent } from '../program/MusicSelectionAgent.js';
+import { createHostMusicRunner } from '../virtual-person/hostMusicRunner.js';
 import { registerMusicTools } from '../virtual-person/musicTools.js';
 import { validateResolvedTrackAgainstRequest } from '../program/programConstraintValidation.js';
 const request = { mode: 'artist', artist: '歌手 A', delivery: 'append', count: 2 };
@@ -37,7 +37,7 @@ test('continuation carries cancellation and a lifecycle guard into the restricte
   assert.equal(h.calls.length, 1);
 });
 
-function fixture({ getMusicSelectionAgent = null, curatorId = 'radiohost:a', room = null, isPersonAvailable = undefined } = {}) {
+function fixture({ getHostMusicRunner = null, curatorId = 'radiohost:a', room = null, isPersonAvailable = undefined } = {}) {
   const calls = [];
   const runner = { run: input => { calls.push(input); return { ok: true, tracks: [{}] }; } };
   const state = { activeListeningSessionId: 'a', outputGeneration: 4, phase: 'playing', radioMode: true,
@@ -47,7 +47,7 @@ function fixture({ getMusicSelectionAgent = null, curatorId = 'radiohost:a', roo
     playbackRuntime: { snapshot: () => state, listeningSnapshot: () => state },
     musicService,
     conversationStore: { getSession: id => ({ sessionId: id, activeVirtualPersonId: 'radiohost:a', ...(room || {}) }) },
-    getMusicSelectionAgent: getMusicSelectionAgent === null ? () => runner : getMusicSelectionAgent,
+    getHostMusicRunner: getHostMusicRunner === null ? () => runner : getHostMusicRunner,
     ...(isPersonAvailable ? { isPersonAvailable } : {}),
   });
   return { service, state, calls, musicService, runner };
@@ -106,7 +106,7 @@ test('a continuation failure is reported instead of silently substituting differ
 });
 
 test('without a runner the boundary fails closed and never falls back to a hidden chooser', async () => {
-  const h = fixture({ getMusicSelectionAgent: () => null });
+  const h = fixture({ getHostMusicRunner: () => null });
   const result = await h.service.handleContinue({ sessionId: 'a', outputGeneration: 4, requestId: 'no-runner' });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'MUSIC_SELECTION_UNAVAILABLE');
@@ -172,7 +172,7 @@ async function stubTwoStepDriver(input, toolRegistry, { indexes = [1, 2] } = {})
 }
 
 /** 全真实链路（stub 模型回合）：受限运行器 + 真实工具 + 真实提交 + 真实 runtime。 */
-function liveFixture(t, { sessionTrace = null, indexes = [1, 2] } = {}) {
+function liveFixture(t, { sessionTrace = null, indexes = [1, 2], library = LIBRARY, tagStore = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'lunara-radio-prewarm-'));
   const dbPath = join(dir, 'state.db');
   const registry = new VirtualPersonRegistry({ dbPath }).initialize();
@@ -181,26 +181,27 @@ function liveFixture(t, { sessionTrace = null, indexes = [1, 2] } = {}) {
   conversationStore.createRoom({ sessionId: 'room', memberIds: ['host'] });
   const commands = [], effects = [];
   const playbackRuntime = new PlaybackRuntimeHost({ commandSink: item => commands.push(item), effectSink: item => effects.push(item) });
-  const tags = { getTags: () => ({ language: 'zh', genres: ['pop'] }), getArtistTags: () => ({ gender: 'female' }) };
+  const tags = tagStore || { getTags: () => ({ language: 'zh', genres: ['pop'] }), getArtistTags: () => ({ gender: 'female' }) };
   const commit = new ProgramCommitService({ playbackRuntime, queueService: { publishSnapshot() {} },
     synthesize: async () => ({ url: '/tts.mp3' }),
     resolveTrack: async (_query, { candidate }) => {
-      const track = LIBRARY.find(row => row.song_id === candidate.sourceSongId);
+      const track = library.find(row => row.song_id === candidate.sourceSongId);
       return track ? { ...track, ok: true, url: `/audio/${track.song_id}.mp3` } : { ok: false };
     },
     validateResolvedTrack: (track, context) => validateResolvedTrackAgainstRequest(track,
       { request: context.candidateProgram.metadata.musicSelection, songTagStore: tags }) });
   const service = new MusicSelectionService({ programCommitService: commit, playbackRuntime, registry, conversationStore,
-    getCandidates: async () => LIBRARY, getSongTagStore: () => tags, getFamiliarArtists: () => [], getRecentPlays: () => [] });
+    getCandidates: async () => library, getSongTagStore: () => tags, getFamiliarArtists: () => [], getRecentPlays: () => [] });
   const toolRegistry = new VirtualPersonToolRegistry({ logger: { error() {} } });
   registerMusicTools(toolRegistry, () => service);
   const runs = [];
   let modelCalls = 0;
   const agentLoop = { run: async input => { runs.push(input); modelCalls += 1; return stubTwoStepDriver(input, toolRegistry, { indexes }); } };
   // 生产里运行器由 index.js 接线；这里等同装配，只把模型回合换成 stub。
-  const runner = createMusicSelectionAgent({ agentLoop, toolRegistry, sessionTrace });
+  const host = { assembleHostContext: async () => ({ systemPrompt: 'host', messages: [], onContextUsage: null }) };
+  const runner = createHostMusicRunner({ agentLoop, toolRegistry, host, registry, sessionTrace });
   const radio = new RadioRequestService({ conversationService: { handleChat: () => {} }, musicService: service,
-    playbackRuntime, conversationStore, getMusicSelectionAgent: () => runner, sessionTrace });
+    playbackRuntime, conversationStore, getHostMusicRunner: () => runner, sessionTrace });
   t.after(() => { conversationStore.close(); registry.close(); rmSync(dir, { recursive: true, force: true }); });
   return { radio, service, playbackRuntime, conversationStore, runs, commands, effects, agentLoop, toolRegistry,
     modelCalls: () => modelCalls, runner };
@@ -224,6 +225,13 @@ async function startListening(h, songId = '1') {
   return h.playbackRuntime.snapshot();
 }
 
+// 登记一批“上一首时就备好的”歌。边界正等着实时任务时 host 不预热，所以这里让预热看不到那个边界。
+async function holdBatch(h) {
+  const snapshot = h.playbackRuntime.snapshot.bind(h.playbackRuntime);
+  h.playbackRuntime.snapshot = () => ({ ...snapshot(), pendingContinuation: null });
+  try { return await h.radio.prepareContinuation(); } finally { h.playbackRuntime.snapshot = snapshot; }
+}
+
 test('the runtime low-queue boundary triggers exactly one restricted preparation run for the next boundary', async t => {
   const h = liveFixture(t);
   const state = await startListening(h);
@@ -233,11 +241,17 @@ test('the runtime low-queue boundary triggers exactly one restricted preparation
     '真实 runtime 的低队列检测（与今天请求续播同一条 REQUEST_CONTINUATION 路径）');
   assert.ok(h.effects.some(effect => effect.type === 'REQUEST_CONTINUATION'), '低队列边界已经发出');
 
+  assert.equal((await h.radio.prepareContinuation()).code, 'HOST_BUSY', '这个边界归实时任务，host 不同时想两批歌');
+  assert.equal(h.runs.length, 0);
+  const live = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: state.outputGeneration,
+    requestId: `runtime-continuation:${state.pendingContinuation.boundaryKey}` });
+  assert.equal(live.ok, true, live.code);
+  assert.equal(h.runs.length, 1);
+  h.runs.length = 0;
+
   const before = h.playbackRuntime.snapshot();
   const commandsBefore = h.commands.length;
-  // 生产接线（组合根）在同一个边界钩子里同时发起实时续播与“下一个边界”的预热：
-  // 预热拿到 boundaryInFlight，绝不绑定正在被实时任务解析的边界。
-  const result = await h.radio.prepareContinuation({ boundaryInFlight: state.pendingContinuation.boundaryKey });
+  const result = await h.radio.prepareAfterBoundary({ sessionId: 'room' });
 
   assert.equal(result.ok, true, result.code);
   assert.equal(result.boundaryKey, null, '预热批次记录为“接受第一个到来的边界”');
@@ -258,20 +272,10 @@ test('prewarm bound to no boundary is adopted at the next boundary with zero mod
   const h = liveFixture(t);
   const state = await startListening(h);
   const boundaryKey = state.pendingContinuation.boundaryKey;
-  // 生产顺序：边界钩子先发起“下一个边界”的预热，再跑边界 N 的实时任务；预热的模型
-  // 回合比实时任务晚落地（这里用 gate 复现同一顺序，避免预热工具与实时提交抢队列）。
-  let releasePreparation;
-  const preparationGate = new Promise(resolve => { releasePreparation = resolve; });
-  const innerRun = h.agentLoop.run;
-  h.agentLoop.run = async input => {
-    if (input.toolContext?.musicTaskRequest?.mode === 'preparation') await preparationGate;
-    return innerRun(input);
-  };
-  const prewarmRun = h.radio.prepareContinuation({ boundaryInFlight: boundaryKey });
+  // 生产顺序：边界 N 的实时任务先落定，host 空下来才预热“下一个边界”。
   const live = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: state.outputGeneration,
     requestId: `runtime-continuation:${boundaryKey}` });
-  releasePreparation();
-  const prepared = await prewarmRun;
+  const prepared = await h.radio.prepareAfterBoundary({ sessionId: 'room' });
 
   assert.equal(live.ok, true, live.code);
   assert.equal(live.code, 'MUSIC_COMMITTED');
@@ -308,6 +312,84 @@ test('prewarm bound to no boundary is adopted at the next boundary with zero mod
   assert.ok(h.playbackRuntime.snapshot().queue.some(track => track.songId === '4'), '挂起批次已经进队列');
 });
 
+for (const trigger of ['natural-end', 'manual-retry']) {
+  test(`失败期间准备的批次可在 ${trigger} 新请求中采用，不继承旧请求身份`, async t => {
+    const h = liveFixture(t);
+    const initial = await startListening(h);
+    const oldKey = initial.pendingContinuation.boundaryKey;
+    await h.playbackRuntime.submit({ type: 'CONTINUATION_FAILED', eventId: 'look-ahead-failed',
+      boundaryKey: oldKey, error: 'resource-unavailable' });
+    assert.equal(h.playbackRuntime.snapshot().pendingContinuation.status, 'failed');
+    const prepared = await h.radio.prepareContinuation();
+    assert.equal(prepared.prepared, true, prepared.code);
+    assert.equal(prepared.boundaryKey, null, '预热面向下一次请求，不绑定已经失败的旧 key');
+    assert.equal(h.service.prepared.get(prepared.preparedId).boundaryKey, null);
+    const progress = await h.playbackRuntime.submit({ type: 'POSITION_REPORTED', eventId: 'progress-after-prewarm',
+      positionSeconds: 30, ...identityOf(h) });
+    assert.equal(progress.accepted, true, progress.reason);
+    const requested = await h.playbackRuntime.submit({
+      ...(trigger === 'natural-end' ? { type: 'TRACK_ENDED', natural: true } : { type: 'RETRY_REQUESTED' }),
+      eventId: `next-${trigger}`, ...identityOf(h) });
+    assert.equal(requested.accepted, true, requested.reason);
+    const nextKey = requested.state.pendingContinuation.boundaryKey;
+    assert.notEqual(nextKey, oldKey, '继续生成新的请求身份，不能为复用预热而复活旧请求');
+    await h.playbackRuntime.submit({ type: 'CONTINUATION_FAILED', eventId: 'late-old-failure',
+      boundaryKey: oldKey, error: 'late-failure' });
+    assert.equal(h.playbackRuntime.snapshot().pendingContinuation.status, 'requested');
+    assert.equal(h.playbackRuntime.snapshot().pendingContinuation.boundaryKey, nextKey);
+    const runs = h.runs.length;
+    const adopted = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: initial.outputGeneration,
+      requestId: `runtime-continuation:${nextKey}` });
+    assert.equal(adopted.code, 'MUSIC_COMMITTED');
+    assert.equal(h.runs.length, runs, '有效预热零模型回合采用，不再回落实时选歌');
+    assert.equal(h.service.preparedStats().consumed, 1);
+    assert.equal(h.service.preparedStats().mismatch, 0);
+    assert.equal(h.service.prepared.get(prepared.preparedId).status, 'consumed');
+    assert.deepEqual(h.playbackRuntime.snapshot().queue.map(track => track.songId), ['1', '2', '3']);
+    if (trigger === 'manual-retry') assert.equal(h.playbackRuntime.snapshot().currentSongId, '1', '播放中的重试只追加、不切歌');
+  });
+}
+
+test('续播的软锚点只跟当前这首：存回计划的偏好歌手不随每个边界累积', async t => {
+  const library = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map((artist, index) => ({ song_id: String(index + 1),
+    title: `歌${index + 1}`, artist: `歌手${artist}`, source: 'qq', album: '录音室' }));
+  const h = liveFixture(t, { library, indexes: [1] });
+  const state = await h.service.execute({ mode: 'exact', delivery: 'replace_now', count: 1,
+    targets: [{ songId: '1', source: 'qq', title: '歌1', artist: '歌手A' }] },
+  { sessionId: 'room', virtualPersonId: 'host', requestId: 'seed-1' });
+  assert.equal(state.ok, true, state.code);
+  await h.playbackRuntime.submit({ type: 'TRACK_INTRO_READY', eventId: 'intro-1', text: '', ...identityOf(h) });
+  await h.playbackRuntime.submit({ type: 'TRACK_STARTED', eventId: 'started-1', ...identityOf(h) });
+  const playedArtists = [];
+  for (let round = 0; round < 4; round += 1) {
+    const snapshot = h.playbackRuntime.snapshot();
+    const boundaryKey = snapshot.pendingContinuation?.boundaryKey;
+    assert.ok(boundaryKey, `第 ${round + 1} 个边界已建立`);
+    playedArtists.push(snapshot.queue[snapshot.currentIndex].artist);
+    const result = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: snapshot.outputGeneration,
+      requestId: `runtime-continuation:${boundaryKey}` });
+    assert.equal(result.ok, true, result.code);
+    const locked = h.runs.at(-1).toolContext.musicTaskRequest.request;
+    assert.equal(locked.preferredArtists[0], playedArtists.at(-1), '这一轮的软锚点是正在放的这首');
+    assert.deepEqual(h.playbackRuntime.snapshot().listeningPlan.request.preferredArtists, ['歌手A'],
+      '存回的计划只留用户当初点的歌手，不把每个边界的锚点叠进去');
+    await h.playbackRuntime.submit({ type: 'TRACK_ENDED', eventId: `ended-${round}`, natural: true, ...identityOf(h) });
+    await h.playbackRuntime.submit({ type: 'TRACK_STARTED', eventId: `started-next-${round}`, ...identityOf(h) });
+  }
+  assert.ok(new Set(playedArtists).size > 1, '确实换过歌手，才测得出累积');
+
+  // 预热采用走另一条提交路径，同样只存不带锚点的计划。
+  const prepared = await holdBatch(h);
+  assert.equal(prepared.prepared, true, prepared.code);
+  const snapshot = h.playbackRuntime.snapshot();
+  const runsBefore = h.runs.length;
+  const adopted = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: snapshot.outputGeneration,
+    requestId: `runtime-continuation:${snapshot.pendingContinuation.boundaryKey}` });
+  assert.equal(adopted.ok, true, adopted.code);
+  assert.equal(h.runs.length, runsBefore, '这次是采用预热批次');
+  assert.deepEqual(h.playbackRuntime.snapshot().listeningPlan.request.preferredArtists, ['歌手A']);
+});
+
 test('a stale batch is discarded and the boundary falls back to the live run exactly once', async t => {
   const h = liveFixture(t);
   const state = await startListening(h);
@@ -338,11 +420,11 @@ test('a stale batch is discarded and the boundary falls back to the live run exa
 test('a fresh hold blocks a second prewarm for the same generation until it is consumed', async t => {
   const h = liveFixture(t);
   const state = await startListening(h);
-  const first = await h.radio.prepareContinuation({ boundaryInFlight: state.pendingContinuation.boundaryKey });
+  const first = await holdBatch(h);
   assert.equal(first.ok, true, first.code);
   assert.equal(h.runs.length, 1);
 
-  const second = await h.radio.prepareContinuation();
+  const second = await holdBatch(h);
   assert.equal(second.ok, false);
   assert.equal(second.code, 'PREPARATION_ALREADY_HELD');
   assert.equal(h.runs.length, 1, '已有待采用批次时不再跑第二个模型任务');
@@ -354,36 +436,46 @@ test('a fresh hold blocks a second prewarm for the same generation until it is c
   assert.equal(adopted.ok, true, adopted.code);
   assert.equal(h.service.preparedStats().consumed, 1);
 
-  const third = await h.radio.prepareContinuation();
+  const third = await holdBatch(h);
   assert.equal(third.ok, true, third.code);
   assert.equal(h.runs.length, 2, '批次被采用之后，下一次预热不再被去重闸门挡住');
 });
 
-test('prewarm triggered while a live continuation is in flight prepares for the next boundary', async () => {
+test('host 正忙或边界正等着实时任务时预热跳过，不跑第二个选歌回合', async () => {
   const h = fixture();
-  h.state.pendingContinuation = { boundaryKey: 'b-live' };
-  let releaseLive;
-  h.runner.run = input => {
-    h.calls.push(input);
-    if (input.mode === 'playback') return new Promise(resolve => { releaseLive = resolve; });
-    return { ok: true, code: 'MUSIC_CANDIDATES_SELECTED', offerId: 'offer:prewarm' };
-  };
-  const live = h.service.handleContinue({ sessionId: 'a', outputGeneration: 4, requestId: 'runtime-continuation:b-live' });
-  const prewarm = await h.service.prepareContinuation();
+  h.state.pendingContinuation = { boundaryKey: 'b-live', status: 'requested' };
+  assert.equal((await h.service.prepareContinuation()).code, 'HOST_BUSY');
+  h.state.pendingContinuation = null;
+  h.runner.isBusy = () => true;
+  assert.equal((await h.service.prepareContinuation()).code, 'HOST_BUSY');
+  assert.equal(h.calls.length, 0);
+});
 
-  assert.equal(prewarm.ok, true, prewarm.code);
-  assert.equal(prewarm.boundaryKey, null, '实时任务在飞的边界不写进预热批次');
-  const preparation = h.calls.find(call => call.mode === 'preparation');
-  assert.equal(preparation.context.preparedFor.boundaryKey, null, '采用凭据同样不绑定在飞边界');
-  releaseLive({ ok: true, tracks: [{}] });
-  await live;
+test('边界落定之后：等 host 写完串词才预热，等待期间失效就不跑', async () => {
+  const h = fixture();
+  h.runner.run = async input => { h.calls.push(input); return { ok: true, code: 'MUSIC_CANDIDATES_SELECTED', offerId: 'offer:prewarm' }; };
+  let idle;
+  h.runner.whenIdle = () => new Promise(resolve => { idle = resolve; });
+  const waiting = h.service.prepareAfterBoundary({ sessionId: 'a' });
+  await new Promise(setImmediate);
+  assert.equal(h.calls.length, 0, 'host 还在写串词');
+  idle();
+  assert.equal((await waiting).ok, true);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].mode, 'preparation');
+  assert.equal(h.calls[0].context.preparedFor.boundaryKey, null, '接受第一个到来的边界');
+
+  h.calls.length = 0;
+  h.runner.whenIdle = () => Promise.resolve();
+  assert.equal((await h.service.prepareAfterBoundary({ sessionId: 'a', isCurrent: () => false })).code, 'STALE_BOUNDARY');
+  assert.equal(h.calls.length, 0);
 });
 
 test('a consumed prepared batch falls back to the live runner path at the next boundary', async t => {
   const h = liveFixture(t);
   const state = await startListening(h);
   const boundaryKey = state.pendingContinuation.boundaryKey;
-  assert.equal((await h.radio.prepareContinuation()).ok, true);
+  assert.equal((await holdBatch(h)).ok, true);
 
   // 第一个边界：采用批次（零模型调用）。
   const adopted = await h.radio.handleContinue({ sessionId: 'room', outputGeneration: state.outputGeneration,
@@ -410,7 +502,7 @@ test('a prepared ref that no longer resolves fails closed at the boundary withou
   const h = liveFixture(t);
   const state = await startListening(h);
   const boundaryKey = state.pendingContinuation.boundaryKey;
-  assert.equal((await h.radio.prepareContinuation()).ok, true);
+  assert.equal((await holdBatch(h)).ok, true);
   assert.equal(h.runs.length, 1);
   const before = h.playbackRuntime.snapshot().queue.map(track => track.songId);
 
@@ -432,7 +524,7 @@ test('a prepared ref that no longer resolves fails closed at the boundary withou
 test('recommend_only never adopts a prepared batch and never plays', async t => {
   const h = liveFixture(t);
   const state = await startListening(h);
-  assert.equal((await h.radio.prepareContinuation()).ok, true);
+  assert.equal((await holdBatch(h)).ok, true);
   const before = h.playbackRuntime.snapshot().queue.map(track => track.songId);
 
   const result = await h.radio.handleNext({ sessionId: 'room', delivery: 'recommend_only', requestId: 'ro-next' });
@@ -469,7 +561,7 @@ test('runtime-triggered continuation and prewarm tasks enter the same per-sessio
 
   await h.radio.handleContinue({ sessionId: 'room', outputGeneration: state.outputGeneration,
     requestId: `runtime-continuation:${boundaryKey}` });
-  await h.radio.prepareContinuation();
+  await holdBatch(h);
 
   assert.equal(entered.length, 2, '两次运行时任务各进入一次追踪上下文');
   assert.deepEqual({ ...entered[0], requestId: 'x' }, { sessionId: 'room', requestId: 'x', roundId: null, virtualPersonId: 'host' });
@@ -514,4 +606,55 @@ test('换主持人后，旧主持人名下的预热批次不被采用，回落�
   assert.deepEqual(fallbacks, ['person']);
   assert.notEqual(result.adopted, true);
   assert.equal(h.calls.at(-1).context.virtualPersonId, 'radiohost:a', '回落到以现任主持人运行的实时选歌');
+});
+
+test('persisted listeningPlan with subjective vibe tags softens during continuation and unlocks adjacent or untagged tracks', async t => {
+  const customLibrary = [
+    { song_id: 't1', title: 'City Of Stars', artist: 'Ryan Gosling', source: 'qq', album: 'La La Land' },
+    { song_id: 't2', title: '莫比乌斯号的船医', artist: '裘德', source: 'qq', album: '颁奖的时候我要缺席' },
+    { song_id: 't3', title: 'Slow R&B', artist: '歌手3', source: 'qq', album: '夜色' },
+    { song_id: 't4', title: 'Unlabeled Jazz', artist: '歌手4', source: 'qq', album: '微醺' },
+  ];
+  const tagMap = {
+    t1: { language: 'english', genre: '爵士', genres: ['爵士'], tempo: 'slow', mood: '浪漫', energy: 0.3 },
+    t2: { language: 'mandarin', genre: '爵士', genres: ['爵士'], tempo: 'slow', mood: '慵懒', energy: 0.3 },
+    t3: { language: 'mandarin', genre: 'R&B', genres: ['R&B'], tempo: 'slow', mood: '浪漫', energy: 0.35 },
+  };
+  const h = liveFixture(t, {
+    library: customLibrary,
+    tagStore: { getTags: id => tagMap[id] || null, getArtistTags: () => null },
+    indexes: [1, 2],
+  });
+  const offered = await h.service.execute({
+    mode: 'constrained',
+    delivery: 'replace_now',
+    count: 2,
+    constraints: { tags: { genre: '爵士', tempo: 'slow' } },
+    softPreferences: '浪漫慵懒',
+  }, { sessionId: 'room', virtualPersonId: 'host', requestId: 'seed-vibe-plan' });
+  assert.equal(offered.code, 'MUSIC_CANDIDATES_OFFERED');
+  const committed = await h.service.commitSelection({ offerId: offered.offerId, indexes: [1, 2] },
+    { sessionId: 'room', virtualPersonId: 'host', requestId: 'seed-vibe-plan' });
+  assert.equal(committed.ok, true, committed.code);
+
+  await h.playbackRuntime.submit({ type: 'TRACK_INTRO_READY', eventId: 'vibe-intro-1', text: '', ...identityOf(h) });
+  await h.playbackRuntime.submit({ type: 'TRACK_STARTED', eventId: 'vibe-start-1', ...identityOf(h) });
+  await h.playbackRuntime.submit({ type: 'TRACK_ENDED', eventId: 'vibe-end-1', natural: true, ...identityOf(h) });
+  const state = h.playbackRuntime.snapshot();
+  assert.equal(state.currentSongId, 't2');
+  assert.equal(state.pendingContinuation?.status, 'requested');
+
+  const continued = await h.radio.handleContinue({
+    sessionId: 'room',
+    outputGeneration: state.outputGeneration,
+    requestId: `runtime-continuation:${state.pendingContinuation.boundaryKey}`,
+  });
+  assert.equal(continued.ok, true, continued.code);
+  const taskRequest = h.runs.at(-1).toolContext.musicTaskRequest.request;
+  assert.equal(taskRequest.mode, 'discovery');
+  assert.deepEqual(taskRequest.constraints.tags, {});
+  assert.ok(taskRequest.softPreferences.includes('浪漫慵懒'));
+  assert.ok(taskRequest.softPreferences.includes('爵士'));
+  assert.ok(taskRequest.softPreferences.includes('慢歌'));
+  assert.deepEqual(h.playbackRuntime.snapshot().queue.slice(2).map(track => track.songId).sort(), ['t3', 't4']);
 });

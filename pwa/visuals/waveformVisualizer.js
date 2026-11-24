@@ -3,16 +3,17 @@
 //   dual：两行。上行音乐，读音乐分析器，已播部分标 .played；下行是伙伴声音的
 //         “在说话”指示——旁白音频没有接入 Web Audio，没有真实声纹可读，所以这里
 //         只在旁白播放时画一条平滑起伏，不说话时静止。它不是声纹，也不写任何播放状态。
-//   line：显示上与 single 相同的一行，由主题样式隐藏波形柱、只画细线进度（stage.css）。
+//   line：细线进度变体（时间线 / 素色），不创建波形柱，也不启动采样或定时器。
 // 音乐柱的横轴是频谱（左低频、右高频），不是时间轴：频段按指数曲线分布（低频更细），
-// 读不截顶的 dB 值并补偿高频的天然衰减，每根柱子快升慢降地平滑过渡
-// （减少动态时直接跳到目标值）。只读分析器，不改它的配置。
-// 切换主题后调 refresh() 按新变体重建。
+// 读不截顶的 dB 值并补偿高频的天然衰减，每根柱子快升慢降地平滑过渡。
+// 空闲、页面不可见或开启减少动态时彻底停掉 rAF 与定时器，唤醒或恢复播放时按需重启。
+// 只读分析器，不改它的配置。切换主题后调 refresh() 按新变体重建。
 export function createWaveformVisualizer({
   container,
   root = globalThis.document?.documentElement,
+  documentLike = root?.ownerDocument ?? globalThis.document,
   windowLike = globalThis.window,
-  createElement = () => globalThis.document.createElement('div'),
+  createElement = () => documentLike.createElement('div'),
   requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis),
   now = () => globalThis.performance?.now?.() || Date.now(),
@@ -20,7 +21,7 @@ export function createWaveformVisualizer({
   cancelInterval = globalThis.clearInterval?.bind(globalThis),
   isIdle = () => true,
   onAmplitude = () => {},
-  random = Math.random,
+  random: _random = Math.random,
   getVariant = () => root?.dataset?.waveform || 'single',
   getProgress = () => 0,
   isVoiceActive = () => false,
@@ -31,13 +32,14 @@ export function createWaveformVisualizer({
   dualMusicMaxBarHeight = 24,
   attack = 0.55,
   release = 0.16,
-  idleBarHeight = 10,
+  idleBarHeight: _idleBarHeight = 10,
   idleIntervalMs = 180,
 } = {}) {
   if (!container) throw new TypeError('waveform container is required');
   let musicBars = [];
   let voiceBars = [];
   const owned = [];
+  const cleanups = [];
   let mode = 'single';
   let initialized = false;
   let analyser = null;
@@ -49,6 +51,7 @@ export function createWaveformVisualizer({
   let voicePhase = 0;
   let levels = [];
   let bands = null;
+  let lastAmplitude = 0;
   // 波形只画给人看的“响度起伏”：60fps 与 120Hz 屏幕上肉眼没区别，按帧写 140 多根柱子的样式会白烧一半预算。
   // 这里按时间节流到 ~60fps，并按时间步长换算快升慢降的系数，降帧不会让响应变慢。
   const FRAME_MS = 1000 / 60;
@@ -58,7 +61,16 @@ export function createWaveformVisualizer({
   const writtenOpacity = [];
   const writtenHot = [];
 
+  const isHidden = () => Boolean(documentLike?.hidden || documentLike?.visibilityState === 'hidden');
   const reducedMotion = () => Boolean(windowLike?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+  const isActive = () => !isIdle() || Boolean(isVoiceActive());
+
+  function resolveMode() {
+    const variant = getVariant();
+    if (variant === 'dual') return 'dual';
+    if (variant === 'line') return 'line';
+    return 'single';
+  }
 
   function makeBars(parent, count) {
     const list = [];
@@ -73,7 +85,8 @@ export function createWaveformVisualizer({
   }
 
   function build() {
-    mode = getVariant() === 'dual' ? 'dual' : 'single';
+    mode = resolveMode();
+    if (mode === 'line') return;
     if (mode === 'single') {
       musicBars = makeBars(container, barCount);
       owned.push(...musicBars);
@@ -103,6 +116,17 @@ export function createWaveformVisualizer({
     writtenHot.length = 0;
   }
 
+  function stopFrame() {
+    if (frameId != null) cancelFrame?.(frameId);
+    frameId = null;
+    lastRenderAt = 0;
+  }
+
+  function stopInterval() {
+    if (intervalId != null) cancelInterval?.(intervalId);
+    intervalId = null;
+  }
+
   function markPlayed() {
     if (mode !== 'dual') return;
     const ratio = Math.max(0, Math.min(1, Number(getProgress()) || 0));
@@ -127,9 +151,42 @@ export function createWaveformVisualizer({
     }
   }
 
+  function settleBars() {
+    if (!initialized || mode === 'line') return;
+    if (levels.length) levels.fill(0);
+    if (mode === 'dual') {
+      markPlayed();
+      for (const bar of voiceBars) bar.style.height = '2px';
+    }
+    const restHeight = mode === 'dual' ? '2px' : '3px';
+    for (let index = 0; index < musicBars.length; index += 1) {
+      const bar = musicBars[index];
+      if (writtenHeight[index] !== restHeight) { writtenHeight[index] = restHeight; bar.style.height = restHeight; }
+      if (mode === 'single' && writtenOpacity[index] !== '.35') { writtenOpacity[index] = '.35'; bar.style.opacity = '.35'; }
+      if (writtenHot[index]) { writtenHot[index] = false; bar.classList.remove('hot'); }
+    }
+    if (lastAmplitude !== 0) {
+      lastAmplitude = 0;
+      onAmplitude(0);
+    }
+  }
+
+  function shouldAnimateFrames() {
+    return initialized && mode !== 'line' && Boolean(analyser && frequencyData)
+      && isActive() && !isHidden() && !reducedMotion();
+  }
+
+  function shouldRunInterval() {
+    return initialized && mode === 'dual' && isActive() && !isHidden() && !reducedMotion();
+  }
+
   function renderFrame() {
     if (!initialized || !analyser || !frequencyData) return;
     frameId = null;
+    if (!shouldAnimateFrames()) {
+      if (!isHidden()) settleBars();
+      return;
+    }
     const time = now();
     const elapsed = lastRenderAt ? time - lastRenderAt : FRAME_MS;
     // 只有“明显快于 60fps 的真实帧”才跳过；同时调用（测试、事件回调）的 elapsed 不足 1ms，按一帧处理。
@@ -139,18 +196,13 @@ export function createWaveformVisualizer({
     }
     const step = elapsed < 1 ? 1 : Math.min(4, elapsed / FRAME_MS);
     lastRenderAt = time;
-    const still = reducedMotion();
-    const quiet = isIdle() || still;
-    if (quiet) binLevels.fill(0);
-    else {
-      if (floatData) analyser.getFloatFrequencyData(frequencyData);
-      else analyser.getByteFrequencyData(frequencyData);
-      const minDb = Number.isFinite(analyser.minDecibels) ? analyser.minDecibels : -100;
-      const maxDb = Number.isFinite(analyser.maxDecibels) ? analyser.maxDecibels : -30;
-      for (let bin = 0; bin < frequencyData.length; bin += 1) {
-        const db = floatData ? frequencyData[bin] : minDb + (frequencyData[bin] / 255) * (maxDb - minDb);
-        binLevels[bin] = binLevel(db, bin);
-      }
+    if (floatData) analyser.getFloatFrequencyData(frequencyData);
+    else analyser.getByteFrequencyData(frequencyData);
+    const minDb = Number.isFinite(analyser.minDecibels) ? analyser.minDecibels : -100;
+    const maxDb = Number.isFinite(analyser.maxDecibels) ? analyser.maxDecibels : -30;
+    for (let bin = 0; bin < frequencyData.length; bin += 1) {
+      const db = floatData ? frequencyData[bin] : minDb + (frequencyData[bin] / 255) * (maxDb - minDb);
+      binLevels[bin] = binLevel(db, bin);
     }
     const maxHeight = mode === 'dual' ? dualMusicMaxBarHeight : maxBarHeight;
     if (!bands || bands.bins !== binLevels.length || bands.count !== musicBars.length) {
@@ -163,8 +215,8 @@ export function createWaveformVisualizer({
       const previous = levels[index];
       const k = target > previous ? attack : release;
       // 用时间步长换算指数平滑的系数：降帧后响应时间不变，只是写 DOM 的次数减半。
-      const eased = still || step === 1 ? k : 1 - Math.pow(1 - k, step);
-      const value = still ? target : previous + (target - previous) * eased;
+      const eased = step === 1 ? k : 1 - Math.pow(1 - k, step);
+      const value = previous + (target - previous) * eased;
       levels[index] = value;
       sum += value;
       const height = `${Math.max(2, Math.round(value * maxHeight + 2))}px`;
@@ -178,38 +230,94 @@ export function createWaveformVisualizer({
       const hot = value > 0.6;
       if (writtenHot[index] !== hot) { writtenHot[index] = hot; bar.classList.toggle('hot', hot); }
     }
-    onAmplitude(musicBars.length ? sum / musicBars.length : 0);
-    frameId = requestFrame?.(renderFrame) ?? null;
+    const amp = musicBars.length ? sum / musicBars.length : 0;
+    lastAmplitude = amp;
+    onAmplitude(amp);
+    if (shouldAnimateFrames()) {
+      frameId = requestFrame?.(renderFrame) ?? null;
+    }
   }
 
   function tick() {
-    if (!initialized) return;
-    if (mode === 'dual') { markPlayed(); renderVoice(); }
-    if (!isIdle()) return;
-    for (const bar of musicBars) {
-      const still = mode === 'dual' || reducedMotion();
-      bar.style.height = `${still ? 3 : 2 + random() * idleBarHeight}px`;
-      if (mode === 'single') bar.style.opacity = '.35';
-      bar.classList.remove('hot');
+    if (!shouldRunInterval()) {
+      stopInterval();
+      if (initialized && mode === 'dual' && !isHidden()) settleBars();
+      return;
     }
+    markPlayed();
+    renderVoice();
+  }
+
+  function syncLoop() {
+    if (!initialized) return;
+    if (mode === 'line') {
+      stopFrame();
+      stopInterval();
+      if (lastAmplitude !== 0) { lastAmplitude = 0; onAmplitude(0); }
+      return;
+    }
+    if (!isActive() || isHidden() || reducedMotion()) {
+      stopFrame();
+      stopInterval();
+      if (!isHidden()) settleBars();
+      return;
+    }
+    if (shouldRunInterval()) {
+      markPlayed();
+      renderVoice();
+      if (intervalId == null) intervalId = scheduleInterval?.(tick, idleIntervalMs) ?? null;
+    } else {
+      stopInterval();
+    }
+    if (shouldAnimateFrames() && frameId == null) {
+      frameId = requestFrame?.(renderFrame) ?? null;
+    }
+  }
+
+  function listen(target, type, handler, options) {
+    if (typeof target?.addEventListener !== 'function') return;
+    target.addEventListener(type, handler, options);
+    cleanups.push(() => target.removeEventListener?.(type, handler, options));
   }
 
   function init() {
     if (initialized) return api;
     initialized = true;
     build();
-    intervalId = scheduleInterval?.(tick, idleIntervalMs) ?? null;
+    listen(documentLike, 'visibilitychange', syncLoop);
+    for (const mediaEvent of ['play', 'playing', 'pause', 'ended']) {
+      listen(documentLike, mediaEvent, syncLoop, true);
+    }
+    for (const progressEvent of ['timeupdate', 'seeked']) {
+      listen(documentLike, progressEvent, () => {
+        if (initialized && mode === 'dual' && !isHidden()) markPlayed();
+      }, true);
+    }
+    const motionQuery = windowLike?.matchMedia?.('(prefers-reduced-motion: reduce)');
+    listen(motionQuery, 'change', syncLoop);
+    syncLoop();
+    return api;
+  }
+
+  function start() {
+    if (!initialized) return init();
+    syncLoop();
     return api;
   }
 
   // 主题切换后按新变体重建；分析器保持不变。
   function refresh() {
     if (!initialized) return;
-    const next = getVariant() === 'dual' ? 'dual' : 'single';
-    if (next === mode) return;
+    const next = resolveMode();
+    if (next === mode) {
+      syncLoop();
+      return;
+    }
+    stopFrame();
+    stopInterval();
     clearBars();
     build();
-    tick();
+    syncLoop();
   }
 
   function setAnalyser(nextAnalyser) {
@@ -217,25 +325,24 @@ export function createWaveformVisualizer({
     floatData = typeof analyser?.getFloatFrequencyData === 'function';
     frequencyData = analyser ? new (floatData ? Float32Array : Uint8Array)(analyser.frequencyBinCount) : null;
     binLevels = analyser ? new Float32Array(analyser.frequencyBinCount) : null;
-    if (initialized && analyser && frameId == null) {
-      frameId = requestFrame?.(renderFrame) ?? null;
-    }
+    if (!analyser) stopFrame();
+    if (initialized) syncLoop();
   }
 
   function destroy() {
     if (!initialized) return;
     initialized = false;
-    if (frameId != null) cancelFrame?.(frameId);
-    if (intervalId != null) cancelInterval?.(intervalId);
-    frameId = null;
-    intervalId = null;
+    stopFrame();
+    stopInterval();
+    while (cleanups.length) cleanups.pop()();
     analyser = null;
     frequencyData = null;
     binLevels = null;
+    lastAmplitude = 0;
     clearBars();
   }
 
-  const api = Object.freeze({ init, destroy, setAnalyser, refresh });
+  const api = Object.freeze({ init, start, destroy, setAnalyser, refresh });
   return api;
 }
 

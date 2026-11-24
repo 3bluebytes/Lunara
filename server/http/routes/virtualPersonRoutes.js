@@ -14,7 +14,7 @@ function respondServiceError(res, error, fallbackMessage) {
   if (/not found|not available/.test(message)) {
     return res.status(404).json({ ok: false, error: message });
   }
-  if (/cannot be deleted|cannot be archived|required|exceeds|cannot be empty|invalid/i.test(message)) {
+  if (error instanceof TypeError || /cannot be deleted|cannot be archived|required|exceeds|cannot be empty|invalid/i.test(message)) {
     return res.status(400).json({ ok: false, error: message });
   }
   return res.status(500).json({ ok: false, error: fallbackMessage });
@@ -94,6 +94,26 @@ export function registerVirtualPersonRoutes(app, { virtualPersonService } = {}) 
       turns: virtualPersonService.transcript(req.params.sessionId, { limit: req.query?.limit, beforeSequence: req.query?.before }),
     });
   });
+  app.post('/api/conversations/:sessionId/turns/:turnId/speech', asyncRoute(async (req, res) => {
+    if (!requireService(res, virtualPersonService, 'virtual person service')) return;
+    try {
+      const result = await virtualPersonService.synthesizeTurnSpeech(req.params.sessionId, req.params.turnId);
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      respondServiceError(res, error, '这次语音合成没有成功，稍后再试一次');
+    }
+  }));
+  const touchTurnSpeechHandler = (req, res) => {
+    if (!requireService(res, virtualPersonService, 'virtual person service')) return;
+    try {
+      const result = virtualPersonService.touchTurnSpeech(req.params.sessionId, req.params.turnId);
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      respondServiceError(res, error, '暂时找不到这条语音记录');
+    }
+  };
+  app.post('/api/conversations/:sessionId/turns/:turnId/speech/touch', touchTurnSpeechHandler);
+  app.post('/api/conversations/:sessionId/turns/:turnId/touch', touchTurnSpeechHandler);
 
   app.get('/api/virtual-persons', (req, res) => {
     if (!requireService(res, virtualPersonService, 'virtual person service')) return;
@@ -105,10 +125,21 @@ export function registerVirtualPersonRoutes(app, { virtualPersonService } = {}) 
     });
   });
 
-  // 预令人设：与声音正交，供创建/编辑时说“选人设”。
+  // 预令人设：与声音正交，供创建/编辑时填入可编辑灵感模板。
   app.get('/api/persona-presets', (_req, res) => {
     res.json({ ok: true, presets: listPersonaPresets() });
   });
+
+  // 显式 AI 扩写：仅把草稿展开为建议正文返回前端编辑器，不创建伙伴也不落库。
+  app.post('/api/persona-presets/expand', asyncRoute(async (req, res) => {
+    if (!requireService(res, virtualPersonService, 'virtual person service')) return;
+    try {
+      const result = await virtualPersonService.expandPersonaDraft(req.body || {});
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      respondServiceError(res, error, '这次 AI 扩写没有成功，请稍后再试');
+    }
+  }));
 
   app.get('/api/virtual-persons/:id', (req, res) => {
     if (!requireService(res, virtualPersonService, 'virtual person service')) return;

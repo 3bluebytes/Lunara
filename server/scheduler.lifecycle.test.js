@@ -60,3 +60,13 @@ test('scheduler start/stop owns cron tasks idempotently', async () => {
     scheduler.detach?.();
   }
 });
+
+test('定时清理也清 Lunara 与共享记忆的过期行', async () => {
+  const calls = [];
+  scheduler.attach({ listRadioHosts: () => [],
+    stationMemory: { getStore: () => ({ deleteExpired: namespace => { calls.push(namespace); return 0; } }) } });
+  try {
+    await scheduler._workingSweepInternals.run();
+    assert.deepEqual(calls, ['person:lunara', 'station']);
+  } finally { scheduler.detach(); }
+});

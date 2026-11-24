@@ -1,6 +1,7 @@
 import { escapeHtml as esc } from '../chat/chatMarkup.js';
 import { splitLeadingQuote } from '../chat/chatQuote.js';
-import { ROOT_VIRTUAL_PERSON_ID } from '../radiohost/radiohostController.js';
+import { isUsableVoice } from '../../core/usableVoice.js';
+import { ROOT_VIRTUAL_PERSON_ID, normalizeVoiceProfiles } from '../radiohost/radiohostController.js';
 import { deriveConversationGroups, deriveConversationPresentation, deriveCurrentTrackIntroduction } from './conversationPresentation.js';
 import { APP_ICON, COVER_FALLBACK, applyArtwork } from '../playback/artworkImage.js';
 import { colorFor, identityDots, wallTime, queueEstimates, deliveredTime, acquaintanceDays, dateLabel } from '../../visuals/cikePresentation.js';
@@ -46,12 +47,26 @@ export function validateRoomTitle(value) {
 
 export function createConversationView({ controller, store, apiClient, chatController, chatInputView,
   playbackRuntimeClient, documentLike = document, onError = () => {}, onBrowse = () => {}, onTodayOpen = null,
-  onSettingsOpen = null, onSettingsClose = null, sidebarPresentation = null } = {}) {
+  onSettingsOpen = null, onSettingsClose = null, sidebarPresentation = null,
+  setTimer = (fn, ms) => { const h = setTimeout(fn, ms); h?.unref?.(); return h; },
+  clearTimer = handle => clearTimeout(handle), now = () => Date.now() } = {}) {
+  const LONG_WAIT_EARLY_MS = 8_000;
+  const LONG_WAIT_LATE_MS = 18_000;
+  const LONG_WAIT_EARLY_COPY = '正在翻看曲库与上下文，稍等一下…';
+  const LONG_WAIT_LATE_COPY = '还在挑歌核对曲库，随时可以插话补充…';
+  const CHAT_WAIT_EARLY_COPY = '正在斟酌词句，稍等一下…';
+  const CHAT_WAIT_LATE_COPY = '还在认真写这一段，随时可以插话补充…';
+  const DEFAULT_THINKING_COPY = '正在想';
+  let longWaitEarlyTimer = null, longWaitLateTimer = null, longWaitSid = null, longWaitFallbackSince = null;
   const options = { onTodayOpen, onSettingsOpen, onSettingsClose };
   const $ = selector => documentLike.querySelector(selector);
   const cleanups = [];
+  let destroyed = false;
+  const loadingTranscripts = new Set();
   let filter = '', showArchived = false, pickerMode = 'create', shownId = null, shownLastTurnId = null, rendered = '', personDetailId = null;
-  let navMode = 'rooms', listenAfterCreate = false, creatingRoom = false;
+  let navMode = 'rooms', listenAfterCreate = false, creatingRoom = false, preferredHostId = null;
+  let personDetailVoices = [], personDetailVoiceFallback = null, personDetailVoiceTouched = false;
+  let profileBaseline = null, profileDiscardArm = null;
   let settingsVisible = false;
   // 会话模型/思考档选择器共享的最近一次注册表读取（开关选项要按所选模型刷新）。
   let roomModelRegistry = { providers: [], override: null };
@@ -86,7 +101,7 @@ export function createConversationView({ controller, store, apiClient, chatContr
   function renderMoment() {
     const now = Date.now();
     const view = presentation();
-    const { runtime, listeningRoom, focusedRoom, focusedListeningRuntime } = view;
+    const { runtime, listeningRoom, focusedRoom } = view;
     if (listeningStartedFor !== runtime?.activeListeningSessionId) {
       listeningStartedFor = runtime?.activeListeningSessionId;
       listeningStartedAt = null;
@@ -111,18 +126,22 @@ export function createConversationView({ controller, store, apiClient, chatContr
     // 双行波形下行（伙伴声音）用当前在听这一首的伙伴颜色；没有在听的伙伴就退回主题强调色。
     const speakerId = view.listeningPerson?.id;
     $('.persistent-player')?.style?.[speakerId ? 'setProperty' : 'removeProperty']?.('--player-speaker', ...(speakerId ? [colorFor(speakerId)] : []));
-    const estimates = queueEstimates(focusedListeningRuntime?.queue, focusedListeningRuntime?.currentIndex,
-      focusedListeningRuntime?.positionSeconds, now);
-    const upcoming = view.focusedQueueItems.filter(entry => entry.state === 'upcoming').slice(0, 12);
-    const nextList = $('#listening-next-queue');
-    if (nextList) nextList.innerHTML = upcoming.map(({item}) => {
-      const candidateSpeakerId = item.narration?.speakerVirtualPersonId || item.virtualPersonId;
-      const speakerId = controller.person(candidateSpeakerId) ? candidateSpeakerId : null;
-      const at = estimates.get(item.queueItemId);
-      return `<div class="cike-queue-row"><time>${at != null ? `约 ${wallTime(at)}` : '稍后'}</time><span><strong>${esc(item.title || '未知歌曲')}</strong><small>${esc(item.artist || '')}</small></span>${speakerId ? `<span class="cike-queue-speaker" title="${esc(name(controller.person(speakerId)))} 的曲目">${identityDots([speakerId])} ${esc(name(controller.person(speakerId)))}</span>` : '<span></span>'}<time>${Number(item.duration) > 0 ? `${Math.floor(Number(item.duration) / 60)}:${String(Math.floor(Number(item.duration) % 60)).padStart(2, '0')}` : '—'}</time></div>`;
-    }).join('') || '<p class="sb-empty">下一首还在路上</p>';
     const actualEstimates = queueEstimates(runtime?.queue, runtime?.currentIndex, runtime?.positionSeconds, now);
-    const next = view.queueItems.find(entry => entry.state === 'upcoming')?.item;
+    const upcoming = view.queueItems.filter(entry => entry.state === 'upcoming').slice(0, 12);
+    const nextHeading = $('.cike-next h3');
+    if (nextHeading) {
+      nextHeading.textContent = view.sourceMismatch && listeningRoom
+        ? `接下来 · 来自「${controller.roomName(listeningRoom)}」`
+        : '接下来';
+    }
+    const nextList = $('#listening-next-queue');
+    if (nextList) nextList.innerHTML = upcoming.map(({ item }) => {
+      const candidateSpeakerId = item.narration?.speakerVirtualPersonId || item.virtualPersonId;
+      const candidateId = controller.person(candidateSpeakerId) ? candidateSpeakerId : null;
+      const at = actualEstimates.get(item.queueItemId);
+      return `<div class="cike-queue-row"><time>${at != null ? `约 ${wallTime(at)}` : '稍后'}</time><span><strong>${esc(item.title || '未知歌曲')}</strong><small>${esc(item.artist || '')}</small></span>${candidateId ? `<span class="cike-queue-speaker" title="${esc(name(controller.person(candidateId)))} 的曲目">${identityDots([candidateId])} ${esc(name(controller.person(candidateId)))}</span>` : '<span></span>'}<time>${Number(item.duration) > 0 ? `${Math.floor(Number(item.duration) / 60)}:${String(Math.floor(Number(item.duration) % 60)).padStart(2, '0')}` : '—'}</time></div>`;
+    }).join('') || `<p class="sb-empty">${view.track ? '下一首还在路上' : '还没有待播的歌'}</p>`;
+    const next = upcoming[0]?.item;
     setText('#focus-next-track', next ? `${actualEstimates.has(next.queueItemId) ? `约 ${wallTime(actualEstimates.get(next.queueItemId))} · ` : ''}接下来 · ${next.title || '下一首'}` : '此刻，就听这一首。');
     for (const message of documentLike.querySelectorAll?.('.chat-msg[data-speaker-id]') || []) {
       message.style?.setProperty?.('--person-color', colorFor(message.dataset.speakerId));
@@ -194,6 +213,9 @@ export function createConversationView({ controller, store, apiClient, chatContr
     if (navMode === 'today') {
       options.onTodayOpen?.();
       $('#today-panel')?.focus?.({ preventScroll: true });
+    }
+    if (navMode === 'people') {
+      options.onPeopleOpen?.();
     }
     if (navMode === 'settings') {
       options.onSettingsOpen?.();
@@ -271,6 +293,10 @@ export function createConversationView({ controller, store, apiClient, chatContr
   function renderList() {
     const snapshot = controller.snapshot();
     const playingId = store.getState().runtimeState?.activeListeningSessionId;
+    const hasArchived = snapshot.rooms.some(room => Boolean(room.archivedAt));
+    const sidebar = $('.conversation-sidebar');
+    sidebar?.classList?.toggle?.('has-archived', hasArchived);
+    sidebar?.classList?.toggle?.('archived-mode', showArchived);
     const rooms = snapshot.rooms.filter(room => Boolean(room.archivedAt) === showArchived
       && controller.roomName(room).toLowerCase().includes(filter));
     const groups = deriveConversationGroups({
@@ -293,16 +319,14 @@ export function createConversationView({ controller, store, apiClient, chatContr
     const view = presentation();
     const { runtime, track, listeningPerson: person, listeningRoom: room } = view;
     const focusedRoom = view.focusedRoom;
-    const focusedTrack = view.focusedListeningTrack;
-    const focusedPerson = view.focusedListeningPerson;
-    const focusedTurns = focusedRoom ? controller.stateFor(focusedRoom.sessionId).turns : [];
-    const introduction = deriveCurrentTrackIntroduction(focusedTrack, focusedTurns);
-    const roomIntroduction = $('#room-introduction');
-    if (roomIntroduction) roomIntroduction.textContent = introduction && controller.person(introduction.speakerVirtualPersonId)
-      ? `这一首由 ${name(controller.person(introduction.speakerVirtualPersonId))} 介绍`
-      : '此刻在这里，也在等你说话';
     const listeningTurns = room ? controller.stateFor(room.sessionId).turns : [];
     const focusIntroduction = deriveCurrentTrackIntroduction(track, listeningTurns);
+    const introSpeaker = focusIntroduction ? controller.person(focusIntroduction.speakerVirtualPersonId) : null;
+    const introTime = focusIntroduction ? deliveredTime(track, listeningTurns) : '';
+    const roomIntroduction = $('#room-introduction');
+    if (roomIntroduction) roomIntroduction.textContent = focusedRoom && !view.sourceMismatch && introSpeaker
+      ? `这一首由 ${name(introSpeaker)} 介绍`
+      : '此刻在这里，也在等你说话';
     const intro = $('#listening-intro');
     if (intro) {
       // 旁白块只有三种状态，每种都只陈述真的成立的事：
@@ -313,32 +337,31 @@ export function createConversationView({ controller, store, apiClient, chatContr
       const narration = $('#listening-narration');
       if (narration) narration.hidden = !focusedRoom;
       intro.hidden = !focusedRoom;
-      $('#listening-intro-text').textContent = introduction?.text
-        || (focusedTrack ? NO_NARRATION_LINE : NO_TRACK_OPENING);
-      const speaker = introduction
-        ? controller.person(introduction.speakerVirtualPersonId)
-        : null;
+      const introText = $('#listening-intro-text');
+      if (introText && introText.dataset?.syncActive !== '1') {
+        introText.textContent = focusIntroduction?.text || (track ? NO_NARRATION_LINE : NO_TRACK_OPENING);
+      }
       // 发丝线与署名只属于真正生成的那段串词：它说明谁写的、为哪首写的。
       // 没生成串词还留着《歌名》推歌手记，就是给一句随口的话安上不存在的出处。
       const source = $('#listening-intro-source');
       if (source) {
-        source.textContent = introduction
-          ? `${speaker ? `${name(speaker)} · ` : ''}《${focusedTrack?.title || '当前歌曲'}》推歌手记${deliveredTime(focusedTrack, focusedTurns) ? ` · ${deliveredTime(focusedTrack, focusedTurns)}` : ''}`
+        source.textContent = focusIntroduction
+          ? `${introSpeaker ? `${name(introSpeaker)} · ` : ''}《${track?.title || '当前歌曲'}》推歌手记${introTime ? ` · ${introTime}` : ''}`
           : '';
-        source.hidden = !introduction;
+        source.hidden = !focusIntroduction;
       }
       const rule = intro.querySelector?.('.listening-narration-rule');
-      if (rule) rule.hidden = !introduction;
+      if (rule) rule.hidden = !focusIntroduction;
       // 旁白署名行（参考稿「LUNARA 的旁白」）：谁在说话就写谁。
       const narrationLabel = $('#listening-narration-label');
-      if (narrationLabel) narrationLabel.textContent = speaker ? `${name(speaker)} 的旁白` : '本首的介绍';
+      if (narrationLabel) narrationLabel.textContent = introSpeaker ? `${name(introSpeaker)} 的旁白` : track ? '本首的介绍' : '';
     }
     // 听歌主视觉 / 空闲问候互斥：选中聊天 → 主视觉；未选中 → 时刻 + 陪伴语。
     const hero = $('#listening-hero');
     const welcome = $('#listening-welcome');
     if (hero) hero.hidden = !focusedRoom;
     if (welcome) welcome.hidden = Boolean(focusedRoom);
-    const artworkCaption = [focusedTrack?.album, focusedTrack?.artist].find(Boolean) || '';
+    const artworkCaption = [track?.album, track?.artist].find(Boolean) || '';
     for (const captionId of ['#listening-artwork-caption', '#focus-artwork-caption']) {
       const captionNode = $(captionId);
       if (captionNode) captionNode.textContent = artworkCaption;
@@ -346,38 +369,40 @@ export function createConversationView({ controller, store, apiClient, chatContr
     const focusRecommendation = $('#focus-player-recommendation');
     if (focusRecommendation) {
       focusRecommendation.hidden = !focusIntroduction;
-      $('#focus-player-recommendation-text').textContent = focusIntroduction?.text || '';
-      const speaker = focusIntroduction
-        ? controller.person(focusIntroduction.speakerVirtualPersonId)
-        : null;
+      const focusRecText = $('#focus-player-recommendation-text');
+      if (focusRecText && focusRecText.dataset?.syncActive !== '1') {
+        focusRecText.textContent = focusIntroduction?.text || '';
+      }
       $('#focus-player-recommendation-source').textContent = focusIntroduction
-        ? `${speaker ? `${name(speaker)} · ` : ''}来自「${controller.roomName(room)}」的推荐${deliveredTime(track, listeningTurns) ? ` · ${deliveredTime(track, listeningTurns)}` : ''}`
+        ? `${introSpeaker ? `${name(introSpeaker)} · ` : ''}来自「${controller.roomName(room)}」的推荐${introTime ? ` · ${introTime}` : ''}`
         : '';
     }
     // 有曲目但缺封面用占位封面；没有任何曲目时显示 Lunara 应用图标。
     applyArtwork($('#player-cover'), track ? (track.artwork || COVER_FALLBACK) : APP_ICON);
+    const queuePopHead = $('.queue-pop-head');
+    if (queuePopHead) {
+      queuePopHead.textContent = !room
+        ? '待播队列'
+        : view.sourceMismatch
+          ? `待播队列 · 来自「${controller.roomName(room)}」`
+          : `待播队列 · ${controller.roomName(room)}`;
+    }
     const focusedQueue = $('#sb-queue');
     if (focusedQueue) {
-      focusedQueue.innerHTML = view.focusedQueueItems.length
-        ? view.focusedQueueItems.map(({ item, index, state }) => `<div class="sb-q-item ${state === 'current' ? 'active' : state === 'played' ? 'played' : ''}" data-focused-jump="${index}" data-queue-item-id="${esc(item.queueItemId || '')}">
-          <span class="sb-q-num">${String(index + 1).padStart(2, '0')}</span><span class="sb-q-info"><span class="sb-q-title">${esc(item.title || '未知歌曲')}</span><span class="sb-q-artist">${esc(item.artist || '')}</span></span></div>`).join('')
-        : '<div class="sb-empty">这个会话还没有播放列表</div>';
-      if (focusedRoom?.sessionId === runtime?.activeListeningSessionId) {
-        focusedQueue.querySelectorAll?.('[data-focused-jump]').forEach(element => {
-          element.addEventListener?.('click', () => {
-            const queueItemId = element.dataset?.queueItemId;
-            if (queueItemId) void playbackRuntimeClient.selectQueueItem?.(queueItemId);
-          });
-        });
-      }
+      const nextQueueHtml = view.queueItems.length
+        ? view.queueItems.map(({ item, index, state }) => `<button type="button" class="sb-q-item ${state === 'current' ? 'active' : state === 'played' ? 'played' : ''}" data-queue-jump="${index}" data-queue-item-id="${esc(item.queueItemId || '')}"${state === 'current' ? ' aria-current="true"' : ''}>
+          <span class="sb-q-num">${String(index + 1).padStart(2, '0')}</span><span class="sb-q-info"><span class="sb-q-title">${esc(item.title || '未知歌曲')}</span><span class="sb-q-artist">${esc(item.artist || '')}</span></span></button>`).join('')
+        : '<div class="sb-empty">还没有播放队列</div>';
+      if (focusedQueue.innerHTML !== nextQueueHtml) focusedQueue.innerHTML = nextQueueHtml;
     }
-    // 收起态窄列的「接下来」：同一份 focusedQueueItems 的紧凑投影，只读，
+    // 收起态窄列的「接下来」：同一份权威 queueItems 的紧凑投影，只读，
     // 不承接点击（切歌入口仍在播放条队列弹层）。
     const stripQueue = $('#listening-strip-queue');
     if (stripQueue) {
-      const upcoming = view.focusedQueueItems.filter(entry => entry.state === 'upcoming').slice(0, 12);
+      const upcoming = view.queueItems.filter(entry => entry.state === 'upcoming').slice(0, 12);
+      const stripHead = view.sourceMismatch && room ? `接下来 · 来自「${esc(controller.roomName(room))}」` : '接下来';
       stripQueue.innerHTML = upcoming.length
-        ? `<div class="strip-queue-head">接下来</div>` + upcoming.map(({ item, index }) =>
+        ? `<div class="strip-queue-head">${stripHead}</div>` + upcoming.map(({ item, index }) =>
             `<div class="strip-queue-row"><span class="strip-queue-idx">${String(index + 1).padStart(2, '0')}</span><span class="strip-queue-title">${esc(item.title || '未知歌曲')}</span></div>`).join('')
         : '';
       stripQueue.hidden = !upcoming.length;
@@ -440,12 +465,94 @@ export function createConversationView({ controller, store, apiClient, chatContr
     }
     row.hidden = !show;
   }
+  function clearLongWaitTimers() {
+    if (longWaitEarlyTimer != null) { clearTimer(longWaitEarlyTimer); longWaitEarlyTimer = null; }
+    if (longWaitLateTimer != null) { clearTimer(longWaitLateTimer); longWaitLateTimer = null; }
+  }
+  function resetLongWaitThinking() {
+    const thinking = $('#thinking');
+    if (!thinking || thinking.dataset?.longWait !== '1') return;
+    delete thinking.dataset.longWait;
+    const textNode = thinking.querySelector?.('.thinking-text');
+    if (textNode) textNode.textContent = DEFAULT_THINKING_COPY;
+    thinking.style.display = $('#status')?.dataset?.state === 'thinking' ? 'flex' : 'none';
+  }
+  function applyLongWaitStage(copy) {
+    const thinking = $('#thinking');
+    if (!thinking) return;
+    if (thinking.dataset) thinking.dataset.longWait = '1';
+    thinking.style.display = 'flex';
+    const textNode = thinking.querySelector?.('.thinking-text');
+    if (textNode) textNode.textContent = copy;
+    const snap = controller.snapshot();
+    if (snap.pending && !snap.room?.archivedAt && !chatInputView.isLocked?.()) {
+      chatInputView.setPending?.(true, copy);
+    }
+  }
+  // 点歌或长工具调用等待超过 8s / 18s 时，在只读 #thinking 区域渐进显示温和陪伴说明；
+  // 严守红线：不渲染未提交 text_stream 正文，不提前声称歌曲已切换。
+  function renderLongWaitThinking(snapshot, room) {
+    if (destroyed || !room || room.archivedAt || !snapshot.pending) {
+      clearLongWaitTimers();
+      longWaitSid = null;
+      longWaitFallbackSince = null;
+      resetLongWaitThinking();
+      return;
+    }
+    let since;
+    if (Number.isFinite(snapshot.pendingSince)) {
+      since = snapshot.pendingSince;
+      longWaitSid = room.sessionId;
+      longWaitFallbackSince = since;
+    } else if (longWaitSid === room.sessionId && Number.isFinite(longWaitFallbackSince)) {
+      since = longWaitFallbackSince;
+    } else {
+      since = now();
+      longWaitSid = room.sessionId;
+      longWaitFallbackSince = since;
+    }
+    const elapsed = Math.max(0, now() - since);
+    const isMusicWait = snapshot.pendingPhase === 'music';
+    const earlyCopy = isMusicWait ? LONG_WAIT_EARLY_COPY : CHAT_WAIT_EARLY_COPY;
+    const lateCopy = isMusicWait ? LONG_WAIT_LATE_COPY : CHAT_WAIT_LATE_COPY;
+    clearLongWaitTimers();
+    const stillWaiting = () => {
+      const latest = controller.snapshot();
+      return !destroyed && latest.pending && latest.sessionId === room.sessionId && !latest.room?.archivedAt;
+    };
+    if (elapsed >= LONG_WAIT_LATE_MS) {
+      applyLongWaitStage(lateCopy);
+    } else if (elapsed >= LONG_WAIT_EARLY_MS) {
+      applyLongWaitStage(earlyCopy);
+      longWaitLateTimer = setTimer(() => {
+        longWaitLateTimer = null;
+        if (stillWaiting()) applyLongWaitStage(lateCopy);
+      }, LONG_WAIT_LATE_MS - elapsed);
+    } else {
+      resetLongWaitThinking();
+      longWaitEarlyTimer = setTimer(() => {
+        longWaitEarlyTimer = null;
+        if (stillWaiting()) applyLongWaitStage(earlyCopy);
+      }, LONG_WAIT_EARLY_MS - elapsed);
+      longWaitLateTimer = setTimer(() => {
+        longWaitLateTimer = null;
+        if (stillWaiting()) applyLongWaitStage(lateCopy);
+      }, LONG_WAIT_LATE_MS - elapsed);
+    }
+  }
   function render() {
     const snapshot = controller.snapshot();
     const room = snapshot.room;
     renderNavigation();
     renderPeople();
-    if (!room) { renderList(); return; }
+    if (!room) {
+      clearLongWaitTimers();
+      longWaitSid = null;
+      longWaitFallbackSince = null;
+      resetLongWaitThinking();
+      renderList();
+      return;
+    }
     $('#room-title').textContent = controller.roomName(room);
     const focusedPerson = controller.person(room.activeVirtualPersonId);
     const focusedPersonButton = $('#conversation-person');
@@ -466,8 +573,21 @@ export function createConversationView({ controller, store, apiClient, chatContr
     const view = snapshot.local;
     // 当前伙伴与成员变化也要重绘：主持建议的确认状态对照的是房间的权威值。
     // 推荐卡片对照的是推荐状态与「这个聊天是不是当前听歌来源」：两者变了也重绘。
-    const key = JSON.stringify([room.activeVirtualPersonId, room.memberIds, listenState,
+    const key = JSON.stringify([room.activeVirtualPersonId, room.memberIds, room.interactionMode || 'radio', listenState,
       view.turns.map(turn => [turn.turnId, turn.text, turn.musicRecommendation?.status || null])]);
+    const isGroupRoom = room.memberIds.length > 1;
+    const effectiveInteractionMode = !isGroupRoom && room.interactionMode === 'roleplay' ? 'roleplay' : 'radio';
+    if ($('#chat-list')?.dataset) $('#chat-list').dataset.interactionMode = effectiveInteractionMode;
+    const headerModeControl = $('#interaction-mode-control');
+    const headerModeSelect = $('#interaction-mode-select');
+    if (headerModeControl) {
+      headerModeControl.hidden = isGroupRoom;
+      if (headerModeControl.dataset) headerModeControl.dataset.mode = effectiveInteractionMode;
+    }
+    if (headerModeSelect) {
+      headerModeSelect.value = effectiveInteractionMode;
+      headerModeSelect.disabled = archived || isGroupRoom;
+    }
     if (switched || rendered !== key) {
       const scroll = $('#chat-scroll');
       const position = scroll.scrollTop;
@@ -497,6 +617,7 @@ export function createConversationView({ controller, store, apiClient, chatContr
     if (editRow) editRow.hidden = !view.edit || archived;
     $('#chat-list')?.classList?.toggle('actions-locked', Boolean(snapshot.pending || archived));
     renderComposing(snapshot, room);
+    renderLongWaitThinking(snapshot, room);
     renderListenerQuiet(snapshot, room);
     $('#room-history').hidden = !view.hasOlder;
     shownId = room.sessionId;
@@ -505,6 +626,7 @@ export function createConversationView({ controller, store, apiClient, chatContr
   }
   function openPicker(mode, options = {}) {
     pickerMode = mode;
+    preferredHostId = mode === 'create' && options.hostId ? String(options.hostId) : null;
     listenAfterCreate = mode === 'create' && options.listenAfterCreate === true;
     const snapshot = controller.snapshot();
     $('#room-picker-title').textContent = mode === 'create' ? '创建聊天' : '邀请伙伴';
@@ -514,20 +636,29 @@ export function createConversationView({ controller, store, apiClient, chatContr
     $('#room-name').value = mode === 'create' ? String(options.title || '') : '';
     $('#room-name').parentElement.hidden = mode !== 'create';
     $('#room-name').required = mode === 'create';
+    if ($('#room-mode-field')) $('#room-mode-field').hidden = mode !== 'create';
     $('#room-picker-error').textContent = '';
     const people = store.getState().virtualPersons.filter(person => !person.archivedAt && person.status !== 'archived'
       && (mode === 'create' || !snapshot.room.memberIds.includes(person.id)));
     const selectedIds = new Set(options.memberIds || (mode === 'create' ? ['lunara'] : []));
     $('#room-person-choices').innerHTML = people.map(person => `<label class="person-choice">${avatar([person.id])}<span>${esc(name(person))}</span><input type="checkbox" name="person" value="${esc(person.id)}" ${selectedIds.has(person.id) ? 'checked' : ''} /></label>`).join('') || '<p>所有伙伴都在这个聊天里了。</p>';
+    const modeSelect = $('#room-mode-select');
+    if (modeSelect) {
+      const isGroup = selectedIds.size > 1;
+      modeSelect.value = !isGroup && options.interactionMode === 'roleplay' ? 'roleplay' : 'radio';
+      const rpOption = modeSelect.querySelector?.('option[value="roleplay"]');
+      if (rpOption) rpOption.disabled = isGroup;
+    }
     $('#room-picker').showModal();
   }
 
   function openCreateRoomForPerson(person, { listenAfterCreate: shouldListen = false } = {}) {
     const candidate = (store.getState().virtualPersons || []).find(item => item.id === person?.id && !item.archivedAt && item.status !== 'archived');
     if (!candidate) throw new Error('找不到这位可用的伙伴，请刷新人物列表后重试。');
-    const memberIds = [...new Set(['lunara', candidate.id])];
+    const memberIds = [candidate.id];
     openPicker('create', {
       memberIds,
+      hostId: candidate.id,
       title: `和 ${name(candidate)} 的聊天`,
       listenAfterCreate: shouldListen,
     });
@@ -585,10 +716,78 @@ export function createConversationView({ controller, store, apiClient, chatContr
     const { room } = controller.snapshot();
     $('#room-rename').value = controller.roomName(room);
     $('#room-options-after').disabled = Boolean(room.archivedAt);
+    const modeSelect = $('#room-options-mode');
+    if (modeSelect) {
+      const isGroup = (room.memberIds?.length || 0) > 1;
+      modeSelect.value = !isGroup && room.interactionMode === 'roleplay' ? 'roleplay' : 'radio';
+      const rpOption = modeSelect.querySelector?.('option[value="roleplay"]');
+      if (rpOption) rpOption.disabled = isGroup;
+    }
     void refreshRoomModelOptions(room.sessionId);
     $('#room-member-settings').innerHTML = room.memberIds.map(id => `<div class="member-setting"><span>${esc(name(controller.person(id)))}</span><button class="quiet-button" data-host="${esc(id)}" ${id === room.activeVirtualPersonId ? 'disabled' : ''}>${id === room.activeVirtualPersonId ? '当前伙伴' : '设为当前伙伴'}</button><button class="quiet-button" data-remove="${esc(id)}" ${room.memberIds.length === 1 ? 'disabled' : ''}>移出</button></div>`).join('');
     $('#room-options').showModal();
   }
+  const DEFAULT_CONSENT_FALLBACK = Object.freeze({ freeVoicesEnabled: true, consentAt: '1970-01-01T00:00:00.000Z' });
+
+  function captureProfileBaseline(person) {
+    const presence = person?.metadata?.presence || {};
+    const temperament = ['quiet', 'balanced', 'lively'].includes(presence.temperament) ? presence.temperament : 'balanced';
+    return {
+      displayName: person?.displayName || '',
+      personaDocument: person?.personaDocument || '',
+      voiceProfileId: person?.voiceProfileId || '',
+      temperament,
+      style: presence.style || '',
+    };
+  }
+
+  function hasUnsavedProfileDraft() {
+    if (!personDetailId || !profileBaseline) return false;
+    if (profileEditGated() && !$('#person-profile-form')?.classList?.contains?.('is-editing')) return false;
+    const currentName = $('#person-detail-name-input')?.value ?? '';
+    const currentPersona = $('#person-detail-persona-input')?.value ?? '';
+    const currentVoice = $('#person-detail-voice-select')?.value || profileBaseline.voiceProfileId;
+    const currentTemperament = $('#person-detail-presence-select')?.value || 'balanced';
+    const currentStyle = $('#person-detail-presence-style')?.value ?? '';
+    return currentName !== profileBaseline.displayName
+      || currentPersona !== profileBaseline.personaDocument
+      || (personDetailVoiceTouched && currentVoice !== profileBaseline.voiceProfileId)
+      || currentTemperament !== profileBaseline.temperament
+      || currentStyle !== profileBaseline.style;
+  }
+
+  function requestClosePersonDetail() {
+    const currentNow = now();
+    if (hasUnsavedProfileDraft() && (!profileDiscardArm || currentNow > profileDiscardArm)) {
+      profileDiscardArm = currentNow + 4000;
+      const saveMessage = $('#person-detail-save-msg');
+      if (saveMessage) saveMessage.textContent = '还有未保存的人设修改；再点一次返回或再按一次 Esc 将放弃改动。';
+      return false;
+    }
+    profileDiscardArm = null;
+    $('#person-detail')?.close?.();
+    return true;
+  }
+
+  function updatePersonVoiceHint(voiceId) {
+    const voiceHint = $('#person-detail-voice-hint');
+    if (!voiceHint) return;
+    const current = personDetailVoices.find(voice => voice.id === voiceId);
+    if (!current) {
+      voiceHint.textContent = personDetailVoices.length ? '当前声音暂不可用；不换声音可直接保存名字与人设。' : '';
+      return;
+    }
+    if (current.unavailable || !isUsableVoice(current, personDetailVoiceFallback)) {
+      voiceHint.textContent = current.sourceProvider === 'free-edge'
+        ? '请在「设置 → 声音」启用免费声音；确认朗读文字会发送给微软后，才能使用这把声音。'
+        : '所选声音当前不可用，请检查声音设置或重新选择。';
+    } else if (current.isFallback) {
+      voiceHint.textContent = '当前音色已变化（所选声音来源不可用，正在用另一把声音）';
+    } else {
+      voiceHint.textContent = '';
+    }
+  }
+
   /** 把当前伙伴的字段直接填入面板——不再需要"先点编辑"才能看到可编辑值。 */
   function renderProfileFields(person) {
     const nameInput = $('#person-detail-name-input');
@@ -602,22 +801,34 @@ export function createConversationView({ controller, store, apiClient, chatContr
     const presenceStyle = $('#person-detail-presence-style');
     if (presenceSelect) presenceSelect.value = ['quiet', 'balanced', 'lively'].includes(presence.temperament) ? presence.temperament : 'balanced';
     if (presenceStyle) presenceStyle.value = presence.style || '';
+    personDetailVoices = [];
+    personDetailVoiceFallback = DEFAULT_CONSENT_FALLBACK;
+    personDetailVoiceTouched = false;
+    profileDiscardArm = null;
+    profileBaseline = captureProfileBaseline(person);
     setProfileEditing(!profileEditGated());
     renderVoiceOptions(
       [{ id: person.voiceProfileId, displayName: person.voiceProfileId }],
       person.voiceProfileId,
+      personDetailVoiceFallback,
     );
     if (voiceHint) voiceHint.textContent = '';
     // 声音列表是异步的；失败不影响名字与人格的编辑。
-    apiClient.get('/api/station/voices').then(result => {
+    Promise.all([
+      apiClient.get('/api/station/voices'),
+      Promise.resolve(apiClient.get?.('/api/tts/custom')).catch(() => null),
+    ]).then(([result, custom]) => {
       if (personDetailId !== person.id) return;
-      const voices = Array.isArray(result?.voices) ? result.voices : [];
-      if (voices.length) renderVoiceOptions(voices, person.voiceProfileId);
-      // 这个人当前配的声音若正回落，必须如实说明原因，而不是只显示一个原生声音的名字。
-      const current = voices.find(voice => voice.id === person.voiceProfileId);
-      if (voiceHint && current?.isFallback) {
-        voiceHint.textContent = '当前音色已变化（所选声音来源不可用，正在用另一把声音）';
-      }
+      const voices = normalizeVoiceProfiles(Array.isArray(result?.voices) ? result.voices : []);
+      personDetailVoices = voices;
+      personDetailVoiceFallback = custom && typeof custom === 'object' && 'config' in custom
+        ? (custom.config?.fallback ?? null)
+        : DEFAULT_CONSENT_FALLBACK;
+      const activeVoiceId = personDetailVoiceTouched
+        ? ($('#person-detail-voice-select')?.value || person.voiceProfileId)
+        : person.voiceProfileId;
+      if (voices.length) renderVoiceOptions(voices, activeVoiceId, personDetailVoiceFallback);
+      updatePersonVoiceHint(activeVoiceId);
     }).catch(error => {
       if (personDetailId !== person.id || !voiceHint) return;
       voiceHint.textContent = `列表未加载（${error.message}）`;
@@ -640,13 +851,25 @@ export function createConversationView({ controller, store, apiClient, chatContr
     }
   }
 
-  function renderVoiceOptions(voices, selectedId) {
+  function renderVoiceOptions(voices, selectedId, fallback = DEFAULT_CONSENT_FALLBACK) {
     const select = $('#person-detail-voice-select');
     if (!select) return;
-    select.innerHTML = voices.map(voice => {
-      const label = `${voice.displayName || voice.id}${voice.unavailable ? '（不可用）' : voice.isFallback ? '（音色已变化）' : ''}`;
-      return `<option value="${esc(voice.id)}"${voice.id === selectedId ? ' selected' : ''}>${esc(label)}</option>`;
-    }).join('') || '<option value="">（当前声音不在可选列表中）</option>';
+    const normalized = normalizeVoiceProfiles(voices);
+    const hasSelected = Boolean(selectedId && normalized.some(voice => voice.id === selectedId));
+    const missingOption = selectedId && !hasSelected
+      ? `<option value="${esc(selectedId)}" selected>当前声音（暂不可用）</option>`
+      : '';
+    const optionsHtml = normalized.map(voice => {
+      const isEdge = voice.sourceProvider === 'free-edge';
+      const usable = isUsableVoice(voice, fallback);
+      const statusSuffix = voice.unavailable || !usable
+        ? (isEdge ? '（未启用）' : '（不可用）')
+        : voice.isFallback ? '（音色已变化）' : '';
+      const label = `${voice.displayName || voice.id}${isEdge ? ' · 免费声音（Edge）' : ''}${statusSuffix}`;
+      const disabled = !usable && voice.id !== selectedId;
+      return `<option value="${esc(voice.id)}"${disabled ? ' disabled' : ''}${voice.id === selectedId ? ' selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+    select.innerHTML = (missingOption + optionsHtml) || '<option value="">（当前声音不在可选列表中）</option>';
   }
 
   /** 就地面板内保存：不再弹出第二层对话框。 */
@@ -660,20 +883,39 @@ export function createConversationView({ controller, store, apiClient, chatContr
       if (message) message.textContent = '请填写名字。';
       return;
     }
+    const chosenVoiceId = $('#person-detail-voice-select')?.value || person.voiceProfileId;
+    if (chosenVoiceId !== person.voiceProfileId && personDetailVoices.length) {
+      const chosenVoice = personDetailVoices.find(voice => voice.id === chosenVoiceId);
+      if (chosenVoice && !isUsableVoice(chosenVoice, personDetailVoiceFallback)) {
+        if (message) message.textContent = '所选声音当前不可用，请先启用或改选其他可用声音。';
+        return;
+      }
+    }
     if (button) { button.disabled = true; button.textContent = '保存中…'; }
     try {
       const presenceSelect = $('#person-detail-presence-select');
+      const nextPresence = presenceSelect
+        ? { temperament: presenceSelect.value || 'balanced', style: String($('#person-detail-presence-style')?.value ?? '').trim() }
+        : undefined;
       const result = await apiClient.patch(`/api/virtual-persons/${encodeURIComponent(person.id)}`, {
         displayName,
         personaDocument: $('#person-detail-persona-input')?.value ?? '',
-        voiceProfileId: $('#person-detail-voice-select')?.value || person.voiceProfileId,
-        ...(presenceSelect ? { presence: { temperament: presenceSelect.value || 'balanced',
-          style: String($('#person-detail-presence-style')?.value ?? '').trim() } } : {}),
+        voiceProfileId: chosenVoiceId,
+        ...(nextPresence ? { presence: nextPresence } : {}),
       });
       if (result?.ok === false) throw new Error(result.error || '保存失败');
       if (result?.person) applyPersonUpdate(result.person);
       // 标题也要跟着改：只更新列表而留旧标题，用户会以为没保存成功。
-      const saved = result?.person || { ...person, displayName, personaDocument: $('#person-detail-persona-input')?.value ?? '', voiceProfileId: $('#person-detail-voice-select')?.value || person.voiceProfileId };
+      const saved = result?.person || {
+        ...person,
+        displayName,
+        personaDocument: $('#person-detail-persona-input')?.value ?? '',
+        voiceProfileId: chosenVoiceId,
+        metadata: { ...(person.metadata || {}), ...(nextPresence ? { presence: nextPresence } : {}) },
+      };
+      profileBaseline = captureProfileBaseline(saved);
+      personDetailVoiceTouched = false;
+      profileDiscardArm = null;
       const title = $('#person-detail-name');
       if (title) title.textContent = name(saved);
       if (message) message.textContent = '已保存';
@@ -713,6 +955,7 @@ export function createConversationView({ controller, store, apiClient, chatContr
     personDetailId = id;
     const person = controller.person(id);
     if (!person) return;
+    options.onPersonOpen?.(id);
     const runtime = store.getState().runtimeState;
     const track = runtime?.queue?.[runtime.currentIndex];
     $('#person-detail-name').textContent = name(person);
@@ -744,6 +987,11 @@ export function createConversationView({ controller, store, apiClient, chatContr
     // 根陪伴者可以编辑但不可删除。
     const deleteButton = $('#person-detail-delete');
     if (deleteButton) deleteButton.hidden = id === ROOT_VIRTUAL_PERSON_ID;
+    await loadPersonMemories(id);
+  }
+
+  async function loadPersonMemories(id) {
+    if (!id) return;
     try {
       const result = await apiClient.get(`/api/memory/person/${encodeURIComponent(id)}`);
       if (result?.ok === false) throw new Error('memory unavailable');
@@ -978,12 +1226,17 @@ export function createConversationView({ controller, store, apiClient, chatContr
     on('#radiohost-cast-new', 'click', () => { $('#create-launcher')?.close?.(); collapseSidebar(); });
     // 窄轨上的「登录」入口现在指向统一的音乐源浮窗：账号行只在浮窗里出现，
     // 直接聚焦隐藏的 .sb-account-btn 会静默失败。
-    on('#nav-account', 'click', () => {
+    on('#nav-account', 'click', event => {
       if (sidebarPresentation?.navigate('account') === false) return;
       setNavigationMode('rooms');
       $('.conversation-sidebar')?.classList?.add?.('expanded');
-      (documentLike.querySelector('#source-menu-open')
-        || documentLike.querySelector('.sb-account-btn'))?.focus?.();
+      const sourceOpen = documentLike.querySelector('#source-menu-open');
+      const sourceMenu = documentLike.querySelector('#source-menu');
+      (sourceOpen || documentLike.querySelector('.sb-account-btn'))?.focus?.();
+      if (sourceOpen && sourceMenu?.hidden) {
+        event?.stopPropagation?.();
+        sourceOpen.click?.();
+      }
     });
     on('#room-list', 'click', event => {
       const groupToggle = event.target.closest?.('[data-group-toggle]');
@@ -1026,7 +1279,14 @@ export function createConversationView({ controller, store, apiClient, chatContr
       if (event.target?.closest?.('#room-row-menu') || event.target?.closest?.('[data-room-more]')) return;
       closeRoomMenu();
     });
-    on(documentLike, 'keydown', event => { if (event.key === 'Escape') closeRoomMenu(true); });
+    on(documentLike, 'keydown', event => {
+      if (event.key !== 'Escape') return;
+      const menu = $('#room-row-menu');
+      if (!menu || menu.hidden) return;
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+      closeRoomMenu(true);
+    });
     on('#sb-undo-toast-undo', 'click', () => {
       const sid = undoSid;
       if (sid) return restoreRoomFromRow(sid);
@@ -1073,7 +1333,9 @@ export function createConversationView({ controller, store, apiClient, chatContr
     }));
     on('#sidebar-close', 'click', closeSidebar);
     on(documentLike, 'keydown', event => {
-      if (event.key === 'Escape' && documentLike.body.classList.contains('rooms-open')) {
+      if (event.key === 'Escape' && !event.defaultPrevented && documentLike.body.classList.contains('rooms-open')) {
+        event.preventDefault?.();
+        event.stopImmediatePropagation?.();
         documentLike.body.classList.remove('rooms-open'); syncSidebar(); $('#room-menu').focus();
       }
     });
@@ -1103,8 +1365,15 @@ export function createConversationView({ controller, store, apiClient, chatContr
       $('#room-picker').setAttribute?.('aria-busy', 'true');
       try {
         rememberView();
-        if (pickerMode === 'create') await controller.create({ title: title.title, memberIds: ids });
-        else for (const id of ids) await controller.member(id);
+        if (pickerMode === 'create') {
+          const modeSelect = $('#room-mode-select');
+          const interactionMode = ids.length === 1 && modeSelect?.value === 'roleplay' ? 'roleplay' : 'radio';
+          const hostId = preferredHostId && ids.includes(preferredHostId) ? preferredHostId : ids[0];
+          await controller.create({ title: title.title, memberIds: ids, hostId, interactionMode });
+          preferredHostId = null;
+        } else {
+          for (const id of ids) await controller.member(id);
+        }
         const shouldListen = listenAfterCreate;
         listenAfterCreate = false;
         $('#room-picker').close();
@@ -1119,7 +1388,28 @@ export function createConversationView({ controller, store, apiClient, chatContr
         $('#room-picker-submit').disabled = false;
       }
     });
+    on('#room-person-choices', 'change', () => {
+      const modeSelect = $('#room-mode-select');
+      if (!modeSelect || pickerMode !== 'create') return;
+      const checkedCount = [...$('#room-person-choices').querySelectorAll('input:checked')].length;
+      const isGroup = checkedCount > 1;
+      const rpOption = modeSelect.querySelector?.('option[value="roleplay"]');
+      if (rpOption) rpOption.disabled = isGroup;
+      if (isGroup && modeSelect.value === 'roleplay') modeSelect.value = 'radio';
+    });
     on('#room-rename-save', 'click', async () => { await controller.update({ title: $('#room-rename').value }); $('#room-options').close(); });
+    on('#room-options-mode', 'change', async event => {
+      const { room } = controller.snapshot();
+      if (!room) return;
+      const interactionMode = (room.memberIds?.length || 0) === 1 && event.target?.value === 'roleplay' ? 'roleplay' : 'radio';
+      await controller.update({ interactionMode });
+    });
+    on('#interaction-mode-select', 'change', async event => {
+      const { room } = controller.snapshot();
+      if (!room) return;
+      const interactionMode = (room.memberIds?.length || 0) === 1 && event.target?.value === 'roleplay' ? 'roleplay' : 'radio';
+      await controller.update({ interactionMode });
+    });
     on('#room-archive', 'click', async () => { await controller.update({ archived: true }); $('#room-options').close(); });
     on('#room-model-select', 'change', async event => {
       const { room } = controller.snapshot();
@@ -1169,16 +1459,41 @@ export function createConversationView({ controller, store, apiClient, chatContr
     // profile 字段在面板内直接可编辑，没有中间弹层。
     on('#person-profile-form', 'submit', event => { event.preventDefault(); return saveProfile(); });
     on('#person-detail-listen', 'click', () => previewPersonVoice());
-    // 「取消编辑」把字段恢复成已保存的值；换声音会直接进入编辑，好让「保存修改」出现。
+    // 「取消编辑」把字段恢复成已保存的值；若有未保存改动则需二次点击确认，换声音会直接进入编辑。
+    for (const id of ['#person-detail-name-input', '#person-detail-persona-input', '#person-detail-presence-style']) {
+      on(id, 'input', () => { profileDiscardArm = null; });
+    }
     on('#person-detail-edit', 'click', () => {
       const person = controller.person(personDetailId);
-      if ($('#person-profile-form')?.classList?.contains?.('is-editing')) { if (person) renderProfileFields(person); }
-      else setProfileEditing(true);
+      if ($('#person-profile-form')?.classList?.contains?.('is-editing')) {
+        const currentNow = now();
+        if (hasUnsavedProfileDraft() && (!profileDiscardArm || currentNow > profileDiscardArm)) {
+          profileDiscardArm = currentNow + 4000;
+          const saveMessage = $('#person-detail-save-msg');
+          if (saveMessage) saveMessage.textContent = '还有未保存的人设修改；再点一次「取消编辑」将放弃改动。';
+          return;
+        }
+        profileDiscardArm = null;
+        const saveMessage = $('#person-detail-save-msg');
+        if (saveMessage) saveMessage.textContent = '';
+        if (person) renderProfileFields(person);
+      } else {
+        setProfileEditing(true);
+      }
     });
-    for (const id of ['#person-detail-voice-select', '#person-detail-presence-select']) on(id, 'change', () => { if (profileEditGated()) setProfileEditing(true); });
+    on('#person-detail-voice-select', 'change', event => {
+      personDetailVoiceTouched = true;
+      profileDiscardArm = null;
+      updatePersonVoiceHint(event.target?.value || '');
+      if (profileEditGated()) setProfileEditing(true);
+    });
+    on('#person-detail-presence-select', 'change', () => {
+      profileDiscardArm = null;
+      if (profileEditGated()) setProfileEditing(true);
+    });
     on('#person-detail-chat', 'click', () => {
       const person = controller.person(personDetailId);
-      $('#person-detail')?.close?.();
+      if (!requestClosePersonDetail()) return;
       if (!person) return;
       const room = controller.snapshot().rooms.find(room => !room.archivedAt && room.memberIds.length === 1 && room.memberIds.includes(person.id));
       return room ? browse(room.sessionId) : openCreateRoomForPerson(person);
@@ -1187,6 +1502,7 @@ export function createConversationView({ controller, store, apiClient, chatContr
       // close 事件是异步派发的：同一拍里 close() 后又 show()（如在人物页再点「人物」）时，
       // 这个事件到达时对话框已经重新打开，不能再拿掉 person-page，否则人物页会叠在聊天上。
       if ($('#person-detail')?.open) return;
+      profileDiscardArm = null;
       $('#app')?.classList?.remove('person-page');
       if (!documentLike.activeElement || documentLike.activeElement === documentLike.body || $('#person-detail')?.contains?.(documentLike.activeElement)) {
         const target = [personReturnFocus, $('#compose-input'), $('#focus-mode-enter'), $('#mobile-pane-chat'), $('#nav-people')]
@@ -1194,8 +1510,9 @@ export function createConversationView({ controller, store, apiClient, chatContr
         target?.focus?.();
       }
     });
+    on('#person-detail-back', 'click', () => requestClosePersonDetail());
     on('#person-detail', 'keydown', event => {
-      if (event.key === 'Escape' && !$('#person-delete-confirm')?.open) { event.preventDefault(); $('#person-detail')?.close?.(); }
+      if (event.key === 'Escape' && !$('#person-delete-confirm')?.open) { event.preventDefault(); requestClosePersonDetail(); }
     });
     on('#person-detail-delete', 'click', () => openDeletePerson());
     on('#person-delete-confirm-button', 'click', () => confirmDeletePerson());
@@ -1216,29 +1533,86 @@ export function createConversationView({ controller, store, apiClient, chatContr
       if (sessionId) return browse(sessionId);
     });
     on('#room-options-after', 'click', async () => { await listen('after_current'); $('#room-options').close(); });
-    on('#player-artwork', 'click', () => $('#focus-mode-enter')?.click?.());
+    on('#listening-cover-open', 'click', () => $('#focus-mode-enter')?.click?.());
+    on('#player-artwork', 'click', () => ($('#app')?.classList?.contains?.('focus-mode')
+      ? $('#focus-mode-chat')?.click?.()
+      : $('#focus-mode-enter')?.click?.()));
     on('#player-person', 'click', () => { const runtime = store.getState().runtimeState;
       const personId = runtime?.queue?.[runtime.currentIndex]?.virtualPersonId || runtime?.listeningPlan?.curatorId;
       return personId ? openPerson(personId) : undefined; });
     on('#player-source', 'click', () => browse(store.getState().runtimeState?.activeListeningSessionId));
     on('#player-switch-cancel', 'click', () => playbackRuntimeClient.cancelListeningSwitch());
-    on('#person-detail-memories', 'click', async event => {
-      if (event.target.closest('[data-person-memory-retry]')) return openPerson(personDetailId);
-      const button = event.target.closest('[data-forget-memory], [data-correct-memory]'); if (!button) return;
-      const row = button.closest('[data-memory]'); button.disabled = true;
-      try { await apiClient.post(`/api/memory/records/${row.dataset.memory}`, { forget: button.hasAttribute('data-forget-memory'), content: row.querySelector('textarea').value }); await openPerson(personDetailId); }
-      finally { button.disabled = false; }
+    on('#sb-queue', 'click', event => {
+      const button = event.target?.closest?.('[data-queue-jump]');
+      const queueItemId = button?.dataset?.queueItemId;
+      if (queueItemId) void playbackRuntimeClient.selectQueueItem?.(queueItemId);
     });
-    documentLike.querySelectorAll('[data-close-dialog]').forEach(button => on(button, 'click', () => button.closest('dialog').close()));
+    on('#person-detail-memories', 'click', async event => {
+      if (event.target.closest('[data-person-memory-retry]')) return loadPersonMemories(personDetailId);
+      const button = event.target.closest('[data-forget-memory], [data-correct-memory]'); if (!button) return;
+      const isForget = button.hasAttribute('data-forget-memory');
+      if (isForget) {
+        const armedUntil = Number(button.dataset?.confirmUntil || 0);
+        if (Date.now() >= armedUntil) {
+          if (button.dataset) button.dataset.confirmUntil = String(Date.now() + 4000);
+          button.textContent = '再点一次确认忘记';
+          return;
+        }
+        if (button.dataset) delete button.dataset.confirmUntil;
+      }
+      const row = button.closest('[data-memory]'); button.disabled = true;
+      try {
+        const result = await apiClient.post(`/api/memory/records/${row.dataset.memory}`, {
+          forget: isForget,
+          content: row.querySelector('textarea').value,
+        });
+        if (result?.ok === false) throw new Error(result.error || '记忆修改未完成');
+        await loadPersonMemories(personDetailId);
+      } catch (error) {
+        onError(error);
+      } finally { button.disabled = false; }
+    });
+    documentLike.querySelectorAll('[data-close-dialog]').forEach(button => on(button, 'click', () => {
+      const dialog = button.closest('dialog');
+      if (dialog?.id === 'person-detail') return requestClosePersonDetail();
+      dialog?.close?.();
+    }));
     cleanups.push(controller.subscribe(render));
     cleanups.push(() => clearTimeout(undoTimer));
+    cleanups.push(() => { clearLongWaitTimers(); resetLongWaitThinking(); });
+    destroyed = false;
+    cleanups.push(() => { destroyed = true; loadingTranscripts.clear(); });
     cleanups.push(store.subscribe((next, previous) => {
-      if (next.runtimeState !== previous.runtimeState) { renderPlayer(); renderMoment(); }
+      if (next.runtimeState !== previous.runtimeState) {
+        const activeSid = next.runtimeState?.activeListeningSessionId;
+        const activeState = activeSid ? controller.stateFor?.(activeSid) : null;
+        if (activeSid && activeState && !activeState.loaded && !loadingTranscripts.has(activeSid)
+          && typeof controller.loadTranscript === 'function') {
+          const pendingLoad = controller.loadTranscript(activeSid);
+          if (pendingLoad?.then) {
+            loadingTranscripts.add(activeSid);
+            void pendingLoad.then(() => {
+              loadingTranscripts.delete(activeSid);
+              if (!destroyed && store.getState().runtimeState?.activeListeningSessionId === activeSid) {
+                renderPlayer();
+                renderMoment();
+              }
+            }).catch(error => {
+              loadingTranscripts.delete(activeSid);
+              if (!destroyed) onError(error);
+            });
+          }
+        }
+        renderPlayer();
+        renderMoment();
+      }
       if (next.virtualPersons !== previous.virtualPersons) render();
     }));
     return api;
   }
   const api = { init, render, browse, openPerson, openCreateRoomForPerson, rememberView,
+    openToday: () => setNavigationMode('today'),
+    openChat: () => setNavigationMode('rooms'),
     openSettings: () => toggleNavigation('settings'),
     // 离开设置页 = 回到聊天：只换主内容区，不顺手展开侧栏（关闭要能原样还原）。
     closeSettings: () => setNavigationMode('rooms'),

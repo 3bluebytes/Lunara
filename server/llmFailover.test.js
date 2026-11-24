@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createFailoverChat, isEligibleFailoverError } from './llmFailover.js';
+import { resolveTaskSpec } from './llmTasks.js';
 import {
   saveModelProvider, setActiveModel, saveModelFailoverPolicy,
   getModelFailoverPolicy, resolveModelFailoverTargets,
@@ -483,4 +484,17 @@ test('failover:false 或显式端点：同端点也不重试，只发一次', as
   await assert.rejects(pinned.failover([{ role: 'user', content: 'hi' }], null, { timeoutMs: 1000, endpoint: fallbackA }),
     { status: 503 });
   assert.equal(pinned.calls.length, 1);
+});
+
+test('一起听的主动发言：三个模型各有 12 秒，不再被 20 秒均分成 6.7 秒、卡在真实延迟边上', async () => {
+  const spec = resolveTaskSpec('ambient_turn');
+  const extra = { resolveTimeout: () => spec.timeoutMs, resolveAttemptTimeout: () => spec.attemptTimeoutMs };
+  const chain = makeFailover({ responders: [() => { throw timeoutError(); }, () => { throw timeoutError(); }, () => result()],
+    fallbacks: [fallbackA, fallbackB], extra });
+  await chain.failover([{ role: 'user', content: 'hi' }], null, {});
+  assert.deepEqual(chain.calls.map(call => call.options.timeoutMs), [12_000, 12_000, 12_000]);
+  // 没有备用模型时也不让一次请求吃满整段截止。
+  const single = makeFailover({ responders: [() => result()], extra });
+  await single.failover([{ role: 'user', content: 'hi' }], null, {});
+  assert.equal(single.calls[0].options.timeoutMs, 12_000);
 });

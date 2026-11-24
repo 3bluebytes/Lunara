@@ -148,3 +148,54 @@ test('a hung chat_dialogue attempt is cut by its cap, retried on the same endpoi
   assert.equal(attempts[0].outcome, 'timeout');
   assert.equal(attempts.at(-1).outcome, 'ok');
 });
+
+test('初始主备路由共享一次配置读取；切源前仍重读最新凭据与授权', async t => {
+  const { saveModelProvider, setActiveModel, saveModelFailoverPolicy,
+    resolveModelEndpoint, resolveModelFailoverTargets } = await import('./llmProviders.js');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const previous = process.env.LUNARA_CONFIG_DIR;
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-routing-dedup-'));
+  process.env.LUNARA_CONFIG_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.LUNARA_CONFIG_DIR;
+    else process.env.LUNARA_CONFIG_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const pA = await saveModelProvider({ name: 'a', baseUrl: a.baseUrl, apiKey: 'key-a', models: ['a'] });
+  const pB = await saveModelProvider({ name: 'b', baseUrl: b.baseUrl, apiKey: 'key-old', models: ['b'] });
+  await setActiveModel({ providerId: pA.id, model: 'a' });
+  await saveModelFailoverPolicy({ enabled: true, allowCrossProvider: true,
+    targets: [{ providerId: pB.id, model: 'b' }] });
+
+  // 初始配对共享 _routingCache：即使之后硬盘策略关闭，带同一 _routingCache 仍沿用同一份初始文档，
+  // 证明没有重复读盘。
+  const routingCache = {};
+  const primary = await resolveModelEndpoint({ _routingCache: routingCache });
+  await saveModelFailoverPolicy({ enabled: false, allowCrossProvider: false, targets: [] });
+  const cachedTargets = await resolveModelFailoverTargets(primary, { _routingCache: routingCache });
+  assert.equal(cachedTargets.length, 1);
+  assert.equal(cachedTargets[0].apiKey, 'key-old');
+
+  // 恢复启用并在主请求失败时更新备用凭据：默认 createLlm 切源时必须重读最新 key。
+  await saveModelFailoverPolicy({ enabled: true, allowCrossProvider: true,
+    targets: [{ providerId: pB.id, model: 'b' }] });
+  const authHeaders = [];
+  const llm = createLlm({
+    fetchImpl: async (url, init) => {
+      authHeaders.push({ url, auth: init.headers.Authorization });
+      if (url.includes('a.invalid')) {
+        await saveModelProvider({ id: pB.id, name: 'b', baseUrl: b.baseUrl, apiKey: 'key-fresh', models: ['b'] });
+        return new Response('unavailable', { status: 503 });
+      }
+      return ok();
+    },
+  });
+  const res = await llm.chat(input, null, { timeoutMs: 2000 });
+  assert.equal(res.message.content, 'ok');
+  assert.deepEqual(authHeaders, [
+    { url: 'http://a.invalid/chat/completions', auth: 'Bearer key-a' },
+    { url: 'http://b.invalid/chat/completions', auth: 'Bearer key-fresh' },
+  ]);
+});

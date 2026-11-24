@@ -1,0 +1,67 @@
+name: Bug 反馈
+description: 报告程序崩溃、无法播放、界面异常或与预期不符的问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题！发帖前请**务必先检查**没有包含任何 API Key、QQ/网易云 Cookie、`.env` 或 `~/.lunara/sessions/` 里的私人对话记录。
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: 启动 / 安装方式
+      options:
+        - macOS 桌面安装包 (.dmg)
+        - Windows 桌面安装包 (.exe)
+        - 从源码运行 (npm start)
+        - 从源码运行 (npm run start:web / CLI)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本号或 Commit
+      description: 例如 v0.1.0 或 git commit 哈希
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与架构
+      description: 例如 macOS 15.1 (Apple Silicon M2) / Windows 11 x64
+      placeholder: "macOS 15 (arm64)"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简洁说明发生了什么，以及你原本预期的结果。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开应用到触发问题的关键操作步骤。
+      value: |
+        1. 打开 Lunara 并进入「...」
+        2. 点击 / 发送「...」
+        3. 观察到「...」
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏后的错误提示或日志（可选）
+      description: 若是播放/音乐源问题，建议附上脱敏后的 `requestId` / `programId` / 控制台报错；源码用户也可以附上 `npm run doctor` 的输出（不含 Key）。
+      render: text
+  - type: checkboxes
+    id: privacy_check
+    attributes:
+      label: 隐私与脱敏自检
+      options:
+        - label: 我已确认以上内容及截图不包含任何 API Key、音乐账号 Cookie、`.env` 或私人会话跟踪记录
+          required: true

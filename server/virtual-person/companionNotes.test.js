@@ -129,7 +129,7 @@ test('deleting a chat deletes its notes in the same transaction', () => {
   } finally { h.close(); }
 });
 
-test('ambient view hides sensitive, over-raised, recently raised and not-yet-due notes', () => {
+test('ambient view hides over-raised, recently raised and not-yet-due notes; sensitive ones stay (labelled in the prompt)', () => {
   const h = fixture();
   try {
     const base = { personId: 'lunara', sessionId: 'chat-a', origin: 'reflection' };
@@ -142,10 +142,10 @@ test('ambient view hides sensitive, over-raised, recently raised and not-yet-due
     h.notes.markRaised({ personId: 'lunara', sessionId: 'chat-a', noteIds: ['note:raised'] });
     const ids = scope => h.notes.listVisible({ personId: 'lunara', sessionId: 'chat-a', ...scope }).map(note => note.noteId).sort();
     assert.deepEqual(ids({}), ['note:later', 'note:next', 'note:raised', 'note:sensitive', 'note:track']);
-    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q1', wake: { reason: 'heartbeat' } }), []);
-    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q2', wake: { reason: 'session_open' } }), ['note:next', 'note:track']);
+    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q1', wake: { reason: 'heartbeat' } }), ['note:sensitive']);
+    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q2', wake: { reason: 'session_open' } }), ['note:next', 'note:sensitive', 'note:track']);
     h.advance(NOTE_LIMITS.raiseGapMs);
-    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q1', wake: { reason: 'heartbeat' } }), ['note:later', 'note:raised']);
+    assert.deepEqual(ids({ mode: 'ambient', currentQueueItemId: 'q1', wake: { reason: 'heartbeat' } }), ['note:later', 'note:raised', 'note:sensitive']);
     h.notes.markRaised({ personId: 'lunara', sessionId: 'chat-a', noteIds: ['note:raised'] });
     h.advance(NOTE_LIMITS.raiseGapMs);
     assert.equal(ids({ mode: 'ambient', currentQueueItemId: 'q1', wake: { reason: 'heartbeat' } }).includes('note:raised'), false);
@@ -171,6 +171,26 @@ test('a staged batch applies creates, consumption, settles and raises', () => {
     assert.equal(h.notes.settle({ personId: 'lunara', sessionId: 'chat-a', noteId: old.noteId, status: 'resolved' }), true);
     assert.equal(h.notes.settle({ personId: 'lunara', sessionId: 'chat-a', noteId: old.noteId, status: 'resolved' }), false);
     assert.equal(h.notes.settle({ personId: 'xiaoman', sessionId: 'chat-a', noteId: 'note:new', status: 'dropped' }), false);
+  } finally { h.close(); }
+});
+
+test('acceptOpenLoop stores lifeWriteKey and onSettled fires once only when open_loop transitions', () => {
+  const h = fixture();
+  const settled = [];
+  h.notes.setOnSettled(note => settled.push({ noteId: note.noteId, status: note.status, lifeWriteKey: note.policy?.lifeWriteKey }));
+  try {
+    const { turn } = h.store.beginRequest({ sessionId: 'chat-a', virtualPersonId: 'lunara', userText: '明天去出差' });
+    assert.equal(h.notes.acceptOpenLoop({ personId: 'lunara', sessionId: 'chat-a', batchTag: 'b-life', index: 2,
+      text: '对方明天去出差', sourceTurnIds: [turn.turnId], policy: { disclosure: 'normal' } }), true);
+    const loopId = noteIdOf('reflection', 'b-life', 2);
+    assert.equal(h.notes.get(loopId).policy.lifeWriteKey, 'b-life:life:2');
+    h.thought('chat-a', '只是想法');
+    const thoughtId = noteIdOf('ambient', 'chat-a:只是想法');
+    assert.equal(h.notes.settle({ personId: 'lunara', sessionId: 'chat-a', noteId: thoughtId, status: 'resolved' }), true);
+    assert.equal(settled.length, 0, '非 open_loop 不触发近况退场');
+    assert.equal(h.notes.settle({ personId: 'lunara', sessionId: 'chat-a', noteId: loopId, status: 'resolved' }), true);
+    assert.equal(h.notes.settle({ personId: 'lunara', sessionId: 'chat-a', noteId: loopId, status: 'resolved' }), false);
+    assert.deepEqual(settled, [{ noteId: loopId, status: 'resolved', lifeWriteKey: 'b-life:life:2' }]);
   } finally { h.close(); }
 });
 

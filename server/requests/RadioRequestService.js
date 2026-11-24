@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { effectiveRadioMode } from '../playback/PlaybackRuntime.js';
-import { continuationSelection, normalizeMusicSelection } from '../program/musicSelectionRequest.js';
+import { continuationPlan, continuationSelection, normalizeMusicSelection } from '../program/musicSelectionRequest.js';
 import { CONTINUATION_BATCH_SIZE } from '../program/continuationBudget.js';
 import { roomCurator } from '../virtual-person/roomCurator.js';
 
@@ -8,16 +8,15 @@ const PREPARABLE_PHASES = ['playing', 'loading', 'awaiting_intro', 'paused'];
 
 /** HTTP and continuation boundary. User language belongs to the conversation AgentLoop. */
 export class RadioRequestService {
-  constructor({ conversationService, musicService, playbackRuntime, conversationStore, getMusicSelectionAgent = null,
+  constructor({ conversationService, musicService, playbackRuntime, conversationStore, getHostMusicRunner = null,
     sessionTrace = null, isPersonAvailable = () => true } = {}) {
-    Object.assign(this, { conversationService, musicService, playbackRuntime, conversationStore, getMusicSelectionAgent, sessionTrace,
+    Object.assign(this, { conversationService, musicService, playbackRuntime, conversationStore, getHostMusicRunner, sessionTrace,
       isPersonAvailable });
     // 同一会话+输出代次一次只跑一个预热任务：权威触发点（runtime 低队列）与兜底
     // 刷新可能同时到达，重复的模型任务在这里被挡住，而不是靠调用方自觉。
     this.preparing = new Set();
     // 正在被实时任务解析的续播边界（会话:输出代次:边界 → 计数）。预热据此判断
     // 当前边界是否已经有实时任务在跑：有则为下一个边界准备，绝不绑定正在解析的边界。
-    this.liveContinuations = new Map();
   }
 
   handleChat(input = {}) { return this.conversationService.handleChat(input); }
@@ -49,25 +48,7 @@ export class RadioRequestService {
     const state = this.playbackRuntime.snapshot();
     if (!sessionId || sessionId !== state.activeListeningSessionId || outputGeneration !== state.outputGeneration
       || !effectiveRadioMode(state)) return { ok: false, code: 'STALE_CONTINUATION' };
-    // 实时任务在跑期间，预热必须为“下一个边界”准备：登记这段在飞边界，供预热查询。
-    const key = this._liveContinuationKey(sessionId, state.outputGeneration, state.pendingContinuation?.boundaryKey ?? null);
-    this.liveContinuations.set(key, (this.liveContinuations.get(key) || 0) + 1);
-    try {
-      return await this._select(state, { sessionId, requestId, reason: 'auto_continue', outputGeneration, signal, isCurrent });
-    } finally {
-      const remaining = (this.liveContinuations.get(key) || 1) - 1;
-      if (remaining > 0) this.liveContinuations.set(key, remaining);
-      else this.liveContinuations.delete(key);
-    }
-  }
-
-  _liveContinuationKey(sessionId, generation, boundaryKey) {
-    return `${sessionId}:${generation}:${boundaryKey ?? ''}`;
-  }
-
-  _liveContinuationInFlight(sessionId, generation, boundaryKey) {
-    if (boundaryKey == null) return false;
-    return this.liveContinuations.has(this._liveContinuationKey(sessionId, generation, boundaryKey));
+    return this._select(state, { sessionId, requestId, reason: 'auto_continue', outputGeneration, signal, isCurrent });
   }
 
   handleNext({ sessionId, requestId, delivery } = {}) {
@@ -75,22 +56,30 @@ export class RadioRequestService {
     return this._select(state, { sessionId: sessionId || state.activeListeningSessionId, requestId, reason: 'user_request', delivery });
   }
 
+  /** 这个边界的歌和串词都落定之后才预热下一批：host 一次只做一件后台的事。 */
+  async prepareAfterBoundary({ sessionId, signal = null, isCurrent = null } = {}) {
+    const runner = typeof this.getHostMusicRunner === 'function' ? this.getHostMusicRunner() : this.getHostMusicRunner;
+    await runner?.whenIdle?.(sessionId);
+    signal?.throwIfAborted();
+    if (isCurrent && !isCurrent()) return { ok: false, code: 'STALE_BOUNDARY' };
+    return this.prepareContinuation({ signal, isCurrent });
+  }
+
   /**
    * 预热入口：软件 runtime 检测到本聊天待播歌曲不够（正是今天发起续播的那条
-   * `REQUEST_CONTINUATION` 路径）时调用。它跑同一个受限 Agent 任务（同一个
+   * `REQUEST_CONTINUATION` 路径）时调用。它跑 host 的选歌回合（同一个
    * AgentLoop、同样两个选歌工具），只是 mode='preparation'：把接下来要放的歌
    * 提前挂起为可采用的批次，等播到边界时直接采用，不再发起模型调用。
    *
-   * 预热永远面向**下一个边界**：从续播边界钩子触发（boundaryInFlight）或当前
-   * 边界已有实时任务在跑时，批次记录为 NULL 边界（接受第一个到来的边界），绝不
-   * 记录实时任务正在解析的那个边界；同一 (会话, 输出代次) 已有待采用批次时不重复
-   * 发起第二个模型任务。
+   * 预热永远面向**下一个边界**：当前边界正等着实时任务时跳过（同一个 host 不同时
+   * 想两批歌），批次记录为 NULL 边界（接受第一个到来的边界）；同一 (会话, 输出代次)
+   * 已有待采用批次时不重复发起第二个模型任务。
    *
    * 这里是纯准备：不提交、不触碰播放器，当前歌曲照常播放。运行器缺失或任务
    * 失败都如实返回，不写任何用户可见文案。
    */
   async prepareContinuation({ signal = null, isCurrent = null, requestId = null, reason = 'auto_continue',
-    sessionTrace = null, boundaryInFlight = null } = {}) {
+    sessionTrace = null } = {}) {
     signal?.throwIfAborted();
     const state = this.playbackRuntime.snapshot();
     const sessionId = state.activeListeningSessionId;
@@ -99,6 +88,9 @@ export class RadioRequestService {
     }
     const preparingKey = `${sessionId}:${state.outputGeneration}`;
     if (this.preparing.has(preparingKey)) return { ok: false, code: 'PREPARATION_IN_FLIGHT' };
+    // host 正忙（聊天、ambient 或别的音乐回合）：不跟它抢，等下一个触发。
+    const busyRunner = typeof this.getHostMusicRunner === 'function' ? this.getHostMusicRunner() : this.getHostMusicRunner;
+    if (busyRunner?.isBusy?.(sessionId) || state.pendingContinuation?.status === 'requested') return { ok: false, code: 'HOST_BUSY' };
     const room = this.conversationStore.getSession(sessionId);
     if (!room || room.archivedAt) return { ok: false, code: 'CONVERSATION_UNAVAILABLE' };
     // 去重闸门：同一代次已经有待采用批次时不再跑第二个预热任务（批次要么被下一个
@@ -112,33 +104,26 @@ export class RadioRequestService {
     if (held) return { ok: false, code: 'PREPARATION_ALREADY_HELD', preparedId: held.preparedId, boundaryKey: held.boundaryKey };
     this.preparing.add(preparingKey);
     try {
-      return await this._prepareContinuation({ state, sessionId, signal, isCurrent, requestId, reason, sessionTrace, boundaryInFlight });
+      return await this._prepareContinuation({ state, sessionId, signal, isCurrent, requestId, reason, sessionTrace });
     } finally {
       this.preparing.delete(preparingKey);
     }
   }
 
   async _prepareContinuation({ state, sessionId, signal = null, isCurrent = null, requestId = null,
-    reason = 'auto_continue', sessionTrace = null, boundaryInFlight = null } = {}) {
+    reason = 'auto_continue', sessionTrace = null } = {}) {
     const room = this.conversationStore.getSession(sessionId);
     if (!room || room.archivedAt) return { ok: false, code: 'CONVERSATION_UNAVAILABLE' };
     const listening = this.playbackRuntime.listeningSnapshot(sessionId);
     const plan = listening.listeningPlan;
     const generation = state.outputGeneration;
-    // 预热面向“下一个边界”，不绑定正在被解析的边界：
-    // - 边界钩子显式告知在飞边界（runtime 的 REQUEST_CONTINUATION 处理里同时发起
-    //   实时任务与预热）；
-    // - 或者服务自己看到该边界已有实时任务在跑（兜底刷新与实时任务重叠）。
-    // 两种情况都记录 NULL：现有设计里 NULL = 接受第一个到来的边界。
-    const pendingBoundaryKey = state.pendingContinuation?.boundaryKey ?? null;
-    const resolvedBoundary = boundaryInFlight != null
-      ? String(boundaryInFlight)
-      : (this._liveContinuationInFlight(sessionId, generation, pendingBoundaryKey) ? String(pendingBoundaryKey) : null);
-    const boundaryKey = pendingBoundaryKey != null && String(pendingBoundaryKey) === resolvedBoundary ? null : pendingBoundaryKey;
+    // requested 边界已在入口让路；这里即使有 key 也来自已失败的请求。
+    // 预热接受下一个有效边界，不能绑到重试/自然结束时必定换掉的旧请求身份。
+    const boundaryKey = null;
     const previousTrack = listening.currentIndex >= 0 ? listening.queue[listening.currentIndex] || null : null;
     const request = normalizeMusicSelection(plan ? continuationSelection(plan.request, { previousTrack })
       : { mode: 'discovery', delivery: 'append', count: CONTINUATION_BATCH_SIZE });
-    const runner = typeof this.getMusicSelectionAgent === 'function' ? this.getMusicSelectionAgent() : this.getMusicSelectionAgent;
+    const runner = typeof this.getHostMusicRunner === 'function' ? this.getHostMusicRunner() : this.getHostMusicRunner;
     if (!runner || typeof runner.run !== 'function') {
       return { ok: false, code: 'MUSIC_SELECTION_UNAVAILABLE', message: '本机没有可用的自动选歌运行器。' };
     }
@@ -173,13 +158,22 @@ export class RadioRequestService {
       position: { queueVersion: listening.queueVersion, queueLength: listening.queue.length,
         currentIndex: listening.currentIndex ?? -1, phase: state.phase },
     });
+    // 批次存好了，接着写串词：不等它，写不写成都不影响批次被采用。
+    if (saved?.ok === true) this._writePreparedLines(runner, result, saved, sessionId);
     return { ...result, preparedId: saved?.preparedId || null, prepared: saved?.ok === true, boundaryKey };
+  }
+
+  _writePreparedLines(runner, result, saved, sessionId) {
+    if (typeof runner.writePreparedLines !== 'function' || typeof this.musicService?.preparedLineTargets !== 'function') return;
+    void Promise.resolve(this.musicService.preparedLineTargets(saved, { sessionId }))
+      .then(targets => runner.writePreparedLines(result, targets))
+      .catch(() => {});
   }
 
   /**
    * 自动续播/手动下一首都先看本会话有没有可采用的预热批次：命中就直接用同一套
-   * canonical 解析 + 硬约束校验提交，**零模型调用、零 Agent 运行**；没有命中才
-   * 进入受限选歌 Agent 运行器。两条路径共用同一份身份守卫与任务锁定。
+   * canonical 解析 + 硬约束校验提交，**零模型调用**；没有命中才
+   * 进入 host 的选歌回合。两条路径共用同一份身份守卫与任务锁定。
    */
   async _select(state, { sessionId, requestId = `music:${randomUUID()}`, reason, outputGeneration, delivery, signal, isCurrent }) {
     const generation = state.outputGeneration;
@@ -195,6 +189,8 @@ export class RadioRequestService {
         // 会清掉队列打断它；耗尽边界追加也不影响激活第一首新歌。
         delivery: reason === 'auto_continue' ? 'append' : 'replace_now', count: CONTINUATION_BATCH_SIZE });
     const request = delivery ? normalizeMusicSelection({ ...base, delivery }) : base;
+    // 提交后存回的计划不带这一轮的软锚点；没有计划时这次请求本身就是新计划。
+    const planRequest = plan ? continuationPlan(plan.request) : null;
     const guard = () => {
       if (signal?.aborted || (isCurrent && !isCurrent())) return false;
       if (reason !== 'auto_continue') return true;
@@ -207,17 +203,17 @@ export class RadioRequestService {
     // 房间里没有可用成员：不替任何人选歌。
     if (!virtualPersonId) return { ok: false, code: 'CONVERSATION_UNAVAILABLE' };
     const preparedAdoption = typeof this.musicService?.consumePrepared === 'function' && request.delivery !== 'recommend_only'
-      ? await this._adoptPrepared({ request, sessionId, virtualPersonId, requestId, generation, boundaryKey,
+      ? await this._adoptPrepared({ request, planRequest, sessionId, virtualPersonId, requestId, generation, boundaryKey,
         signal, guard, isCurrent })
       : null;
     if (preparedAdoption) return preparedAdoption;
-    const runner = typeof this.getMusicSelectionAgent === 'function' ? this.getMusicSelectionAgent() : this.getMusicSelectionAgent;
+    const runner = typeof this.getHostMusicRunner === 'function' ? this.getHostMusicRunner() : this.getHostMusicRunner;
     if (!runner || typeof runner.run !== 'function') {
       return { ok: false, code: 'MUSIC_SELECTION_UNAVAILABLE',
         message: '本机没有可用的自动选歌运行器，队列没有变化。' };
     }
     const result = await runner.run({
-      request, reason, sessionId, signal, isCurrent: guard, mode: 'playback',
+      request, planRequest, reason, sessionId, signal, isCurrent: guard, mode: 'playback',
       sessionTrace: this.sessionTrace,
       context: {
         requestId,
@@ -235,7 +231,7 @@ export class RadioRequestService {
    * 边界先尝试采用预热批次。返回 null 表示没有可用批次（回落到实时选歌）；
    * 返回对象表示本次选择已经定论（成功或 fail closed 的失败）。
    */
-  async _adoptPrepared({ request, sessionId, virtualPersonId, requestId, generation, boundaryKey,
+  async _adoptPrepared({ request, planRequest = null, sessionId, virtualPersonId, requestId, generation, boundaryKey,
     signal, guard = null, isCurrent = null }) {
     const consume = this.musicService?.consumePrepared;
     if (typeof consume !== 'function') return null;
@@ -253,7 +249,8 @@ export class RadioRequestService {
         request, sessionId, virtualPersonId, requestId, outputGeneration: generation, boundaryKey,
         // 提交侧的守卫仍然是边界感知的：边界在提交前消失就不提交。
         signal, isCurrent: guard,
-        preparedAccept: { listeningSessionId: sessionId, outputGeneration: generation, boundaryKey, planRequest: request },
+        preparedAccept: { listeningSessionId: sessionId, outputGeneration: generation, boundaryKey,
+          planRequest: planRequest || request },
       });
     } catch (error) {
       if (signal?.aborted) throw error;

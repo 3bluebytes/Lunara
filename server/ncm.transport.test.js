@@ -129,6 +129,132 @@ test('songUrl returns null when one quality answers without audio and the others
   assert.equal(await ncm.songUrl('1'), null);
 });
 
+for (const authenticated of [false, true]) {
+  test(`songUrl explicitly uses same-provider WEAPI (${authenticated ? 'authenticated' : 'anonymous'})`, async () => {
+    const calls = [];
+    if (authenticated) ncm.setCookie('MUSIC_U=protocol-fixture-secret');
+    globalThis.fetch = async (url, init) => {
+      const query = init.body ? new URLSearchParams(String(init.body)) : new URL(String(url)).searchParams;
+      calls.push({ url: String(url), query });
+      assert.equal(query.get('crypto'), 'weapi');
+      assert.equal(query.get('id'), '901');
+      assert.equal(query.get('level'), 'hires');
+      assert.equal(new URL(String(url)).pathname, '/song/url/v1');
+      if (authenticated) {
+        assert.equal(query.get('cookie'), 'MUSIC_U=protocol-fixture-secret');
+        assert.equal(String(url).includes('protocol-fixture-secret'), false);
+      }
+      return new Response(JSON.stringify({ data: [{ id: 901, url: 'https://audio.test/901.flac' }] }));
+    };
+    assert.equal(await ncm.songUrl('901'), 'https://audio.test/901.flac');
+    assert.equal(calls.length, 1, 'no additional protocol attempt');
+  });
+}
+
+for (const metadata of ['lyric', 'coverArt']) {
+  test(`${metadata} throttling cannot arm stream backoff or claim the playback source is throttled`, async () => {
+    const events = [];
+    setSourceHealthReporter((source, code) => events.push({ source, code }));
+    const calls = [];
+    globalThis.fetch = async url => {
+      const path = new URL(String(url)).pathname;
+      calls.push(path);
+      return path === '/song/url/v1'
+        ? new Response(JSON.stringify({ data: [{ id: 901, url: 'https://audio.test/901.mp3' }] }))
+        : new Response(JSON.stringify({ code: -460, message: 'private-metadata-rejection' }), { status: 400 });
+    };
+    await ncm[metadata]('901');
+    assert.equal(ncm.isStreamBackoffActive(), false);
+    assert.deepEqual(events, [], 'optional metadata is not audio-resource failure evidence');
+    assert.equal(await ncm.songUrl('901'), 'https://audio.test/901.mp3');
+    assert.equal(calls.at(-1), '/song/url/v1');
+  });
+}
+
+// —— 风控不得当作单曲不可播，也不得以降音质继续放大请求 ——
+for (const [status, code] of [[400, -460], [200, -460], [429, 429], [200, 429]]) {
+  test(`NCM risk response ${status}/${code} is sanitized and stops quality fallback`, async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ code, message: 'provider-private-text', cookie: 'MUSIC_U=secret' }), { status });
+    };
+    await assert.rejects(ncm.songUrl('risk-track'), error => {
+      assert.equal(error.code, 'rate-limited');
+      assert.equal(error.message, 'rate-limited');
+      assert.doesNotMatch(JSON.stringify(error), /secret|provider-private-text/);
+      return true;
+    });
+    assert.equal(calls, 1);
+  });
+}
+
+test('stream backoff covers other songs, does not slide, and expires without automatic requests', async t => {
+  let now = 100_000;
+  t.mock.method(Date, 'now', () => now);
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return calls === 1
+      ? new Response(JSON.stringify({ code: -460 }), { status: 400 })
+      : new Response(JSON.stringify({ data: [{ url: 'https://audio.test/recovered' }] }));
+  };
+  await assert.rejects(ncm.songUrl('first'), { code: 'rate-limited' });
+  now += 29_999;
+  await assert.rejects(ncm.songUrl('another'), { code: 'rate-limited' });
+  assert.equal(calls, 1);
+  now += 1;
+  assert.equal(calls, 1, 'expiry does not schedule work');
+  assert.equal(await ncm.songUrl('another'), 'https://audio.test/recovered');
+  assert.equal(calls, 2, 'blocked calls must not extend the original deadline');
+});
+
+test('stream backoff leaves login and metadata usable and never claims expired credentials', async () => {
+  const events = [];
+  setSourceHealthReporter((source, code) => events.push({ source, code }));
+  globalThis.fetch = async url => String(url).includes('/song/url/v1')
+    ? new Response(JSON.stringify({ code: -460 }), { status: 400 })
+    : new Response(JSON.stringify({ result: { songs: [] }, data: { account: { id: 1 }, profile: {} } }));
+  ncm.setCookie('MUSIC_U=fixture');
+  await assert.rejects(ncm.songUrl('first'), { code: 'rate-limited' });
+  assert.deepEqual(await ncm.search('query'), []);
+  assert.equal((await ncm.loginStatus()).loggedIn, true);
+  assert.ok(events.some(event => event.code === 'rate-limited'));
+  assert.ok(events.every(event => event.code !== 'requires-auth'));
+  await assert.rejects(ncm.songUrl('still-blocked'), { code: 'rate-limited' });
+});
+
+test('unrelated HTTP 400 keeps existing fallback rather than claiming risk', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ code: 400, message: 'invalid request' }), { status: 400 });
+  };
+  await assert.rejects(ncm.songUrl('bad-request'), error => error.code !== 'rate-limited');
+  assert.equal(calls, 4);
+});
+
+for (const replace of ['cookie', 'base']) {
+  test(`late risk response cannot arm replacement ${replace} backoff`, async () => {
+    const previousBase = ncm.getBaseUrl();
+    let finish;
+    ncm.setCookie('MUSIC_U=old');
+    globalThis.fetch = () => new Promise(resolve => { finish = resolve; });
+    const pending = ncm.songUrl('old-track');
+    const rejected = assert.rejects(pending);
+    try {
+      if (replace === 'cookie') ncm.setCookie('MUSIC_U=new');
+      else ncm.setBaseUrl('http://127.0.0.1:3019');
+      globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ url: 'https://audio.test/new' }] }));
+      finish(new Response(JSON.stringify({ code: -460 }), { status: 400 }));
+      await rejected;
+      assert.equal(await ncm.songUrl('new-track'), 'https://audio.test/new');
+    } finally {
+      ncm.setBaseUrl(previousBase);
+    }
+  });
+}
+
 // —— NeteaseCloudMusicApi 的 2 分钟 apicache 只按 URL + header cookie 取 key ——
 // 登录后参数在 POST body 里，不旁路缓存就会让不同歌曲拿到同一份歌词/直链。
 test('authenticated per-song requests are not served from the shared NCM response cache', async () => {

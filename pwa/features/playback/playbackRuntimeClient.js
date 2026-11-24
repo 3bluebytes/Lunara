@@ -54,6 +54,8 @@ export function createPlaybackRuntimeClient({
   narrationAudio,
   musicAudio,
   narrationCoordinator = null,
+  playbackController = null,
+  getPlaybackController = () => playbackController,
   apiClient,
   locationHref = globalThis.location?.href || '',
   ttsTimeoutMs = 30_000,
@@ -138,6 +140,34 @@ export function createPlaybackRuntimeClient({
     return identity;
   }
 
+  function staleVersionMessage(result, error) {
+    const reason = error?.body?.error || error?.message || result?.reason || '';
+    return /stale runtime version/.test(String(reason));
+  }
+
+  function sixTupleMatchesRuntime(command, runtime) {
+    const track = runtime?.queue?.[runtime.currentIndex];
+    const txn = runtime?.txn;
+    return Boolean(
+      command?.listeningSessionId
+      && Number.isInteger(command?.outputGeneration)
+      && command?.queueItemId
+      && command?.songId
+      && command?.programId
+      && command?.correlationId
+      && runtime?.activeListeningSessionId === command.listeningSessionId
+      && runtime?.outputGeneration === command.outputGeneration
+      && track?.queueItemId === command.queueItemId
+      && track?.songId === command.songId
+      && track?.programId === command.programId
+      && txn?.queueItemId === command.queueItemId
+      && txn?.songId === command.songId
+      && txn?.programId === command.programId
+      && txn?.correlationId === command.correlationId
+      && Number.isInteger(runtime?.version),
+    );
+  }
+
   async function postFact(type, command, details = {}, { notifyFailure = true } = {}) {
     // Media facts a reopened or reloaded client must be able to re-assert for the
     // activation it just re-attached are scoped to this client instance, so a fresh
@@ -147,16 +177,43 @@ export function createPlaybackRuntimeClient({
       || `${clientId}:${command.queueItemId || command.correlationId || command.songId}:${command.correlationId || ''}:${type}`;
     if (postedFacts.has(eventId)) return { accepted: false, duplicate: true };
     postedFacts.add(eventId);
+    const isMediaFact = MEDIA_FACT_TYPES.has(type);
+    const maxRetries = isMediaFact ? 2 : 0;
+    let refreshedVersion = null;
     try {
-      const result = await apiClient.post('/api/pb-event', {
-        type,
-        eventId,
-        ...(MEDIA_FACT_TYPES.has(type) ? mediaFactIdentity(command) : identityFrom(command)),
-        ...details,
-      });
-      if (result.state) reduceServerMessage(store, { type: 'runtime-state', state: result.state });
-      for (const nextCommand of result.commands || []) await execute(nextCommand);
-      return result;
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        const baseIdentity = isMediaFact ? mediaFactIdentity(command) : identityFrom(command);
+        const payload = {
+          type,
+          eventId,
+          ...baseIdentity,
+          ...(refreshedVersion != null ? { runtimeVersion: refreshedVersion } : {}),
+          ...details,
+        };
+        let result = null;
+        let caught = null;
+        try {
+          result = await apiClient.post('/api/pb-event', payload);
+        } catch (error) {
+          caught = error;
+        }
+        if (isMediaFact && attempt < maxRetries && staleVersionMessage(result, caught)
+          && typeof apiClient.get === 'function') {
+          try {
+            const current = await apiClient.get('/api/now');
+            const authoritative = current?.runtime;
+            if (authoritative) reduceServerMessage(store, { type: 'runtime-state', state: authoritative });
+            if (sixTupleMatchesRuntime(command, authoritative)) {
+              refreshedVersion = authoritative.version;
+              continue;
+            }
+          } catch { /* keep the original stale rejection when recovery fetch fails */ }
+        }
+        if (caught) throw caught;
+        if (result?.state) reduceServerMessage(store, { type: 'runtime-state', state: result.state });
+        for (const nextCommand of result?.commands || []) await execute(nextCommand);
+        return result;
+      }
     } catch (error) {
       postedFacts.delete(eventId);
       if (notifyFailure) notify.onError(error, command);
@@ -348,13 +405,10 @@ export function createPlaybackRuntimeClient({
         if (!measurement) return false;
         const result = await postDeliveryFact('NARRATION_DELIVERY_AUDIBLE', command, measurement);
         if (!resultAccepted(result) || !deliveryStateIs(result, command, 'speaking')) return false;
-        clearTtsTimer();
-        ttsTimer = schedule(() => {
-          if (activeRuntimeNarration !== command) return;
-          ttsTimer = null;
+        watchNarrationProgress(() => activeRuntimeNarration === command, () => {
           void postDeliveryFact('NARRATION_DELIVERY_FAILED', command, { error: 'narration timeout' });
           narrator.cancel(candidate => candidate.meta?.command === command, 'tts-timeout');
-        }, Math.max(1, Number(ttsTimeoutMs) || 30_000));
+        });
         notify.onNarration(command, { overlay: true });
         notify.onStatus('speaking');
         notify.onChanged();
@@ -438,6 +492,25 @@ export function createPlaybackRuntimeClient({
   function clearTtsTimer() {
     if (ttsTimer != null) cancelSchedule(ttsTimer);
     ttsTimer = null;
+  }
+
+  // This bounds stalled playback, not the length of a healthy introduction.
+  // Media duration may still be unknown (or Infinity), so use its actual clock.
+  function watchNarrationProgress(isActive, onTimeout) {
+    clearTtsTimer();
+    let previousPosition = Number(narrationAudio.currentTime) || 0;
+    const check = () => {
+      if (!isActive()) return;
+      ttsTimer = null;
+      const position = Number(narrationAudio.currentTime);
+      if (Number.isFinite(position) && position > previousPosition) {
+        previousPosition = position;
+        ttsTimer = schedule(check, Math.max(1, Number(ttsTimeoutMs) || 30_000));
+      } else {
+        onTimeout();
+      }
+    };
+    ttsTimer = schedule(check, Math.max(1, Number(ttsTimeoutMs) || 30_000));
   }
 
   /** A short, cancellable wait used while a narration command waits for its window. */
@@ -537,13 +610,11 @@ export function createPlaybackRuntimeClient({
         meta: { command },
         onStart: () => {
           if (activeTts !== command) return;
-          ttsTimer = schedule(() => {
-            if (activeTts !== command) return;
+          watchNarrationProgress(() => activeTts === command, () => {
             narrator.cancel(task => task.meta?.command === command, 'tts-timeout');
             activeTts = null;
-            ttsTimer = null;
             void postFact('TTS_FAILED', command, { error: 'tts timeout' });
-          }, Math.max(1, Number(ttsTimeoutMs) || 30_000));
+          });
           notify.onNarration(command);
           notify.onStatus('speaking');
           notify.onChanged();
@@ -613,7 +684,9 @@ export function createPlaybackRuntimeClient({
       clearTrackTimer();
       activeTts = null;
       activeTrack = null;
+      activeRuntimeNarration = null;
       autoplayBlockedCommand = null;
+      (getPlaybackController?.() || playbackController)?.stopOverlayNarrations?.();
       narrator.cancelAll('playback-stopped');
       musicAudio.pause();
       musicAudio.src = '';

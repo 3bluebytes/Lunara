@@ -117,7 +117,21 @@ export class PlaybackOperationsService {
       throw new ServiceError(409, result.reason || 'playback event rejected', 'playback_event_rejected');
     }
     if (event.type === PlaybackEventType.TRACK_FAILED) {
-      await this.quarantineFailedMedia(event, result.state);
+      const quarantined = await this.quarantineFailedMedia(event, result.state);
+      const index = Number.isInteger(result.state?.currentIndex) ? result.state.currentIndex : -1;
+      const item = index >= 0 ? result.state?.queue?.[index] || null : null;
+      const failedSongId = item?.songId || event.songId;
+      if (typeof this.applyOutcome === 'function' && failedSongId) {
+        const source = item?.source || item?.provider || quarantined?.provider || null;
+        try {
+          await this.applyOutcome({
+            song_id: String(failedSongId),
+            ...(source ? { source: String(source) } : {}),
+            outcome: 'technical_failure',
+            played_seconds: Number(event?.positionSeconds) || 0,
+          });
+        } catch { /* 账本回写失败不影响播放事实 */ }
+      }
     }
     if (event.type === PlaybackEventType.TRACK_STARTED || event.type === PlaybackEventType.TRACK_REATTACHED) {
       this.notePlaybackIdentity(result.state);

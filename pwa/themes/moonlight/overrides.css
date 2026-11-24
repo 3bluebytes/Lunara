@@ -3,9 +3,23 @@
    琥珀色当前歌词与主播放键、白色叠层的用户气泡。极光 / 星点 / 颗粒三层氛围沿用原样。
    每个选择器都限定在 :root[data-theme="moonlight"] 之下（测试检查）。 */
 
-/* 壳层 token 写在这里而不是 tokens.css：月色的 token 块同时作用于裸 :root，
-   写在那里会让其他主题也继承月色的侧栏行为。独立交互在 sidebar.js / sidebar.css。 */
-:root[data-theme="moonlight"] { --shell-sidebar: collapsible; --shell-person: page; --person-edit: toggle; }
+/* 壳层 token 与旧基础层别名写在这里而不是 tokens.css：月色的 token 块同时作用于裸 :root，
+   frontend.contract.test 要求 tokens.css 中的变量名在全部主题一致。 */
+:root[data-theme="moonlight"] {
+  --shell-sidebar: collapsible; --shell-person: page; --person-edit: toggle;
+  --ink-0: #070b1a; --ink-1: #0a0f22; --ink-2: #0e1533; --ink-3: #162044;
+  --t-hi: var(--text); --t-mid: var(--text-2); --t-lo: var(--text-3); --t-xlo: var(--text-4);
+  --t-placeholder: var(--text-3);
+  --hair: var(--line); --hair-strong: var(--line-strong);
+  --amber: var(--accent); --coral: var(--danger); --pulse: var(--ok);
+  --studio-line: var(--line-strong);
+  --studio-panel: rgba(14, 21, 51, .72);
+  --studio-accent: var(--accent); --studio-accent-ink: var(--accent); --studio-accent-on: var(--text-on-accent);
+  --studio-surface-solid: #0e1533;
+  --studio-surface: linear-gradient(180deg, #10183a, #0a0f22);
+  --studio-scrim: rgba(4, 6, 14, .64);
+  --warn-ink: var(--danger);
+}
 
 /* 夜空与封面色晕：舞台骨架给 #app 铺了不透明的 --bg-stage，会把 body::before 的封面模糊色晕整个盖住，
    封面取不到色相时就只剩主题原色。月色让 #app 透明，透出 body 上同一组 sky token 画的夜空和它上面的色晕，
@@ -13,19 +27,28 @@
    stage.css 同时覆盖了 body 的夜空为近黑 --bg-page，这里恢复已有的靛蓝渐变。 */
 :root[data-theme="moonlight"] body { background: var(--bg-stage); }
 :root[data-theme="moonlight"] #app { background: transparent; }
+:root[data-theme="moonlight"] :is(.aurora, .noise) { display: none; }
+/* 去掉装饰性玻璃与多余光晕：侧栏、播放条、输入框与全部弹层不再 backdrop-filter。 */
+:root[data-theme="moonlight"] :is(.conversation-sidebar, .persistent-player, .compose, .compose-suggest, .salon-dialog, .salon-dialog::backdrop, .queue-pop, .cast-card, .cast-overlay, .qr-card, .qr-overlay, .toast, .sb-source-pop, .sb-taste-popover) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-theme="moonlight"] :is(.thinking-dots span, .compose-hint .ch-dots span, .identity-dot.is-live, #person-detail-signal .identity-dot) {
+  box-shadow: none;
+}
 /* 门框只保留轮廓与层叠职责，不再用默认近黑填充遮住整片夜空/封面色晕。 */
 :root[data-theme="moonlight"] .panel-door { --panel-door-fill: transparent; }
 
-:root[data-theme="moonlight"] :is(.room-row-playing,.chat-date-divider,.today-now em,.listening-wordmark h2,.focus-wordmark-title,#app.focus-mode .np-title) { font-style: normal; }
+:root[data-theme="moonlight"] :is(.room-row-playing,.chat-date-divider,.listening-wordmark h2,.focus-wordmark-title,#app.focus-mode .np-title) { font-style: normal; }
 
-/* 侧栏：半透明近黑，品牌字标 Geist 500。 */
+/* 侧栏：半透明近黑，品牌字标无衬线 500；旋转电波标识收敛为单一月光琥珀，不混珊瑚橙渐变。 */
 :root[data-theme="moonlight"] .conversation-sidebar { border-right: 1px solid var(--line); }
 :root[data-theme="moonlight"] .conversation-sidebar .sb-brand { font: 500 17px var(--font-ui); letter-spacing: 0; }
 /* 旧版电波在同一中心原地旋转，不移动 logo 外框。 */
 :root[data-theme="moonlight"] .sb-logo .sb-logo-orbit { display: none; }
 :root[data-theme="moonlight"] .sb-logo .sb-logo-radio { display: block; }
-:root[data-theme="moonlight"] .sb-logo .logo-core { transform-origin: 20px 20px; animation: moonlightCorePulse 2.6s ease-in-out infinite; }
-:root[data-theme="moonlight"] .sb-logo .logo-arc { transform-origin: 20px 20px; animation: arcSpin 16s linear infinite; }
+:root[data-theme="moonlight"] .sb-logo .logo-core { fill: var(--accent); transform-origin: 20px 20px; animation: moonlightCorePulse 2.6s ease-in-out infinite; }
+:root[data-theme="moonlight"] .sb-logo .logo-arc { stroke: var(--accent); transform-origin: 20px 20px; animation: arcSpin 16s linear infinite; }
 :root[data-theme="moonlight"] .sb-logo .logo-arc.a2 { animation-duration: 24s; animation-direction: reverse; }
 :root[data-theme="moonlight"] .sb-logo .logo-arc.a3 { animation-duration: 11s; }
 @keyframes moonlightCorePulse {
@@ -62,25 +85,40 @@
 :root[data-theme="moonlight"] .chat-speaker { color: var(--text-2); }
 :root[data-theme="moonlight"] .chat-msg.assistant { padding-left: 0; }
 :root[data-theme="moonlight"] .chat-msg.assistant::before { content: none; }
-:root[data-theme="moonlight"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial) { font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); color: var(--text); }
+:root[data-theme="moonlight"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial,.chat-beat-group) { font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); color: var(--text); }
 :root[data-theme="moonlight"] .chat-msg.user .chat-bubble { background: rgba(255,255,255,.08); border: 0; padding: 11px 16px; }
 :root[data-theme="moonlight"] .chat-date-divider { font: 400 12px var(--font-mono); }
 :root[data-theme="moonlight"] .compose { padding: 8px 8px 8px 18px; border-color: var(--line-strong); }
 :root[data-theme="moonlight"] .compose:focus-within { border-color: color-mix(in srgb,var(--accent) 40%,transparent); }
 :root[data-theme="moonlight"] #compose-send { color: var(--text-on-accent); }
-:root[data-theme="moonlight"] #compose-send:hover { background: var(--accent-hover); }
+:root[data-theme="moonlight"] #compose-send:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); }
+:root[data-theme="moonlight"] .compose #compose-send:is(:disabled, [aria-disabled="true"]) { background: rgba(236,230,214,.1); color: var(--text-3); cursor: default; }
 
-/* 播放条：近黑半透明，夜空从后面透出来；琥珀主播放键与进度由 --player-* 提供。 */
-:root[data-theme="moonlight"] .persistent-player { background: var(--bg-player); border-top: 1px solid var(--line); }
+/* 播放条：近黑半透明，主播放键与已播进度锁定为琥珀色，不被封面跟色洗成冷白。 */
+:root[data-theme="moonlight"] .persistent-player,
+:root[data-theme="moonlight"] #app .persistent-player {
+  --player-surface: #0a0f22;
+  --player-surface-low: #070b1a;
+  --player-ink: var(--text);
+  --player-muted: var(--text-2);
+  --player-accent: var(--accent);
+  --player-control: var(--accent);
+  --player-control-ink: var(--text-on-accent);
+  background: var(--bg-player);
+  border-top: 1px solid var(--line);
+}
+:root[data-theme="moonlight"] #app .persistent-player::before { display: none; }
+:root[data-theme="moonlight"] #app .persistent-player .play-btn { background: var(--accent); color: var(--text-on-accent); box-shadow: none; }
+:root[data-theme="moonlight"] #app .persistent-player .play-btn:hover { background: var(--accent-hover); }
 :root[data-theme="moonlight"] .cike-player-meta img { border-radius: 8px; }
 :root[data-theme="moonlight"] .cike-player-meta strong { font-size: 14px; }
 
-/* 专注聆听：琥珀当前歌词，推荐理由是一段引文。 */
+/* 专注聆听：琥珀当前歌词，歌名与月盘列保持同一衬线 900 声线，保留长标题分档。 */
 :root[data-theme="moonlight"] #app.focus-mode .player-line-viewport:has(.lyric):not(.next) { border-left: 0; padding-left: 0; }
 :root[data-theme="moonlight"] #app.focus-mode .player-line-text.lyric:not(.next) { color: var(--accent); font-family: var(--font-reading); font-weight: 600; }
-:root[data-theme="moonlight"] #app.focus-mode .np-title { font: 500 48px/1.05 var(--font-display); letter-spacing: -.01em; }
+:root[data-theme="moonlight"] #app.focus-mode .np-title { font-family: var(--font-reading); font-weight: 900; letter-spacing: 0; }
+:root[data-theme="moonlight"] #app.focus-mode .np-title:not([data-title-size="long"]):not([data-title-size="extra-long"]) { font-size: 44px; line-height: 1.12; }
 :root[data-theme="moonlight"] #app.focus-mode .focus-player-recommendation:not([hidden]) { border: 0; background: none; }
 
-/* 今日 / 人物：标题用 Geist 500。 */
-:root[data-theme="moonlight"] :is(.shell-page-title,#person-detail-name,.today-panel .today-input-seamless-title,.today-panel .today-workspace-title) { font-weight: 500; letter-spacing: -.01em; }
-:root[data-theme="moonlight"] .today-panel .today-btn-primary { color: var(--text-on-accent); }
+/* 人物：标题用 Geist 500；手帐样式由 today.css 独占维护。 */
+:root[data-theme="moonlight"] :is(.shell-page-title,#person-detail-name) { font-weight: 500; letter-spacing: -.01em; }

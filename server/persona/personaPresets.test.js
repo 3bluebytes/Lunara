@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { PERSONA_PRESETS, listPersonaPresets, getPersonaPreset, defaultPersonaPreset } =
+const { PERSONA_PRESETS, listPersonaPresets, getPersonaPreset, defaultPersonaPreset, presetToPersonaTemplate } =
   await import('./personaPresets.js');
-const { generatePersona, resolvePreset } = await import('../station/PersonaGenerator.js');
+const { generatePersona, resolvePreset, personaToMarkdown } = await import('../station/PersonaGenerator.js');
 
 /** 每个预设必须能独立支撑一个完整人格，且六个维度都有实质内容。 */
 const REQUIRED_DIMENSIONS = ['character', 'speechHabit', 'emotionalExpression', 'musicTaste',
@@ -118,12 +118,31 @@ test('同一人设重复生成结果稳定（不随声音或随机漂移）', as
   assert.deepEqual(first, second);
 });
 
-test('用户描述优先于预设，并体现在说话习惯中', async () => {
+test('用户描述优先于预设，完整保留于补充设定与渲染文档中而不被截断', async () => {
+  const longHint = '我希望他是个温柔的夜间陪伴者，平时在二手书店整理旧黑胶，聊起爵士乐时总会顺手记下萨克斯进场的秒数与录音室趣闻。';
   const persona = await generatePersona({
     personaPreset: 'cool_analytical',
-    personaHint: '我希望他是个温柔的夜间陪伴者',
+    personaHint: longHint,
   });
-  assert.match(persona.speechHabit, /温柔的夜间陪伴者/);
+  assert.equal(persona.supplement, longHint);
+  const markdown = personaToMarkdown(persona, '清野');
+  assert.match(markdown, /## 补充设定（优先于基础性格）/);
+  assert.ok(markdown.includes(longHint), '超过 60 字的补充说明必须完整保留');
+  assert.match(markdown, /## 我对这个用户的态度/);
+});
+
+test('预设采用正面行为描写，不含否定式禁令，且提供四段式 templateText 与 defaultTemperament', () => {
+  for (const preset of PERSONA_PRESETS) {
+    assert.ok(['quiet', 'balanced', 'lively'].includes(preset.defaultTemperament), `${preset.id} 缺少合法 defaultTemperament`);
+    assert.equal(preset.templateText, presetToPersonaTemplate(preset));
+    assert.equal(preset.templateText.startsWith('# '), false, 'templateText 不应包含一级标题');
+    for (const heading of ['## 我是谁', '## 我说话的方式', '## 我喜欢的音乐', '## 我对这个用户的态度']) {
+      assert.ok(preset.templateText.includes(heading), `${preset.id} templateText 缺少 ${heading}`);
+    }
+    for (const dim of [...REQUIRED_DIMENSIONS, 'summary']) {
+      assert.equal(/不要|禁止|不是助手|少情绪|几乎不/.test(preset[dim]), false, `${preset.id}.${dim} 不应含反向禁令：${preset[dim]}`);
+    }
+  }
 });
 
 test('用户指定名字时采纳用户的名字', async () => {

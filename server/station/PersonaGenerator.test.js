@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { generatePersona } from './PersonaGenerator.js';
+import {
+  buildPersonaExpandPrompt,
+  buildPersonaPrompt,
+  extractExpandedPersonaDocument,
+  generatePersona,
+  personaToMarkdown,
+} from './PersonaGenerator.js';
 import { getPersonaPreset } from '../persona/personaPresets.js';
 
 function withFallbackMode(fn) {
@@ -15,20 +21,37 @@ function withFallbackMode(fn) {
 test('explicit fallback mode creates a complete local persona without model access', async () => {
   await withFallbackMode(async () => {
     const preset = getPersonaPreset('literary_lyrical');
+    const longSupplement = '像熟悉的老朋友，平时在海边经营一家独立书店，总是记得对方上次随口提过的歌手与季节。';
     const persona = await generatePersona({
       personaPreset: preset.id,
-      personaHint: '像熟悉的老朋友，但不要替用户做决定',
+      personaHint: longSupplement,
     });
 
     // 名字来自预设的名字候选，不再来自音色。
     assert.ok(preset.nameCandidates.includes(persona.name), `名字应来自候选：${persona.name}`);
-    assert.match(persona.speechHabit, /老朋友/);
+    assert.equal(persona.supplement, longSupplement);
     assert.equal(persona.character, preset.character);
     assert.ok(persona.interpersonalDistance);
     assert.ok(persona.boundaries);
     assert.ok(persona.personaDescription);
     assert.ok(persona.speakingStyle);
+
+    const md = personaToMarkdown(persona, persona.name);
+    assert.ok(md.includes(longSupplement), 'markdown 必须保留完整补充设定');
+    assert.ok(md.includes(preset.interpersonalDistance), 'markdown 必须写出人际距离');
+    assert.ok(md.includes(preset.boundaries), 'markdown 必须写出相处分寸');
   });
+});
+
+test('buildPersonaExpandPrompt 与 extractExpandedPersonaDocument 满足 JSON 结构化与清洗契约', () => {
+  const preset = getPersonaPreset('morning_bright');
+  const prompt = buildPersonaExpandPrompt({ draft: '一个爱讲冷笑话的鼓手', displayName: '阿乐', preset });
+  assert.match(prompt, /JSON/);
+  assert.match(prompt, /一个爱讲冷笑话的鼓手/);
+  assert.match(prompt, /轻快晨间/);
+
+  const cleaned = extractExpandedPersonaDocument('```json\n{"personaDocument":"# 阿乐\\n\\n## 我是谁\\n爱敲鼓的朋友。"}\n```');
+  assert.equal(cleaned, '## 我是谁\n爱敲鼓的朋友。');
 });
 
 test('fallback ignores any voice profile and never derives personality from it', async () => {
@@ -70,4 +93,19 @@ test('疑问句里的"叫什么"不会被当成名字', async () => {
     assert.ok(getPersonaPreset('late_night_companion').nameCandidates.includes(persona.name),
       '应回落到预设的名字候选');
   });
+});
+
+test('人格生成把说话方式写成随情境的倾向与原因，不发明固定口癖', () => {
+  const preset = getPersonaPreset('late_night_companion');
+  const prompt = buildPersonaPrompt(preset, '');
+  const speechField = prompt.split('\n').find(line => line.includes('"speechHabit"')) || '';
+  assert.match(speechField, /情境/, '说话习惯要写随情境的变化');
+  assert.match(speechField, /为什么|原因/, '说话习惯要写原因');
+  assert.doesNotMatch(speechField, /常用句式/);
+  assert.match(prompt, /不要发明固定的口头禅、尾音、语气词或标志性动作/);
+
+  const expand = buildPersonaExpandPrompt({ draft: '说话爱带一句"好家伙"的鼓手', displayName: '阿乐', preset });
+  assert.match(expand, /口癖[^\n]*必须完整保留/, '草稿里的口癖照常保留');
+  assert.match(expand, /不要发明固定的口头禅、尾音、语气词或标志性动作/);
+  assert.doesNotMatch(expand, /句子长短节奏/);
 });

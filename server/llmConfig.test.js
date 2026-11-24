@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { defaultLunaraHome } from './runtimePaths.js';
 
 import {
   getLLMConfig,
@@ -143,8 +144,11 @@ test('设置 LUNARA_DATA_DIR 后密钥目录仍锚 ~/.lunara，不被数据根�
   delete process.env.CLAUDIO_CONFIG_DIR;
   process.env.LUNARA_DATA_DIR = '/tmp/lunara-home';
   try {
-    assert.equal(getLLMConfigDir(), join(homedir(), '.lunara'));
-    assert.equal(getLLMConfigPath(), join(homedir(), '.lunara', 'config.json'));
+    // 测试进程里默认主目录是进程级临时目录（defaultLunaraHome），产品进程里是 ~/.lunara。
+    assert.equal(getLLMConfigDir(), defaultLunaraHome());
+    assert.notEqual(getLLMConfigDir(), '/tmp/lunara-home');
+    assert.notEqual(getLLMConfigDir(), join(homedir(), '.lunara'));
+    assert.equal(getLLMConfigPath(), join(defaultLunaraHome(), 'config.json'));
   } finally {
     if (prevDataDir === undefined) delete process.env.LUNARA_DATA_DIR;
     else process.env.LUNARA_DATA_DIR = prevDataDir;

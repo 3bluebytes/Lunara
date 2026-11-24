@@ -46,9 +46,9 @@
   --sky-moon-hue-offset: -180;                                /* → 46 奶白微暖月华 */
   --sky-moon-s: 32%; --sky-moon-l: 96%; --sky-moon-a: .80;    /* 月盘：清澈明净 */
   --sky-glow-1-hue-offset: 0;
-  --sky-glow-1-s: 48%; --sky-glow-1-l: 44%; --sky-glow-1-a: .90;
-  --sky-glow-2-s: 38%; --sky-glow-2-l: 34%; --sky-glow-2-a: .65;
-  --sky-base-s: 32%;   --sky-base-l1: 22%;  --sky-base-l2: 12%;
+  --sky-glow-1-s: 34%; --sky-glow-1-l: 20%; --sky-glow-1-a: .85;
+  --sky-glow-2-s: 30%; --sky-glow-2-l: 17%; --sky-glow-2-a: .65;
+  --sky-base-s: 32%;   --sky-base-l1: 15%;  --sky-base-l2: 9%;
   --sky-glow-2-hue-offset: 28;
   --sky-base-hue-offset: 0;
 
@@ -96,11 +96,11 @@
   --bg-page: #070b1a;
   --bg-stage:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .93 0 0 0 0 .9 0 0 0 0 .84 .12 0 0 0 -.035'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E"),
-    radial-gradient(700px 520px at 78% 26%, hsl(var(--ambient-hue) 42% 35%), transparent 72%),
+    radial-gradient(700px 520px at 78% 26%, hsl(var(--ambient-hue) 34% 20%), transparent 72%),
     linear-gradient(180deg, #121a3a, #070b1a 62%);
   --bg-sidebar: rgba(7,11,26,.4); --bg-player: rgba(7,10,24,.9); --bg-raised: #0e1533;
   --bg-input: rgba(7,10,24,.45); --bg-selected: rgba(236,230,214,.09); --bg-hover: rgba(236,230,214,.05);
-  --text: #ece6d6; --text-2: rgba(236,230,214,.74); --text-3: rgba(236,230,214,.6); --text-4: rgba(236,230,214,.42);
+  --text: #ece6d6; --text-2: rgba(236,230,214,.78); --text-3: rgba(236,230,214,.68); --text-4: rgba(236,230,214,.46);
   --text-on-accent: #1a1208;
   --line: rgba(236,230,214,.07); --line-strong: rgba(236,230,214,.12); --line-control: rgba(236,230,214,.16);
   --accent: #f2c46d; --accent-hover: #f7d590; --danger: #ff9f80; --ok: #7ef0c5;
@@ -109,10 +109,10 @@
   --partner-1-rgb: 217 184 214; --partner-2-rgb: 185 211 166; --partner-3-rgb: 217 183 155;
   --partner-4-rgb: 168 200 216; --partner-5-rgb: 214 200 145; --partner-6-rgb: 193 185 226;
   --partner-lunara: #f2c46d;
-  --font-display: 'Geist', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
-  --font-reading: 'Noto Serif SC', 'Songti SC', serif;
-  --font-ui: 'Geist', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
-  --font-mono: 'Geist Mono', monospace;
+  --font-display: 'Noto CJK Punct', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  --font-reading: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --font-ui: 'Noto CJK Punct', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   --size-clock-hero: 96px; --size-clock: 64px; --size-title: 40px; --size-song: 38px;
   --size-lyric-current: 28px; --size-lyric: 17px; --size-reading: 16px; --size-body: 14px;
   --size-meta: 12px; --size-label: 11px;

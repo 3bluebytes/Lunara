@@ -55,7 +55,7 @@ export function registerPresencePreferenceTool(toolRegistry, { getReception, get
         return outcome(false, 'PRESENCE_NOT_LISTENING', '现在没有在一起听，所以没有需要调整的主动说话。');
       }
       if (args.preference === 'quiet') {
-        reception.askQuiet(listening);
+        reception.askQuiet(listening, { sessionId: context.sessionId, roundId: context.roundId || context.requestId });
         if (!reception.isQuiet(listening)) return outcome(false, 'PRESENCE_PREFERENCE_UNAVAILABLE', '这次没能设置成功，不能答应。');
         return outcome(true, 'PRESENCE_QUIET_SET',
           '已生效：这次一起听不再主动开口；换个来源或下次一起听会恢复，聊天里也有一键恢复。用户说话时照常回应。',

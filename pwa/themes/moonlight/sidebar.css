@@ -39,7 +39,7 @@
   :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) #nav-settings { order: 8; margin-top: auto; }
   :root[data-theme="moonlight"][data-layout="stage"]:not([data-moonlight-sidebar="expanded"]) #nav-account { order: 9; margin-top: 0; }
   :root[data-theme="moonlight"][data-layout="stage"][data-moonlight-sidebar="expanded"] #sidebar-close { display: grid !important; flex: 0 0 32px; width: 32px; height: 32px; }
-  :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar .shell-nav-item.active { color: var(--accent); }
+  :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar .shell-nav-item.active { background: var(--bg-selected); color: var(--text); }
   :root[data-theme="moonlight"][data-layout="stage"] .conversation-sidebar .shell-nav-item svg { flex-shrink: 0; }
 }
 /* 窄屏仍为原抽屉；收起入口不能被共享舞台的隐藏规则吃掉。 */

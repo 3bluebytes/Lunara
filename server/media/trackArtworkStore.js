@@ -13,9 +13,7 @@
 // 解析顺序固定为「进程内缓存 → 持久表 → provider 查询」。网络永远只在最后一步发生，
 // 且必须是有界、可失败、不带凭据的：封面取不到只影响封面，绝不影响可播性判定。
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 export const ARTWORK_STATE = Object.freeze({ RESOLVED: 'resolved', ABSENT: 'absent' });
@@ -66,9 +64,7 @@ export class TrackArtworkStore {
   }
 
   initialize() {
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db = openSqliteDatabase(this.dbPath);
     // 幂等：既有库补建这张附加表，不改任何既有表结构。
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS track_artwork (
@@ -198,15 +194,19 @@ export class TrackArtworkStore {
   seed(provider, tracks = []) {
     const name = String(provider || '').trim().toLowerCase();
     if (!name) return 0;
-    let written = 0;
-    for (const track of tracks) {
-      const songId = String(track?.song_id ?? track?.songId ?? track?.id ?? '').trim();
-      if (!songId) continue;
-      const url = normalizeArtworkUrl(track?.pic_url ?? track?.artwork ?? '');
-      if (!url) continue;
-      if (this.put({ provider: name, songId, artwork: url })) written += 1;
-    }
-    return written;
+    const list = Array.isArray(tracks) ? tracks : [...(tracks || [])];
+    const run = () => {
+      let written = 0;
+      for (const track of list) {
+        const songId = String(track?.song_id ?? track?.songId ?? track?.id ?? '').trim();
+        if (!songId) continue;
+        const url = normalizeArtworkUrl(track?.pic_url ?? track?.artwork ?? '');
+        if (!url) continue;
+        if (this.put({ provider: name, songId, artwork: url })) written += 1;
+      }
+      return written;
+    };
+    return this.db ? this.db.transaction(run)() : run();
   }
 
   /**

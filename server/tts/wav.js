@@ -53,6 +53,24 @@ export function readWavInfo(bytes) {
     durationMs: fmt.byteRate > 0 ? Math.round((data.size / fmt.byteRate) * 1000) : null };
 }
 
+function buildCanonicalWavHeader({ channels, sampleRate, byteRate, blockAlign }, dataSize) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'latin1');
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8, 'latin1');
+  header.write('fmt ', 12, 'latin1');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(PCM_FORMAT, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36, 'latin1');
+  header.writeUInt32LE(dataSize, 40);
+  return header;
+}
+
 /** 去掉厂商附加块，输出只含 `fmt ` 与 `data` 的最小规范 WAV。 */
 export function toCanonicalWav(bytes, { providerId = null } = {}) {
   const info = readWavInfo(bytes);
@@ -72,23 +90,54 @@ export function toCanonicalWav(bytes, { providerId = null } = {}) {
     });
   }
   const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0, 'latin1');
-  header.writeUInt32LE(36 + info.dataSize, 4);
-  header.write('WAVE', 8, 'latin1');
-  header.write('fmt ', 12, 'latin1');
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(PCM_FORMAT, 20);
-  header.writeUInt16LE(info.channels, 22);
-  header.writeUInt32LE(info.sampleRate, 24);
-  header.writeUInt32LE(info.byteRate, 28);
-  header.writeUInt16LE(info.blockAlign, 32);
-  header.writeUInt16LE(16, 34);
-  header.write('data', 36, 'latin1');
-  header.writeUInt32LE(info.dataSize, 40);
+  const header = buildCanonicalWavHeader(info, info.dataSize);
   return {
     bytes: Buffer.concat([header, buffer.subarray(info.dataOffset, info.dataOffset + info.dataSize)]),
     durationMs: info.durationMs,
     info,
+  };
+}
+
+/** 按顺序拼接多段 16-bit PCM WAV，仅保留单个规范头，可选插入段间毫秒静音并重算长度与时长。 */
+export function concatWavBuffers(chunks, { providerId = null, pausesMs = [] } = {}) {
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    throw new TtsSynthesisError('no wav chunks to concatenate', {
+      providerId, code: 'TTS_INVALID_WAV',
+    });
+  }
+  const canonicals = chunks.map(chunk => toCanonicalWav(chunk, { providerId }));
+  if (canonicals.length === 1) return canonicals[0];
+  const base = canonicals[0].info;
+  let totalDataSize = 0;
+  const segments = [];
+  for (let index = 0; index < canonicals.length; index += 1) {
+    const { info, bytes: canonicalBytes } = canonicals[index];
+    if (info.channels !== base.channels || info.sampleRate !== base.sampleRate
+      || info.bitsPerSample !== base.bitsPerSample || info.blockAlign !== base.blockAlign) {
+      throw new TtsSynthesisError(
+        `incompatible wav chunk format (${info.sampleRate}Hz/${info.channels}ch vs ${base.sampleRate}Hz/${base.channels}ch)`,
+        { providerId, code: 'TTS_INCOMPATIBLE_WAV_CHUNKS' },
+      );
+    }
+    const pauseMs = index > 0 ? Math.max(0, Number(pausesMs[index]) || 0) : 0;
+    if (pauseMs > 0) {
+      const silenceSamples = Math.round((base.sampleRate * pauseMs) / 1000);
+      const silenceBytes = silenceSamples * base.blockAlign;
+      if (silenceBytes > 0) {
+        segments.push(Buffer.alloc(silenceBytes));
+        totalDataSize += silenceBytes;
+      }
+    }
+    const pcm = canonicalBytes.subarray(44);
+    segments.push(pcm);
+    totalDataSize += pcm.length;
+  }
+  const header = buildCanonicalWavHeader(base, totalDataSize);
+  const bytes = Buffer.concat([header, ...segments]);
+  const durationMs = base.byteRate > 0 ? Math.round((totalDataSize / base.byteRate) * 1000) : null;
+  return {
+    bytes,
+    durationMs,
+    info: { ...base, dataOffset: 44, dataSize: totalDataSize, durationMs },
   };
 }

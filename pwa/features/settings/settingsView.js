@@ -6,7 +6,7 @@ import { createFreeVoiceSettings, FREE_EDGE_ENDPOINT_ID, FREE_EDGE_LABEL } from 
 import { createRecipeSettings, guessProtocolChoice, parseProtocolChoice, protocolChoiceOf, RECIPE_PROTOCOL } from './recipeSettings.js';
 
 // 设置面板的固定分类（与 index.html 的 data-settings-page 一一对应）。
-const SETTINGS_PAGES = ['general', 'appearance', 'memory', 'connection', 'usage', 'voice', 'tags'];
+const SETTINGS_PAGES = ['general', 'appearance', 'memory', 'connection', 'usage', 'voice', 'tags', 'failover'];
 
 export function initSettingsView({
   controller,
@@ -60,7 +60,10 @@ export function initSettingsView({
   let discoveredModels = [];
   // 歌曲打标：只剩自动开关（模型跟随全局"使用中"，unified-model-providers）+ 覆盖率状态。
   let songTag = { auto: false };
+  let songTagLoaded = false;
   let songTagCoverage = null;
+  let savedGeneralState = null;
+  let closeConfirmSignature = '';
   // 待选名单的挑选辅助：筛选词、勾选集合与试听状态（几百个声音时按名筛选，
   // 先试听再批量去留）。勾选按 endpointId::sourceVoiceId 记，改名/重排/多接口同名都不会错位。
   let voiceFilter = '';
@@ -143,11 +146,11 @@ export function initSettingsView({
     const llm = current.llm || {};
     const activeRadiohost = getActiveRadiohost();
     const radiohostName = activeRadiohost?.name || (getMode() === 'lobby' ? '大厅' : '—');
-    $('#sb-meta-llm').textContent = llm.model || '未配置 LLM';
+    $('#sb-meta-llm').textContent = llm.model || '还没接入模型';
     const sourceLabel = current.playbackSourceMode === 'single' ? `单源 · ${current.primarySource || 'qq'}` : '多源播放';
-    $('#sb-meta-source').textContent = `${radiohostName} · ${sourceLabel}`;
+    $('#sb-meta-source').textContent = radiohostName; // 播放源由旁边的 #sb-meta-source-primary 单独显示，不重复
     $('#sb-meta-source-primary').textContent = sourceLabel;
-    $('#sb-meta-llm').title = llm.ready ? llm.baseUrl : '请填写 Base URL / API Key / Model';
+    $('#sb-meta-llm').title = llm.ready ? llm.baseUrl : '到「设置 → 模型与连接」接入模型';
     $('#sb-meta-source').title = `伙伴: ${activeRadiohost?.voiceProfileId || radiohostName} | ${sourceLabel}`;
   }
 
@@ -161,7 +164,7 @@ export function initSettingsView({
         ...selection,
         apiKeySet: snapshot.current?.llm?.apiKeySet,
       });
-      if (!endpoint.ready) warning = '请完整填写 Base URL / API Key / Model；已保存过的 Key 可以留空。';
+      if (!endpoint.ready) warning = '请完整填写接口地址、接口密钥与模型名称；已保存过的密钥可以留空。';
       ready = ready && endpoint.ready;
     }
     if (!ready && !warning) warning = '请先选择可用的播放源。';
@@ -207,7 +210,7 @@ export function initSettingsView({
     }).join('');
     const status = $('#settings-source-account-status');
     if (status) status.textContent = accountError || (accountBusy ? '正在退出账号…'
-      : refreshingAccounts ? '正在读取登录状态…' : '登录状态与左下角「音乐源」同步；登录不切歌。');
+      : refreshingAccounts ? '正在读取登录状态…' : '登录后即可搜索和播放；登录不切歌。');
   }
 
   async function refreshAccounts() {
@@ -1216,6 +1219,7 @@ export function initSettingsView({
   }
 
   async function refreshSongTag() {
+    songTagLoaded = false;
     try {
       // 直接 await（不用 .catch 链、不用 Promise.all）：状态请求失败可容忍，
       // 但每个 await 都要在打开面板的同一轮微任务内完成，与 refreshCustomTts 的
@@ -1226,6 +1230,7 @@ export function initSettingsView({
       songTag = { auto: Boolean(config?.auto) };
       songTagCoverage = status;
       renderSongTag();
+      songTagLoaded = true;
     } catch (error) {
       songTagMessage(`读取打标配置失败：${error.message}`);
     }
@@ -1240,6 +1245,8 @@ export function initSettingsView({
     if (button) button.disabled = true;
     try {
       songTag = await controller.saveSongTagConfig(readSongTagInputs());
+      songTagLoaded = true;
+      closeConfirmSignature = '';
       renderSongTag();
       songTagCoverage = await controller.loadSongTagStatus().catch(() => songTagCoverage);
       renderSongTagCoverage();
@@ -1522,6 +1529,74 @@ export function initSettingsView({
     try { renderOpen(); } finally { opening = false; }
   }
 
+  function serializeGeneralState() {
+    const weights = Object.entries(weightDraft || {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => [key, Math.round((Number(value) || 0) * 100)]);
+    return JSON.stringify({
+      playbackSourceMode: selection.playbackSourceMode,
+      primarySource: selection.primarySource,
+      baseUrl: selection.baseUrl,
+      apiKey: selection.apiKey,
+      model: selection.model,
+      weights,
+    });
+  }
+
+  function unsavedSections() {
+    const dirty = [];
+    if (savedGeneralState !== null && serializeGeneralState() !== savedGeneralState) {
+      dirty.push('播放来源');
+    }
+    if (songTagLoaded && Boolean($('#song-tag-auto')?.checked) !== Boolean(songTag.auto)) {
+      dirty.push('歌曲打标');
+    }
+    const newEndpointDirty = currentEndpointId === NEW_ENDPOINT && Boolean(
+      String($('#tts-custom-name')?.value || '').trim()
+      || String($('#tts-custom-url')?.value || '').trim()
+      || String($('#tts-custom-key')?.value || '').trim()
+      || String($('#tts-custom-model')?.value || '').trim()
+      || recipeSettings.pendingRecipe(),
+    );
+    if (editorDirty() || newEndpointDirty) {
+      dirty.push('语音接口');
+    }
+    if (poolChangeCount() > 0) {
+      dirty.push('声音池');
+    }
+    if (String($('#mem-input')?.value || '').trim()) {
+      dirty.push('未提交的记忆草稿');
+    }
+    return dirty;
+  }
+
+  function dirtySignature() {
+    return JSON.stringify({
+      general: savedGeneralState !== null && serializeGeneralState() !== savedGeneralState ? serializeGeneralState() : '',
+      songTag: songTagLoaded ? Boolean($('#song-tag-auto')?.checked) : null,
+      ttsEndpoint: editorDirty() || currentEndpointId === NEW_ENDPOINT
+        ? [
+          currentEndpointId,
+          String($('#tts-custom-name')?.value || '').trim(),
+          String($('#tts-custom-url')?.value || '').trim(),
+          String($('#tts-custom-model')?.value || '').trim(),
+          Boolean(String($('#tts-custom-key')?.value || '').trim()),
+          $('#tts-custom-protocol')?.value || '',
+          Boolean(recipeSettings.pendingRecipe()),
+        ]
+        : null,
+      pool: poolChangeCount(),
+      mem: String($('#mem-input')?.value || '').trim(),
+    });
+  }
+
+  function resetCloseConfirmation() {
+    closeConfirmSignature = '';
+    const closeBtn = $('#boot-close');
+    closeBtn?.removeAttribute?.('data-confirm-close');
+    closeBtn?.setAttribute?.('aria-label', '关闭设置');
+  }
+
   function renderOpen() {
     const current = snapshot.current || {};
     // 壳层已经把设置当成当前页面切过来了：这时只渲染内容，不再反向导航（否则会递归）。
@@ -1538,6 +1613,8 @@ export function initSettingsView({
     weightDraft = { ...(selection.recommendationWeights || {}) };
     renderOptions();
     validate();
+    savedGeneralState = serializeGeneralState();
+    resetCloseConfirmation();
     renderLocation();
     setPage(activePage);
     try { onOpen(); } catch { /* 分区加载失败不能挡住设置面板打开 */ }
@@ -1557,8 +1634,42 @@ export function initSettingsView({
     }
   }
 
-  function close() {
+  function close(options = {}) {
     const wasOpen = isOpen();
+    if (!wasOpen) {
+      resetCloseConfirmation();
+      stopPreview();
+      $('#settings-panel').hidden = true;
+      $('#app')?.classList?.remove?.('settings-open');
+      return true;
+    }
+    const bypassGuard = options?.complete === true || options?.force === true;
+    if (!bypassGuard) {
+      const dirty = unsavedSections();
+      const sig = dirtySignature();
+      if (dirty.length > 0 && closeConfirmSignature !== sig) {
+        closeConfirmSignature = sig;
+        const closeBtn = $('#boot-close');
+        closeBtn?.setAttribute?.('data-confirm-close', '1');
+        closeBtn?.setAttribute?.('aria-label', '放弃未保存改动并关闭设置');
+        if (dirty.includes('播放来源') && $('#boot-warn')) {
+          $('#boot-warn').textContent = '播放来源有未保存的改动；点「保存设置」生效，或再次关闭放弃改动。';
+        }
+        if (dirty.includes('歌曲打标') && $('#song-tag-status')) {
+          $('#song-tag-status').textContent = '自动补标开关尚未保存；点「保存」生效，或再次关闭放弃改动。';
+        }
+        if (dirty.includes('语音接口') && $('#tts-custom-status')) {
+          $('#tts-custom-status').textContent = '语音接口有未保存的改动；点「保存接口」生效，或再次关闭放弃改动。';
+        }
+        if (dirty.includes('声音池') && $('#tts-custom-dirty')) {
+          $('#tts-custom-dirty').hidden = false;
+          $('#tts-custom-dirty').textContent = '声音池有未保存的改动；点「保存声音池」生效，或再次关闭放弃改动。';
+        }
+        onToast('info', '还有未保存的设置', `「${dirty.join('、')}」尚未保存；再点一次关闭或再按一次 Esc 将放弃改动。`, { curated: true });
+        return false;
+      }
+    }
+    resetCloseConfirmation();
     stopPreview();
     $('#settings-panel').hidden = true;
     $('#app')?.classList?.remove?.('settings-open');
@@ -1600,7 +1711,10 @@ export function initSettingsView({
     if (link?.dataset?.settingsPageLink) setPage(link.dataset.settingsPageLink);
   });
   listen(documentLike, 'keydown', event => {
-    if (event?.key === 'Escape' && isOpen() && !event.defaultPrevented) close();
+    if (event?.key === 'Escape' && isOpen() && !event.defaultPrevented && !documentLike.querySelector?.('dialog[open]')) {
+      event.preventDefault?.();
+      close();
+    }
   });
   listen($('#boot-primary'), 'change', event => {
     selection.primarySource = event.currentTarget.value;
@@ -1637,7 +1751,7 @@ export function initSettingsView({
   listen($('#sb-cog'), 'click', open);
   listen($('#sb-meta-llm'), 'click', open);
   listen($('#sb-meta-source'), 'click', open);
-  listen($('#boot-close'), 'click', close);
+  listen($('#boot-close'), 'click', () => { close(); });
   listen($('#boot-location-save'), 'click', () => { void saveLocation(); });
   listen($('#boot-location-auto'), 'click', () => { void autoDetectLocation(); });
   listen($('#boot-location-clear'), 'click', () => { void clearSavedLocation(); });
@@ -1747,6 +1861,7 @@ export function initSettingsView({
     $('#tts-custom-voices-btn')?.focus?.();
   });
   listen($('#boot-go'), 'click', async () => {
+    const firstBoot = storage.getItem(STORAGE_KEYS.bootDone) !== '1';
     try {
       const payload = {
         playbackSourceMode: selection.playbackSourceMode,
@@ -1760,9 +1875,13 @@ export function initSettingsView({
         payload.model = selection.model.trim();
       }
       await controller.save(payload);
+      savedGeneralState = serializeGeneralState();
+      resetCloseConfirmation();
       storage.setItem(STORAGE_KEYS.bootDone, '1');
+      const warn = $('#boot-warn');
+      if (warn) warn.textContent = '设置已保存；当前歌曲与队列没有变化。';
       onToast('success', '设置已保存', `${selection.playbackSourceMode === 'single' ? '单源' : '多源'}播放已生效；当前歌曲与队列没有变化。`, { curated: true });
-      close({ complete: true });
+      if (firstBoot) close({ complete: true });
     } catch (error) {
       onError(error);
     }

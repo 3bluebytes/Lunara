@@ -27,7 +27,7 @@ import { PresenceObserver } from './PresenceObserver.js';
 import { registerPresencePreferenceTool } from './presencePreferenceTool.js';
 import { createReceptionSignals } from './receptionSignals.js';
 import { createPresencePreferences } from './presencePreferences.js';
-import { presenceTemperamentOf } from './presenceTemperament.js';
+import { describeEffectivePresence, presenceTemperamentOf } from './presenceTemperament.js';
 
 export const PRESENCE_PREF_KEY = 'presence_state_v1';
 const AUDIBLE_PHASES = new Set([PlaybackPhase.PLAYING, PlaybackPhase.EXHAUSTED]);
@@ -58,7 +58,7 @@ const unrefTimer = (fn, ms) => {
 
 export function createPresenceWiring({ playbackRuntime, sessionTrace = null, state, getActivity,
   virtualPerson = null, queueService = null, clientHub = null, usageLedger = null, publish = null,
-  env = process.env, logger = console, now = () => Date.now(),
+  onSkipMomentum = null, env = process.env, logger = console, now = () => Date.now(),
   timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, heartbeatOptions = {} } = {}) {
   const trace = (sessionId, event) => sessionTrace?.recordScoped?.(sessionId, event);
   const enabled = env.PRESENCE_AUTO !== '0';
@@ -73,6 +73,8 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
   const runtime = virtualPerson?.runtime;
   let heartbeat = null;
   let greeter = null;
+  // 这一拍由谁出声（群聊按主持人/点歌人解析）；心跳没装起来时没有出声者。
+  let speakerOf = () => null;
   // 接收信号（D5）：节奏系数与「安静点」。「安静点」变了就广播给房间（可见状态 + 一键恢复），并重新判断上弦。
   const reception = createReceptionSignals({ now, trace, onChange: change => {
     if (change.type === 'quiet') {
@@ -92,6 +94,7 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
         const person = virtualPerson?.registry?.get?.(id);
         return Boolean(person) && person.status !== 'archived';
       } });
+    speakerOf = snapshot => voiceOf(snapshot).holderId || null;
     const ambient = createAmbientPresence({
       runtime, presentationService: virtualPerson.presentationService, queueService, logger, trace,
       canSpeakAloud: canSpeakAloudFor({ playbackRuntime, clientCount }),
@@ -133,21 +136,19 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
       isWakeCurrent: wake => wake.signal?.aborted !== true,
     });
     greeter = createAppOpenGreeter({
-      state, now, timeZone, trace, logger,
+      state, now, trace, logger,
+      reserveHost: typeof runtime.holdBackgroundHost === 'function' ? (...args) => runtime.holdBackgroundHost(...args) : null,
       isEnabled: () => preferences.greetingEnabled(),
       inQuietHours: () => inQuietHours(now(), timeZone),
       budgetExhausted: ambientBudgetExhausted(usageLedger),
       listenerQuiet: sessionId => reception.isQuiet(sessionId),
-      // 这个聊天正在一起听、在放歌：心跳负责，不重复叫醒。
-      isHeartbeatRoom: sessionId => {
-        const snapshot = playbackRuntime.snapshot();
-        return snapshot?.activeListeningSessionId === sessionId && AUDIBLE_PHASES.has(snapshot.phase);
-      },
       listRooms: () => conversationStore?.listRooms?.() || [],
-      notesFor: query => conversationStore?.notes?.listVisible?.(query) || [],
+      markReturnGreeted: (sessionId, turnId) => conversationStore?.setReturnGreetedTurnId?.(sessionId, turnId),
       runTurn: async wake => {
         const result = await greet(wake);
         if (result?.outcome === 'text-only') reception.noteLine(wake.sessionId, { voiced: false });
+        // 她真的跑了这一轮（说了或选择安静）：正在一起听时心跳算一拍，不紧接着再开口。
+        if (['spoken', 'text-only', 'quiet'].includes(result?.outcome)) heartbeat.noteExternalWake(wake.sessionId);
         return result;
       },
     });
@@ -172,10 +173,18 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
   if (heartbeat) {
     // 「app 开着」= 至少一个客户端在线：连上/断开都重新判断上弦条件。
     clientHub?.onClientsChanged?.(() => heartbeat.refresh());
-    runtime.onUserTurn(sessionId => {
-      reception.noteUserTurn(sessionId);
+    runtime.onUserTurn((sessionId, meta) => {
+      reception.noteUserTurn(sessionId, meta);
       observer.noteUserTurn(sessionId);
       greeter?.noteUserTurn(sessionId);
+    });
+    runtime.onRoundSettled?.(event => {
+      const codes = Array.isArray(event?.outcomeCodes) ? event.outcomeCodes : [];
+      const pureSilentControl = codes.includes('PRESENCE_QUIET_SET')
+        || (codes.length > 0 && codes.every(code => code === 'LISTENING_CONTROLLED' || code === 'PRESENCE_QUIET_SET'));
+      if (!event?.ok || event?.cancelled || pureSilentControl) {
+        reception.revertUserTurn({ sessionId: event?.sessionId, roundId: event?.roundId });
+      }
     });
     // 可见/正在输入的汇总：回来的边沿，以及「你开始打字/全都切走」时中止问候。
     if (greeter && typeof clientHub?.onPresenceChanged === 'function') {
@@ -183,7 +192,12 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
       if (typeof clientHub.presenceSummary === 'function') greeter.updateClients(clientHub.presenceSummary());
     }
     observer.onMoment(moment => {
-      if (moment.kind === 'track_skipped') reception.noteSkip(moment.sessionId);
+      if (moment.kind === 'track_skipped') {
+        reception.noteSkip(moment.sessionId);
+        if (Number(moment.evidence?.consecutiveSkips) >= 2) {
+          try { onSkipMomentum?.(moment); } catch { logger?.warn?.('[presence] skip momentum hook failed'); }
+        }
+      }
       if (moment.kind === 'session_open') reception.noteSessionOpen(moment.sessionId);
     });
     // 换了听歌来源：上一个来源的「安静点」到此为止（暂停/停止不算换）。
@@ -202,6 +216,20 @@ export function createPresenceWiring({ playbackRuntime, sessionTrace = null, sta
     /** 房间里的一键恢复：只清这个来源的「安静点」。 */
     restoreListenerQuiet: sessionId => ({ restored: reception.restore(sessionId), listenerQuietSessionId: reception.quietSessionId() }),
     preferences: () => preferences.get(),
+    /** 生效话量（只读）：当前听歌来源实际会多主动，以及是什么把它压低的。没有听歌来源时 sessionId 为 null。 */
+    effective() {
+      const snapshot = playbackRuntime.snapshot?.() || null;
+      const sessionId = snapshot?.activeListeningSessionId || null;
+      const speakerId = sessionId ? speakerOf(snapshot) : null;
+      const modeId = snapshot?.companionModeId ?? null;
+      const temperament = speakerId ? temperamentFor(speakerId) : 'balanced';
+      return { sessionId, speakerId, modeId, temperament, ...describeEffectivePresence({
+        available: Boolean(heartbeat) && preferences.get().available !== false,
+        ambientEnabled: preferences.ambientEnabled(),
+        listenerQuiet: sessionId ? reception.isQuiet(sessionId) : false,
+        modeId, temperament,
+      }) };
+    },
     /** 写入成功才返回新值；关闭时立即撤弦并中止进行中的 ambient turn / 问候。 */
     setPreferences(input) {
       const next = preferences.set(input);

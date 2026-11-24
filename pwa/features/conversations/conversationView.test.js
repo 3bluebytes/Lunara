@@ -48,7 +48,7 @@ function domElement({ value = '', query = {} } = {}) {
   };
 }
 
-function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runtimeState: runtimeOverride = null, turns = [], shellSidebar = '', chat = { pending: false, composing: [] }, persons = [
+function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runtimeState: runtimeOverride = null, turns = [], turnsBySession = null, stateBySession = null, loadTranscript = null, shellSidebar = '', chat = { pending: false, composing: [] }, extraNodes = null, setTimer = null, clearTimer = null, now = null, persons = [
   { id: 'lunara', displayName: 'Lunara', kind: 'root' },
   { id: 'radiohost-a', displayName: '夜航', kind: 'radiohost' },
 ] } = {}) {
@@ -67,16 +67,31 @@ function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runti
     '#room-delete-confirm', '#room-delete-lead', '#room-delete-error', '#room-delete-cancel', '#room-delete-confirm-button',
     // 听歌列的旁白块：真的有过串词才出现。
     '#listening-narration', '#listening-narration-label', '#listening-intro', '#listening-intro-text', '#listening-intro-source',
+    '#listening-artwork-caption', '#focus-artwork-caption',
     '#listening-hero',
     // 听歌列渲染需要锚点：没有它们，render 只会在选中真实聊天时半途中断。
-    '#room-title', '#room-members', '#chat-list', '#room-cancel', '#room-history',
+    '#room-title', '#room-introduction', '#room-members', '#chat-list', '#room-cancel', '#room-history',
     '#room-invite', '#player-cover', '#player-person', '#player-source', '#player-switch-cancel',
     '#room-composing', '#room-composing-text',
+    '#sb-queue', '.queue-pop-head', '.cike-next h3', '#listening-next-queue', '#listening-strip-queue',
+    '#source-mismatch', '#source-mismatch-copy', '#status',
   ];
   const nodes = new Map(selectors.map(selector => [selector, domElement()]));
+  const thinkingText = domElement();
+  thinkingText.textContent = '正在想';
+  const thinkingNode = domElement({ query: { '.thinking-text': thinkingText } });
+  thinkingNode.style.display = 'none';
+  nodes.set('#thinking', thinkingNode);
+  if (extraNodes) {
+    for (const [selector, node] of Object.entries(extraNodes)) nodes.set(selector, node);
+  }
   // 旁白块里的发丝线：只在真有串词（有出处）时出现，要有节点才能断言。
   nodes.set('#listening-intro', domElement({ query: { '.listening-narration-rule': domElement() } }));
-  nodes.set('#room-person-choices', domElement({ query: { 'input:checked': checkedPeople } }));
+  const roomPersonChoices = domElement();
+  roomPersonChoices.querySelectorAll = selector => selector === 'input:checked'
+    ? [...String(roomPersonChoices.innerHTML || '').matchAll(/value="([^"]+)"\s+checked/g)].map(m => ({ value: m[1] }))
+    : [];
+  nodes.set('#room-person-choices', roomPersonChoices);
   const menuItems = new Map(['pin', 'rename', 'unread', 'archive', 'delete'].map(action => {
     const item = domElement();
     item.dataset.menuAction = action;
@@ -104,7 +119,17 @@ function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runti
   const playbackCalls = [];
   const controllerCalls = [];
   let nextSession = 0;
-  const localView = () => ({ draft: '', scroll: null, turns, loaded: true, unread: false, hasOlder: false });
+  const sessionStates = new Map();
+  const stateFor = sid => {
+    if (!turnsBySession && !stateBySession) {
+      return { draft: '', scroll: null, turns, loaded: true, unread: false, hasOlder: false };
+    }
+    if (!sessionStates.has(sid)) {
+      const override = stateBySession?.[sid] || (turnsBySession?.[sid] ? { turns: turnsBySession[sid] } : null);
+      sessionStates.set(sid, { draft: '', scroll: null, turns: [], loaded: true, unread: false, hasOlder: false, ...override });
+    }
+    return sessionStates.get(sid);
+  };
   const controller = {
     snapshot: () => {
       const sessionId = store.getState().sessionId;
@@ -113,28 +138,35 @@ function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runti
         rooms: list,
         room: roomsOverride ? (list.find(item => item.sessionId === sessionId) || null) : room,
         sessionId,
-        local: localView(),
+        local: stateFor(sessionId),
         pending: chat.pending,
+        pendingSince: chat.pendingSince ?? null,
+        pendingPhase: chat.pendingPhase || 'chat',
         composing: chat.composing,
       };
     },
-    stateFor: () => ({ draft: '', scroll: null, turns, loaded: true, unread: false, hasOlder: false }),
+    stateFor,
+    ...(loadTranscript ? { loadTranscript } : {}),
     person: id => persons.find(person => person.id === id) || null,
     roomName: value => value?.title || '新聊天',
     saveView() {},
+    update: async input => { controllerCalls.push(['update-current', input]); },
     updateRoomById: async (sid, input) => { controllerCalls.push(['update', sid, input]); },
     deleteRoomById: async sid => { controllerCalls.push(['delete', sid]); },
     select: async sid => { controllerCalls.push(['select', sid]); },
     create: async input => {
       createCalls.push(input);
-      room = { ...input, sessionId: `conversation:new-${++nextSession}`, activeVirtualPersonId: input.memberIds[0] };
+      room = { ...input, sessionId: `conversation:new-${++nextSession}`, activeVirtualPersonId: input.hostId || input.memberIds[0] };
       store.update({ sessionId: room.sessionId }, { type: 'conversation.selected' });
       return room;
     },
     subscribe: () => () => {},
   };
   const apiClient = { post: async (path, body) => { apiCalls.push([path, body]); return { ok: true }; } };
-  const playbackRuntimeClient = { listenWith: async (sessionId, delivery) => playbackCalls.push([sessionId, delivery]) };
+  const playbackRuntimeClient = {
+    listenWith: async (sessionId, delivery) => playbackCalls.push([sessionId, delivery]),
+    selectQueueItem: async queueItemId => playbackCalls.push(['selectQueueItem', queueItemId]),
+  };
   const documentLike = {
     body: { classList: { remove() {}, toggle() {}, contains: () => false } },
     documentElement: {},
@@ -147,10 +179,12 @@ function createHarness({ sidebarPresentation = null, rooms: roomsOverride, runti
     addEventListener() {},
     removeEventListener() {},
   };
-  const viewStore = { getState: store.getState, subscribe: () => () => {} };
   const settingsOpenCalls = [], settingsCloseCalls = [], errors = [], lockCalls = [], pendingCalls = [];
   const view = createConversationView({
-    controller, store: viewStore, apiClient, playbackRuntimeClient, documentLike, sidebarPresentation,
+    controller, store, apiClient, playbackRuntimeClient, documentLike, sidebarPresentation,
+    ...(setTimer ? { setTimer } : {}),
+    ...(clearTimer ? { clearTimer } : {}),
+    ...(now ? { now } : {}),
     chatController: { replaceTranscript() {} }, chatInputView: { setLocked: (locked, message, options = {}) => lockCalls.push([locked, message, ...(options.source ? [{ source: options.source }] : [])]),
       setPending: (pending, message) => pendingCalls.push([pending, message]) },
     onSettingsOpen: () => settingsOpenCalls.push('open'),
@@ -293,13 +327,13 @@ test('the moonlight presentation can collapse a workspace without closing it or 
   assert.deepEqual(h.errors, []);
 });
 
-test('creating a chat from a saved radiohost opens a separate validated form and preserves listening', async () => {
+test('creating a chat from a saved radiohost defaults to 1v1 without forcing Lunara and preserves listening', async () => {
   const harness = createHarness();
   harness.view.openCreateRoomForPerson(harness.persons[1]);
 
   assert.equal(harness.nodes.get('#room-name').required, true);
   assert.match(harness.nodes.get('#room-person-choices').innerHTML, /value="radiohost-a" checked/);
-  assert.match(harness.nodes.get('#room-person-choices').innerHTML, /value="lunara" checked/);
+  assert.doesNotMatch(harness.nodes.get('#room-person-choices').innerHTML, /value="lunara" checked/);
   harness.nodes.get('#room-name').value = '   ';
   await harness.nodes.get('#room-picker-form').trigger('submit');
   assert.equal(harness.createCalls.length, 0);
@@ -307,11 +341,23 @@ test('creating a chat from a saved radiohost opens a separate validated form and
 
   harness.nodes.get('#room-name').value = '  夜航的房间  ';
   await harness.nodes.get('#room-picker-form').trigger('submit');
-  assert.deepEqual(harness.createCalls, [{ title: '夜航的房间', memberIds: ['lunara', 'radiohost-a'] }]);
+  assert.deepEqual(harness.createCalls, [{ title: '夜航的房间', memberIds: ['radiohost-a'], hostId: 'radiohost-a', interactionMode: 'radio' }]);
   assert.equal(harness.apiCalls.length, 0);
   assert.equal(harness.playbackCalls.length, 0);
   assert.deepEqual(harness.store.getState().runtimeState, harness.rootRuntime);
   assert.equal(harness.nodes.get('#room-picker').open, false, harness.nodes.get('#room-picker-error').textContent);
+
+  // 用户手动多勾选 Lunara 建双人群聊时，preferredHostId 仍保持新伙伴夜航为主理人。
+  harness.view.openCreateRoomForPerson(harness.persons[1]);
+  harness.nodes.get('#room-person-choices').innerHTML = '<input value="lunara" checked /><input value="radiohost-a" checked />';
+  harness.nodes.get('#room-name').value = '夜航与Lunara';
+  await harness.nodes.get('#room-picker-form').trigger('submit');
+  assert.deepEqual(harness.createCalls.at(-1), {
+    title: '夜航与Lunara',
+    memberIds: ['lunara', 'radiohost-a'],
+    hostId: 'radiohost-a',
+    interactionMode: 'radio',
+  });
 });
 
 test('the separate create-and-listen path sends playback intent only after explicit form submit', async () => {
@@ -768,6 +814,220 @@ test('with nothing playing the narration block is an opening line, not a history
   h.view.destroy();
 });
 
+test('browsing an empty or suspended room preserves active listening narration, caption, and resets room introduction', () => {
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:other', title: '新聊天', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+    { sessionId: 'conversation:suspended', title: '旧歌房间', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const h = createHarness({
+    rooms,
+    runtimeState: {
+      activeListeningSessionId: 'conversation:primary',
+      queue: [{ queueItemId: 'current-1', songId: 'song-1', title: '主会话当前歌', artist: '主歌手', album: '主专辑' }],
+      currentIndex: 0,
+      currentSongId: 'song-1',
+      txn: { queueItemId: 'current-1', correlationId: 'txn-1' },
+      suspendedSessions: {
+        'conversation:suspended': {
+          queue: [{ queueItemId: 'old-1', songId: 'old-song', title: '挂起旧歌', artist: '旧歌手', album: '旧专辑' }],
+          currentIndex: 0,
+          currentSongId: 'old-song',
+        },
+      },
+    },
+    turnsBySession: {
+      'conversation:primary': [{
+        turnId: 'intro:current-1', role: 'assistant', presentation: 'track_intro',
+        queueItemId: 'current-1', text: '前奏慢慢推上来。', speakerVirtualPersonId: 'lunara',
+      }],
+      'conversation:other': [],
+      'conversation:suspended': [{
+        turnId: 'intro:old-1', role: 'assistant', presentation: 'track_intro',
+        queueItemId: 'old-1', text: '旧歌的推歌手记不该出现。', speakerVirtualPersonId: 'radiohost-a',
+      }],
+    },
+  });
+
+  h.view.render();
+  assert.equal(h.nodes.get('#room-introduction').textContent, '这一首由 Lunara 介绍');
+  assert.equal(h.nodes.get('#listening-intro-text').textContent, '前奏慢慢推上来。');
+  assert.equal(h.nodes.get('#listening-intro-source').textContent, 'Lunara · 《主会话当前歌》推歌手记');
+  assert.equal(h.nodes.get('#listening-intro-source').hidden, false);
+  assert.equal(h.nodes.get('#listening-narration-label').textContent, 'Lunara 的旁白');
+  assert.equal(h.nodes.get('#listening-artwork-caption').textContent, '主专辑');
+  assert.equal(h.nodes.get('#focus-artwork-caption').textContent, '主专辑');
+
+  // 切换到没有播放记录的新聊天：仍显示正在放的那一首的串词与出处，不回退成「这里还没有在放的歌」。
+  h.store.update({ sessionId: 'conversation:other' });
+  h.view.render();
+  assert.equal(h.nodes.get('#room-introduction').textContent, '此刻在这里，也在等你说话');
+  assert.equal(h.nodes.get('#listening-intro-text').textContent, '前奏慢慢推上来。');
+  assert.doesNotMatch(h.nodes.get('#listening-intro-text').textContent, /还没有在放的歌/);
+  assert.equal(h.nodes.get('#listening-intro-source').textContent, 'Lunara · 《主会话当前歌》推歌手记');
+  assert.equal(h.nodes.get('#listening-intro-source').hidden, false);
+  assert.equal(h.nodes.get('#listening-intro').querySelector('.listening-narration-rule').hidden, false);
+  assert.equal(h.nodes.get('#listening-narration-label').textContent, 'Lunara 的旁白');
+  assert.equal(h.nodes.get('#listening-artwork-caption').textContent, '主专辑');
+  assert.equal(h.nodes.get('#focus-artwork-caption').textContent, '主专辑');
+
+  // 切换到带有挂起旧歌的聊天：也不得把挂起旧歌的推歌手记或介绍人张冠李戴过来。
+  h.store.update({ sessionId: 'conversation:suspended' });
+  h.view.render();
+  assert.equal(h.nodes.get('#room-introduction').textContent, '此刻在这里，也在等你说话');
+  assert.equal(h.nodes.get('#listening-intro-text').textContent, '前奏慢慢推上来。');
+  assert.equal(h.nodes.get('#listening-intro-source').textContent, 'Lunara · 《主会话当前歌》推歌手记');
+  assert.equal(h.nodes.get('#listening-intro-source').hidden, false);
+  assert.equal(h.nodes.get('#listening-narration-label').textContent, 'Lunara 的旁白');
+  assert.equal(h.nodes.get('#listening-artwork-caption').textContent, '主专辑');
+  assert.equal(h.nodes.get('#focus-artwork-caption').textContent, '主专辑');
+  h.view.destroy();
+});
+
+test('browsing an empty or suspended room preserves the silent-track line when active song has no narration', () => {
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:other', title: '新聊天', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+    { sessionId: 'conversation:suspended', title: '旧歌房间', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const h = createHarness({
+    rooms,
+    runtimeState: {
+      activeListeningSessionId: 'conversation:primary',
+      queue: [{ queueItemId: 'current-1', songId: 'song-1', title: '纯听留白歌', artist: '主歌手' }],
+      currentIndex: 0,
+      currentSongId: 'song-1',
+      txn: { queueItemId: 'current-1', correlationId: 'txn-1' },
+      suspendedSessions: {
+        'conversation:suspended': {
+          queue: [{ queueItemId: 'old-1', songId: 'old-song', title: '挂起旧歌', artist: '旧歌手', album: '旧专辑' }],
+          currentIndex: 0,
+          currentSongId: 'old-song',
+        },
+      },
+    },
+    turnsBySession: {
+      'conversation:primary': [],
+      'conversation:other': [],
+      'conversation:suspended': [{
+        turnId: 'intro:old-1', role: 'assistant', presentation: 'track_intro',
+        queueItemId: 'old-1', text: '旧歌的推歌手记不该出现。', speakerVirtualPersonId: 'radiohost-a',
+      }],
+    },
+  });
+
+  for (const sid of ['conversation:primary', 'conversation:other', 'conversation:suspended']) {
+    h.store.update({ sessionId: sid });
+    h.view.render();
+    assert.equal(h.nodes.get('#room-introduction').textContent, '此刻在这里，也在等你说话');
+    assert.equal(h.nodes.get('#listening-intro-text').textContent, '这首留白，剩下的交给耳朵。');
+    assert.doesNotMatch(h.nodes.get('#listening-intro-text').textContent, /还没有在放的歌/);
+    assert.equal(h.nodes.get('#listening-intro-source').hidden, true);
+    assert.equal(h.nodes.get('#listening-intro-source').textContent, '');
+    assert.equal(h.nodes.get('#listening-intro').querySelector('.listening-narration-rule').hidden, true);
+    assert.equal(h.nodes.get('#listening-narration-label').textContent, '本首的介绍');
+    assert.equal(h.nodes.get('#listening-artwork-caption').textContent, '主歌手');
+    assert.equal(h.nodes.get('#focus-artwork-caption').textContent, '主歌手');
+  }
+  h.view.destroy();
+});
+
+test('cross-session runtime switch loads an unloaded listening transcript and refreshes narration', async () => {
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:other', title: '夜航房间', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const loadCalls = [];
+  let resolveLoad;
+  const loadPromise = new Promise(resolve => { resolveLoad = resolve; });
+  let harness;
+  harness = createHarness({
+    rooms,
+    stateBySession: {
+      'conversation:primary': { turns: [], loaded: true },
+      'conversation:other': { turns: [], loaded: false },
+    },
+    loadTranscript: async sid => {
+      loadCalls.push(sid);
+      await loadPromise;
+      const state = harness.controller.stateFor(sid);
+      state.turns = [{
+        turnId: 'intro:next-1', role: 'assistant', presentation: 'track_intro',
+        queueItemId: 'next-1', text: '切到夜航房间后的第一句旁白。', speakerVirtualPersonId: 'radiohost-a',
+      }];
+      state.loaded = true;
+    },
+  });
+
+  harness.view.render();
+  assert.equal(harness.nodes.get('#listening-intro-text').textContent, '这首留白，剩下的交给耳朵。');
+
+  // 仍在浏览 primary 时，after_current 把实际听歌会话切到了未加载账本的 other。
+  harness.store.update({
+    runtimeState: {
+      activeListeningSessionId: 'conversation:other',
+      queue: [{ queueItemId: 'next-1', songId: 'song-2', title: '跨房新歌', artist: '夜航歌手', album: '夜航专辑' }],
+      currentIndex: 0,
+      currentSongId: 'song-2',
+      positionSeconds: 0,
+      suspendedSessions: {},
+    },
+  });
+  // 加载进行中的进度 tick 不重复触发并发拉取。
+  harness.store.update({
+    runtimeState: {
+      ...harness.store.getState().runtimeState,
+      positionSeconds: 1,
+    },
+  });
+  assert.deepEqual(loadCalls, ['conversation:other']);
+  assert.equal(harness.nodes.get('#listening-intro-text').textContent, '这首留白，剩下的交给耳朵。');
+  assert.equal(harness.nodes.get('#room-introduction').textContent, '此刻在这里，也在等你说话');
+
+  resolveLoad();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(harness.nodes.get('#listening-intro-text').textContent, '切到夜航房间后的第一句旁白。');
+  assert.equal(harness.nodes.get('#listening-intro-source').textContent, '夜航 · 《跨房新歌》推歌手记');
+  assert.equal(harness.nodes.get('#listening-intro-source').hidden, false);
+  assert.equal(harness.nodes.get('#listening-narration-label').textContent, '夜航 的旁白');
+  assert.equal(harness.nodes.get('#listening-artwork-caption').textContent, '夜航专辑');
+  assert.equal(harness.nodes.get('#room-introduction').textContent, '此刻在这里，也在等你说话');
+  harness.view.destroy();
+});
+
+test('cross-session transcript load failure forwards to onError without breaking playback view', async () => {
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:other', title: '夜航房间', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const boom = new Error('transcript failed');
+  const h = createHarness({
+    rooms,
+    stateBySession: {
+      'conversation:primary': { turns: [], loaded: true },
+      'conversation:other': { turns: [], loaded: false },
+    },
+    loadTranscript: async () => { throw boom; },
+  });
+
+  h.store.update({
+    runtimeState: {
+      activeListeningSessionId: 'conversation:other',
+      queue: [{ queueItemId: 'next-1', songId: 'song-2', title: '跨房新歌' }],
+      currentIndex: 0,
+      currentSongId: 'song-2',
+      suspendedSessions: {},
+    },
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.deepEqual(h.errors, [boom]);
+  assert.equal(h.nodes.get('#listening-intro-text').textContent, '这首留白，剩下的交给耳朵。');
+  h.view.destroy();
+});
+
 test('waiting for a reply shows one indicator: who is typing merges into the locked compose hint', () => {
   const waiting = createHarness({ chat: { pending: true, composing: ['lunara'] } });
   waiting.view.render();
@@ -810,4 +1070,231 @@ test('a quote-only message previews the quoted line instead of an empty row', ()
   h.view.render();
   assert.match(h.nodes.get('#room-list').innerHTML, /room-row-preview">引用 Lunara：三小时过去了</);
   h.view.destroy();
+});
+
+test('cross-session queue views project the authoritative listening queue with source attribution and button jump', async () => {
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:suspended', title: '旧歌房间', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const h = createHarness({
+    rooms,
+    runtimeState: {
+      activeListeningSessionId: 'conversation:primary',
+      queue: [
+        { queueItemId: 'q-played', songId: 's-0', title: '已播曲目', artist: '歌手零' },
+        { queueItemId: 'q-current', songId: 's-1', title: '当前曲目', artist: '歌手一' },
+        { queueItemId: 'q-next', songId: 's-2', title: '真实下一首', artist: '歌手二', duration: 215 },
+      ],
+      currentIndex: 1,
+      currentSongId: 's-1',
+      txn: { queueItemId: 'q-current', correlationId: 'txn-1' },
+      suspendedSessions: {
+        'conversation:suspended': {
+          queue: [
+            { queueItemId: 'old-current', songId: 'old-1', title: '挂起当前歌', artist: '旧歌手' },
+            { queueItemId: 'old-next', songId: 'old-2', title: '挂起待播歌', artist: '旧歌手' },
+          ],
+          currentIndex: 0,
+          currentSongId: 'old-1',
+        },
+      },
+    },
+  });
+
+  h.view.render();
+  assert.equal(h.nodes.get('.queue-pop-head').textContent, '待播队列 · Lunara');
+  assert.equal(h.nodes.get('.cike-next h3').textContent, '接下来');
+  assert.match(h.nodes.get('#listening-strip-queue').innerHTML, />接下来<\/div>/);
+
+  // 切换到非当前播放房间：三处队列全部继续投影真实播放会话，标明「来自「Lunara」」，绝不混入挂起旧歌。
+  h.store.update({ sessionId: 'conversation:suspended' });
+  h.view.render();
+  assert.equal(h.nodes.get('.queue-pop-head').textContent, '待播队列 · 来自「Lunara」');
+  assert.equal(h.nodes.get('.cike-next h3').textContent, '接下来 · 来自「Lunara」');
+  assert.match(h.nodes.get('#listening-strip-queue').innerHTML, /接下来 · 来自「Lunara」/);
+  assert.match(h.nodes.get('#listening-strip-queue').innerHTML, /真实下一首/);
+  assert.doesNotMatch(h.nodes.get('#listening-strip-queue').innerHTML, /挂起/);
+  assert.match(h.nodes.get('#listening-next-queue').innerHTML, /真实下一首/);
+  assert.doesNotMatch(h.nodes.get('#listening-next-queue').innerHTML, /挂起/);
+
+  const queueHtml = h.nodes.get('#sb-queue').innerHTML;
+  assert.match(queueHtml, /<button type="button" class="sb-q-item active"[^>]*data-queue-item-id="q-current"[^>]*aria-current="true">/);
+  assert.match(queueHtml, /<button type="button" class="sb-q-item "[^>]*data-queue-item-id="q-next">/);
+  assert.doesNotMatch(queueHtml, /挂起/);
+
+  await h.nodes.get('#sb-queue').trigger('click', {
+    target: { closest: selector => (selector === '[data-queue-jump]' ? { dataset: { queueItemId: 'q-next' } } : null) },
+  });
+  assert.deepEqual(h.playbackCalls, [['selectQueueItem', 'q-next']]);
+  h.view.destroy();
+});
+
+test('clicking #nav-account expands the sidebar and opens hidden #source-menu without toggling it shut', async () => {
+  const sourceMenu = domElement();
+  sourceMenu.hidden = true;
+  let sourceClicks = 0;
+  const sourceOpen = domElement();
+  sourceOpen.click = () => {
+    sourceClicks += 1;
+    sourceMenu.hidden = !sourceMenu.hidden;
+  };
+  let stopped = 0;
+  const h = createHarness({
+    extraNodes: { '#source-menu-open': sourceOpen, '#source-menu': sourceMenu },
+  });
+
+  await h.nodes.get('#nav-account').trigger('click', { stopPropagation: () => { stopped += 1; } });
+  assert.equal(h.nodes.get('.conversation-sidebar').classList.contains('expanded'), true);
+  assert.equal(sourceOpen.focused, true);
+  assert.equal(sourceClicks, 1);
+  assert.equal(sourceMenu.hidden, false);
+  assert.equal(stopped, 1, '阻止冒泡以免外层 clickOutside 同帧关掉刚打开的浮窗');
+
+  // 浮窗已经展开时再点 #nav-account：保持展开，不把它反手关掉。
+  await h.nodes.get('#nav-account').trigger('click', { stopPropagation: () => { stopped += 1; } });
+  assert.equal(sourceClicks, 1);
+  assert.equal(sourceMenu.hidden, false);
+  assert.equal(h.playbackCalls.length, 0);
+  h.view.destroy();
+});
+
+test('long-wait pending turns show neutral copy for ordinary chat and music copy ONLY when pendingPhase is music', () => {
+  let clock = 5_000;
+  const scheduled = new Map();
+  let nextHandle = 0;
+  const chat = { pending: true, pendingSince: 5_000, pendingPhase: 'chat', composing: [] };
+  const rooms = [
+    { sessionId: 'conversation:primary', title: 'Lunara', memberIds: ['lunara'], activeVirtualPersonId: 'lunara' },
+    { sessionId: 'conversation:other', title: '夜航', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a' },
+  ];
+  const h = createHarness({
+    rooms,
+    chat,
+    now: () => clock,
+    setTimer: (fn, ms) => {
+      const id = ++nextHandle;
+      scheduled.set(id, { fn, at: clock + ms, ms });
+      return id;
+    },
+    clearTimer: id => { scheduled.delete(id); },
+  });
+  const thinking = h.nodes.get('#thinking');
+  const thinkingText = thinking.querySelector('.thinking-text');
+
+  h.view.render();
+  assert.equal(thinking.style.display, 'none', '8 秒前不打扰');
+  assert.equal(thinking.dataset.longWait, undefined);
+  assert.equal(scheduled.size, 2);
+
+  // 推进到 8s（普通对话阶段）：显示中性文案，绝不误报正在翻看曲库。
+  clock = 13_000;
+  for (const [id, entry] of [...scheduled.entries()]) {
+    if (entry.at <= clock) { scheduled.delete(id); entry.fn(); }
+  }
+  assert.equal(thinking.style.display, 'flex');
+  assert.equal(thinking.dataset.longWait, '1');
+  assert.equal(thinkingText.textContent, '正在斟酌词句，稍等一下…');
+  assert.doesNotMatch(thinkingText.textContent, /曲库|挑歌|已经切歌|正在播放《/);
+  assert.deepEqual(h.pendingCalls.at(-1), [true, '正在斟酌词句，稍等一下…']);
+
+  // 推进到 18s（普通对话阶段）：升级为可插话的温和陪伴提示。
+  clock = 23_000;
+  for (const [id, entry] of [...scheduled.entries()]) {
+    if (entry.at <= clock) { scheduled.delete(id); entry.fn(); }
+  }
+  assert.equal(thinking.style.display, 'flex');
+  assert.equal(thinkingText.textContent, '还在认真写这一段，随时可以插话补充…');
+  assert.deepEqual(h.pendingCalls.at(-1), [true, '还在认真写这一段，随时可以插话补充…']);
+
+  // 一旦后端发起音乐工具阶段（pendingPhase='music'），立即切换为挑歌文案。
+  chat.pendingPhase = 'music';
+  h.view.render();
+  assert.equal(thinkingText.textContent, '还在挑歌核对曲库，随时可以插话补充…');
+  assert.deepEqual(h.pendingCalls.at(-1), [true, '还在挑歌核对曲库，随时可以插话补充…']);
+
+  // 切换到未在等待的房间：立即收起并还原默认文案。
+  chat.pending = false;
+  chat.pendingSince = null;
+  chat.pendingPhase = 'chat';
+  h.store.update({ sessionId: 'conversation:other' });
+  h.view.render();
+  assert.equal(scheduled.size, 0);
+  assert.equal(thinking.style.display, 'none');
+  assert.equal(thinking.dataset.longWait, undefined);
+  assert.equal(thinkingText.textContent, '正在想');
+
+  // 切回已经等了 10s 且处于 music 阶段的房间：按真实 pendingSince 立即显示第一档曲库文案并排剩余 8s 定时器。
+  chat.pending = true;
+  chat.pendingSince = 13_000;
+  chat.pendingPhase = 'music';
+  h.store.update({ sessionId: 'conversation:primary' });
+  h.view.render();
+  assert.equal(thinking.style.display, 'flex');
+  assert.equal(thinkingText.textContent, '正在翻看曲库与上下文，稍等一下…');
+  assert.equal(scheduled.size, 1);
+  assert.equal([...scheduled.values()][0].ms, 8_000);
+
+  h.view.destroy();
+  assert.equal(scheduled.size, 0, 'destroy 清理全部长等待定时器');
+  assert.equal(thinking.style.display, 'none');
+});
+
+test('responsive header controls and focus wordmark rules stay intact in conversations.css', () => {
+  const css = readFileSync(resolve(import.meta.dirname, 'conversations.css'), 'utf8');
+  assert.match(css, /\.listening-wordmark > span:not\(\.focus-wordmark-title\) \{[^}]*font-size: 8px/);
+  const medium = css.slice(css.indexOf('@media (max-width: 1180px) and (min-width: 961px)'), css.indexOf('#app.focus-mode {'));
+  assert.doesNotMatch(medium, /companion-mode-control[^{]*\{\s*display:\s*none/);
+  assert.match(medium, /\.session-breadcrumb \.companion-mode-control \{[^}]*white-space: nowrap/);
+  const narrow = css.slice(css.indexOf('@media (max-width: 960px)'), css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf('@media (max-width: 960px)')));
+  assert.doesNotMatch(narrow, /\.chat-header \.room-actions \{ display: none; \}/);
+  assert.match(narrow, /\.chat-header #room-listen:not\(\[data-state="active"\]\)/);
+  assert.match(narrow, /\.chat-header #room-settings/);
+  assert.match(narrow, /\.session-breadcrumb \.companion-mode-control \{[^}]*white-space: nowrap/);
+});
+
+test('header interaction mode selector shows radio/roleplay for 1v1 chats, updates mode, and hides in group chats', async () => {
+  const modeControl = domElement();
+  const modeSelect = domElement({ value: 'radio' });
+  const h = createHarness({
+    rooms: [
+      { sessionId: 'conversation:primary', title: '听歌', memberIds: ['radiohost-a'], activeVirtualPersonId: 'radiohost-a', interactionMode: 'radio' },
+      { sessionId: 'conversation:group', title: '群聊', memberIds: ['lunara', 'radiohost-a'], activeVirtualPersonId: 'lunara', interactionMode: 'radio' },
+    ],
+    extraNodes: {
+      '#interaction-mode-control': modeControl,
+      '#interaction-mode-select': modeSelect,
+    },
+  });
+  h.view.init();
+  h.view.render();
+  assert.equal(modeControl.hidden, false);
+  assert.equal(modeControl.dataset.mode, 'radio');
+  assert.equal(modeSelect.value, 'radio');
+
+  modeSelect.value = 'roleplay';
+  await modeSelect.trigger('change');
+  assert.deepEqual(h.controllerCalls.at(-1), ['update-current', { interactionMode: 'roleplay' }]);
+
+  h.store.update({ sessionId: 'conversation:group' });
+  h.view.render();
+  assert.equal(modeControl.hidden, true);
+  h.view.destroy();
+});
+
+test('unified frameless beat styles, single pending hint suppression, nocturne typography, and timeline door seam fix hold', () => {
+  const convCss = readFileSync(resolve(import.meta.dirname, 'conversations.css'), 'utf8');
+  assert.match(convCss, /\.conversation-main \.chat-msg\.assistant \{ width: 100%; \}/);
+  assert.match(convCss, /\.chat-beat-group \{[^}]*width: 100%;/);
+  assert.match(convCss, /\.chat-beat-bubble \{[^}]*border: 0;[^}]*background: transparent;/);
+  assert.match(convCss, /\.chat-voice-btn \{[^}]*white-space: nowrap;/);
+  assert.match(convCss, /\.conversation-main:has\(\.compose-hint\.visible\) #thinking \{ display: none !important; \}/);
+
+  const nocturne = readFileSync(resolve(import.meta.dirname, '../../themes/nocturne/overrides.css'), 'utf8');
+  assert.match(nocturne, /:root\[data-theme="nocturne"\] \.chat-msg\.assistant :is\(\.chat-bubble, \.chat-editorial, \.chat-beat-group\) \{[^}]*'Noto Sans SC'/);
+  assert.match(nocturne, /:root\[data-theme="nocturne"\] \.chat-msg\.assistant :is\(\.chat-beat-bubble, \.chat-segment:not\(\.chat-seg-action\)\) \{[^}]*font-weight: var\(--weight-regular\);/);
+
+  const timeline = readFileSync(resolve(import.meta.dirname, '../shell/timeline.css'), 'utf8');
+  assert.match(timeline, /--panel-door-tab-radius: var\(--radius-card, 3px\);/);
+  assert.match(timeline, /:root\[data-layout="timeline"\] #app:not\(\.chat-focus\):not\(\.focus-mode\) > \.chat-door:has\(> \.chat-focus-toggle\)::before \{ width: var\(--door-tab-width\); \}/);
 });

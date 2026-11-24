@@ -529,7 +529,9 @@ export async function resolveModelFailoverTargets(primary = null, options = {}) 
   const configPath = getLLMConfigPath();
   const cached = failoverDisabledCache;
   if (cached && cached.path === configPath && Date.now() - cached.at < FAILOVER_DISABLED_TTL_MS) return [];
-  const doc = migrateLegacy(await readState());
+  // 同一次调用初始路由复用主端点阶段已读取的配置文档；切源重验时未传 _routingCache，强制重读最新状态。
+  const doc = options?._routingCache?.doc || migrateLegacy(await readState());
+  if (options?._routingCache && !options._routingCache.doc) options._routingCache.doc = doc;
   const policy = doc.modelFailover;
   if (!policy.enabled) {
     failoverDisabledCache = { path: configPath, at: Date.now() };
@@ -597,7 +599,7 @@ export function createSessionModelOverrides({ getPref, setPref } = {}) {
  * 解析生效端点：显式 endpoint → 会话覆盖（provider 消失/禁用时回落）→ activeModel → legacy。
  * 返回 { baseUrl, apiKey, model, api, source, reasoningEffort, reasoningEfforts }；不可用 → null。
  */
-export async function resolveModelEndpoint({ endpoint = null, sessionId = null, overrides = null } = {}) {
+export async function resolveModelEndpoint({ endpoint = null, sessionId = null, overrides = null, _routingCache = null } = {}) {
   if (endpoint && endpoint.baseUrl && endpoint.model) {
     // 显式 endpoint 不查注册表：调用方给了档位就透传，否则如实 null/[]（不猜测）。
     return {
@@ -607,7 +609,8 @@ export async function resolveModelEndpoint({ endpoint = null, sessionId = null, 
       reasoningEfforts: Array.isArray(endpoint.reasoningEfforts) ? [...endpoint.reasoningEfforts] : [],
     };
   }
-  const doc = migrateLegacy(await readState());
+  const doc = _routingCache?.doc || migrateLegacy(await readState());
+  if (_routingCache && !_routingCache.doc) _routingCache.doc = doc;
   const byId = id => doc.modelProviders.find(provider => provider.id === id && provider.enabled
     && provider.baseUrl) || null;
 

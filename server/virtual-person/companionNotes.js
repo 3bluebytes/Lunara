@@ -10,8 +10,8 @@
 // 调用顺序：
 //   ambient 回合的工具 → NoteStage 暂存 → 入账时 applyStage（与可见回合同一事务）；
 //   普通回合的 settle_thought → settle（立即、幂等）；
-//   反思 → acceptOpenLoop（确定性 id，重放不重复；群聊要求全员可读来源）；
-//   _assembleContext → listVisible → PromptAssembler 心里话小节；
+//   反思 → acceptOpenLoop（确定性 id，重放不重复；来源要她自己读得到）；
+//   TurnContextAssembler.assemble → listVisible → PromptAssembler 心里话小节；
 //   CompanionHeartbeat → pendingFollowups（只读，决定提前叫醒）。
 //
 // Python 伪代码：
@@ -53,9 +53,15 @@ export function stageHasChanges(stage) {
 }
 
 export class CompanionNoteStore {
-  constructor({ db, now = () => Date.now(), canReadTurn = () => true, getTurn = () => null, getSession = () => null } = {}) {
+  constructor({ db, now = () => Date.now(), canReadTurn = () => true, getTurn = () => null, getSession = () => null,
+    markSensitiveSources = () => {}, onSettled = null } = {}) {
     if (!db) throw new TypeError('CompanionNoteStore requires db');
-    Object.assign(this, { db, now, canReadTurn, getTurn, getSession });
+    Object.assign(this, { db, now, canReadTurn, getTurn, getSession, markSensitiveSources,
+      onSettled: typeof onSettled === 'function' ? onSettled : null });
+  }
+
+  setOnSettled(listener) {
+    this.onSettled = typeof listener === 'function' ? listener : null;
   }
 
   initialize() {
@@ -86,26 +92,31 @@ export class CompanionNoteStore {
   }
 
   /**
-   * 反思提炼的「没完的事」（阶段 C）：只在来源回合仍属于这个聊天、她仍是成员、来源她（群聊里是全体成员）
-   * 都读得到、且披露范围没有限定到别的聊天时写入。id = noteIdOf('reflection', batchTag, index)。
+   * 反思提炼的「没完的事」（阶段 C）：只在来源回合仍属于这个聊天、她仍是成员、来源她自己读得到、
+   * 且披露范围没有限定到别的聊天时写入。id = noteIdOf('reflection', batchTag, index)。
+   * 敏感的来源同时在观察上标记 sensitive，作为跨聊天摘录出现时带「比较私人」标签（重放时重复标记无害）。
    */
   acceptOpenLoop({ personId, sessionId, batchTag, index = 0, text, dueDate = null, sourceTurnIds = [], sensitive = false,
     policy = {}, confidence = null } = {}) {
+    // 敏感标记先于成员、归档等门槛执行：她已离开聊天或聊天已归档时，原话在别处出现也带着标签。
+    if (sensitive) {
+      const own = [...new Set(sourceTurnIds.filter(Boolean).map(String))].filter(id => this.getTurn(id)?.sessionId === sessionId);
+      if (own.length) this.markSensitiveSources([personId], own);
+    }
     const room = this.getSession?.(sessionId);
     if (!batchTag || !room || room.archivedAt || !room.memberIds?.includes(personId)) return false;
     if (policy?.onlyConversationId && policy.onlyConversationId !== sessionId) return false;
-    const isGroup = room.memberIds.length > 1;
-    const readers = isGroup ? room.memberIds : [personId];
     const ids = [...new Set(sourceTurnIds.filter(Boolean).map(String))];
     if (!ids.length) return false;
     for (const turnId of ids) {
       const turn = this.getTurn(turnId);
-      if (!turn || turn.sessionId !== sessionId || readers.some(id => this.canReadTurn(id, turn, { isGroup }) !== true)) return false;
+      if (!turn || turn.sessionId !== sessionId || this.canReadTurn(personId, turn) !== true) return false;
     }
     const dueAt = dueDate ? localDateMs(dueDate) : null;
     if (dueDate && dueAt == null) return false;
     return this.create({ noteId: noteIdOf('reflection', batchTag, index), personId, sessionId, kind: 'open_loop', text,
-      origin: 'reflection', sourceRefs: ids.map(id => `turn:${id}`), policy, sensitive,
+      origin: 'reflection', sourceRefs: ids.map(id => `turn:${id}`),
+      policy: { ...(policy || {}), lifeWriteKey: `${batchTag}:life:${index}` }, sensitive,
       confidence: Number.isFinite(Number(confidence)) && confidence != null ? Number(confidence) : null, dueAt });
   }
 
@@ -132,11 +143,16 @@ export class CompanionNoteStore {
     return true;
   }
 
-  /** 了结一条：只对 open / raised 生效，重复调用不再改变什么。返回是否改变。 */
+  /** 了结一条：只对 open / raised 生效，重复调用不再改变什么。返回是否改变；open_loop 了结后触发联动退场钩子。 */
   settle({ personId, sessionId, noteId, status }) {
     if (!['resolved', 'dropped'].includes(status)) return false;
-    return this.db.prepare(`UPDATE companion_notes SET status = ? WHERE note_id = ? AND person_id = ? AND session_id = ? AND ${ACTIVE}`)
+    const note = this.get(noteId);
+    const changed = this.db.prepare(`UPDATE companion_notes SET status = ? WHERE note_id = ? AND person_id = ? AND session_id = ? AND ${ACTIVE}`)
       .run(status, noteId, personId, sessionId).changes > 0;
+    if (changed && note?.kind === 'open_loop' && typeof this.onSettled === 'function') {
+      try { this.onSettled({ ...note, status }); } catch { /* 联动退场异常不回滚已了结的心里话 */ }
+    }
+    return changed;
   }
 
   /** 说出口时引用了这些 note：标为 raised、计数加一。 */
@@ -159,20 +175,20 @@ export class CompanionNoteStore {
 
   /**
    * 这一轮她能看到的心里话（已按过期、来源可读性与模式过滤），按创建时间排序，最多 12 条。
-   * mode='ambient' 另外排除：敏感条目、提过 2 次或 24 小时内提过的 open loop、还没到期的 followup。
+   * mode='ambient' 另外排除：提过 2 次或 24 小时内提过的 open loop、还没到期的 followup（敏感的照样给，带标签，提不提看她）。
    * followup 到期 = 约定时间已过；或 afterCurrentTrack 绑定的那首已经不在放；或这次唤醒正是为它；
    * 或 nextListening 且这是一起听的开场。
    */
-  listVisible({ personId, sessionId, isGroup = false, mode = 'ordinary', wake = null, currentQueueItemId = null } = {}) {
+  listVisible({ personId, sessionId, mode = 'ordinary', wake = null, currentQueueItemId = null } = {}) {
     const nowMs = this.now();
     this._expire(personId, sessionId, nowMs);
     const rows = this.db.prepare(`SELECT * FROM companion_notes WHERE person_id = ? AND session_id = ? AND ${ACTIVE}
       ORDER BY created_at, note_id`).all(String(personId || ''), String(sessionId || ''));
     const wakeNoteIds = new Set(Array.isArray(wake?.followupNoteIds) ? wake.followupNoteIds : []);
     return rows.map(row => this._map(row))
-      .filter(note => this._sourcesReadable(personId, note, isGroup))
+      .filter(note => this._sourcesReadable(personId, note))
       .map(note => ({ ...note, due: note.kind !== 'followup' || this._followupDue(note, { nowMs, wake, wakeNoteIds, currentQueueItemId }) }))
-      .filter(note => mode !== 'ambient' || (!note.sensitive && note.due && (note.kind !== 'open_loop'
+      .filter(note => mode !== 'ambient' || (note.due && (note.kind !== 'open_loop'
         || (note.raisedCount < NOTE_LIMITS.raiseLimit && (note.raisedAt == null || nowMs - note.raisedAt >= NOTE_LIMITS.raiseGapMs)))))
       .slice(-NOTE_LIMITS.openPerScope);
   }
@@ -198,6 +214,31 @@ export class CompanionNoteStore {
     this.db.prepare('DELETE FROM companion_notes WHERE session_id = ?').run(String(sessionId || ''));
   }
 
+  /** 手帐协同只读视图：列出全部未归档聊天的活跃 open_loop（读时惰性过期并校验来源可读性）。 */
+  listOpenLoops({ limit = 20 } = {}) {
+    const nowMs = this.now();
+    this.db.prepare(`UPDATE companion_notes SET status = 'expired' WHERE kind = 'open_loop' AND ${ACTIVE} AND expires_at <= ?`).run(nowMs);
+    const rows = this.db.prepare(`SELECT * FROM companion_notes WHERE kind = 'open_loop' AND ${ACTIVE}
+      ORDER BY COALESCE(due_at, created_at) ASC, created_at DESC LIMIT ?`).all(Math.max(1, Math.min(50, Number(limit) || 20)));
+    const result = [];
+    for (const row of rows) {
+      const note = this._map(row);
+      const room = this.getSession?.(note.sessionId);
+      if (room?.archivedAt) continue;
+      if (room && Array.isArray(room.memberIds) && !room.memberIds.includes(note.personId)) continue;
+      if (!this._sourcesReadable(note.personId, note)) continue;
+      result.push(note);
+    }
+    return result;
+  }
+
+  /** 按 noteId 直接了结 open_loop（手帐收进待办或用户确认已了结）。 */
+  settleById(noteId, status = 'resolved') {
+    const note = this.get(noteId);
+    if (!note) return false;
+    return this.settle({ personId: note.personId, sessionId: note.sessionId, noteId: note.noteId, status });
+  }
+
   get(noteId) {
     const row = this.db.prepare('SELECT * FROM companion_notes WHERE note_id = ?').get(String(noteId || ''));
     return row ? this._map(row) : null;
@@ -221,11 +262,11 @@ export class CompanionNoteStore {
       .run(String(personId || ''), String(sessionId || ''), nowMs);
   }
 
-  _sourcesReadable(personId, note, isGroup) {
+  _sourcesReadable(personId, note) {
     for (const ref of note.sourceRefs) {
       if (!ref.startsWith('turn:')) continue;
       const turn = this.getTurn(ref.slice('turn:'.length));
-      if (!turn || this.canReadTurn(personId, turn, { isGroup }) !== true) return false;
+      if (!turn || this.canReadTurn(personId, turn) !== true) return false;
     }
     return true;
   }

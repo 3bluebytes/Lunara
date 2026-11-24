@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAppState } from '../../core/appState.js';
 import { STORAGE_KEYS } from '../../core/storageKeys.js';
-import { canDismissRequiredSetup, createFirstRunCoordinator, firstRunReadiness } from './firstRunCoordinator.js';
+import { canDismissRequiredSetup, createFirstRunCoordinator, firstRunChecklist, firstRunReadiness } from './firstRunCoordinator.js';
 
 const settings = { current: { llm: { ready: true }, primarySource: 'qq' } };
 const loggedIn = { qq: { loggedIn: true }, ncm: { loggedIn: false } };
@@ -182,6 +182,106 @@ test('missing authoritative runtime state fails closed even when local setup is 
   assert.equal(state.kind, 'bootstrap-unavailable');
   assert.equal(requests, 0);
   assert.equal(storage.getItem(STORAGE_KEYS.firstRunRequestId), null);
+});
+
+const XIAOXIAO_ID = 'vp_cx_a0c168ef';
+const xiaoxiao = {
+  id: XIAOXIAO_ID,
+  sourceProvider: 'free-edge',
+  sourceVoiceId: 'zh-CN-XiaoxiaoNeural',
+  displayName: '晓晓',
+  sourceLabel: '免费声音（Edge）· 未启用',
+  resolvedProviderId: null,
+  unavailable: true,
+};
+const consentedFallback = { freeVoicesEnabled: true, consentAt: '2026-11-03T00:00:00.000Z' };
+
+test('新安装只预选晓晓且用户未同意时，声音项缺失，且不挡住播放就绪', async () => {
+  const checklist = firstRunChecklist({
+    settings: { ...settings, fallback: { freeVoicesEnabled: false, consentAt: null } },
+    auth: loggedIn,
+    voices: [xiaoxiao],
+    rootVoiceId: XIAOXIAO_ID,
+  });
+  assert.equal(checklist.voice, 'missing');
+  assert.equal(firstRunChecklist({
+    settings,
+    auth: loggedIn,
+    voices: [{ ...xiaoxiao, unavailable: false, sourceLabel: '免费声音（Edge）' }],
+    rootVoiceId: XIAOXIAO_ID,
+  }).voice, 'missing');
+  assert.equal(firstRunChecklist({
+    settings: { ...settings, fallback: { freeVoicesEnabled: true, consent: true, consentAt: null } },
+    auth: loggedIn,
+    voices: [{ ...xiaoxiao, unavailable: false }],
+    rootVoiceId: XIAOXIAO_ID,
+  }).voice, 'missing');
+  assert.deepEqual(
+    firstRunReadiness({ settings, auth: loggedIn, voices: [xiaoxiao], rootVoiceId: XIAOXIAO_ID }),
+    { ready: true, source: 'qq' },
+  );
+
+  const runtime = emptyRuntime();
+  const store = createAppState({ runtimeState: runtime });
+  let requests = 0;
+  const coordinator = createFirstRunCoordinator({
+    store, storage: memoryStorage(),
+    requestDefaultMusic: async () => { requests += 1; return { ok: true }; },
+  });
+  const state = await coordinator.start({ runtime, settings, auth: loggedIn, rooms });
+  assert.equal(state.kind, 'started');
+  assert.equal(requests, 1);
+});
+
+test('模型已就绪且音乐账号未登录时，只有模型一项完成', () => {
+  assert.deepEqual(firstRunChecklist({
+    settings,
+    auth: { qq: { loggedIn: false, cookieStored: false } },
+    voices: [xiaoxiao],
+    rootVoiceId: XIAOXIAO_ID,
+  }), { model: 'complete', music: 'missing', voice: 'missing' });
+  assert.deepEqual(
+    firstRunReadiness({ settings, auth: { qq: { loggedIn: false, cookieStored: false } } }),
+    { ready: false, missing: 'source-login', source: 'qq' },
+  );
+});
+
+test('已存凭据时音乐账号完成，播放就绪保持放行', () => {
+  const auth = { qq: { loggedIn: false, reason: '获取用户歌单失败', cookieStored: true } };
+  assert.equal(firstRunChecklist({ settings, auth, voices: [], rootVoiceId: XIAOXIAO_ID }).music, 'complete');
+  assert.deepEqual(firstRunReadiness({ settings, auth }), { ready: true, source: 'qq' });
+});
+
+test('三项都完成后，原播放就绪和首启请求不变', async () => {
+  const readySettings = { ...settings, fallback: consentedFallback };
+  const voices = [{ ...xiaoxiao, unavailable: false, sourceLabel: '免费声音（Edge）', resolvedProviderId: 'free-edge' }];
+  assert.deepEqual(firstRunChecklist({
+    settings: readySettings, auth: loggedIn, voices, rootVoiceId: XIAOXIAO_ID,
+  }), { model: 'complete', music: 'complete', voice: 'complete' });
+  assert.equal(firstRunChecklist({
+    settings,
+    auth: loggedIn,
+    voices: [{ id: 'vp_cx_custom01', sourceProvider: 'custom', unavailable: false }],
+    rootVoiceId: 'vp_cx_custom01',
+  }).voice, 'complete');
+  assert.deepEqual(firstRunReadiness({ settings: readySettings, auth: loggedIn, voices, rootVoiceId: XIAOXIAO_ID }), {
+    ready: true, source: 'qq',
+  });
+
+  const runtime = emptyRuntime();
+  const store = createAppState({ runtimeState: runtime });
+  const calls = [];
+  const coordinator = createFirstRunCoordinator({
+    store, storage: memoryStorage(), requestIdFactory: () => 'install-1',
+    focusRoot: async id => calls.push(['focus', id]),
+    requestDefaultMusic: async input => { calls.push(['request', input]); return { ok: true }; },
+  });
+  const state = await coordinator.start({ runtime, settings: readySettings, auth: loggedIn, rooms });
+  assert.equal(state.kind, 'started');
+  assert.deepEqual(calls[1][1], {
+    sessionId: 'conversation:primary', requestId: 'first-run:install-1',
+    mode: 'discovery', delivery: 'replace_now', count: 2,
+  });
 });
 
 test('returning or recovered startup dismisses required setup only after settings and source login are ready', () => {

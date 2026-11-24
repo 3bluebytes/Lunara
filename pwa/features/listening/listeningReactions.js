@@ -125,20 +125,27 @@ export function createListeningReactions({
     for (const button of buttons()) {
       const kind = button.dataset?.reaction;
       const inPanel = Boolean(button.closest?.('#listening-panel'));
+      const mismatchDisabled = Boolean(browsingOtherSource && inPanel);
       button.setAttribute('aria-pressed', String(kind === 'like' ? liked : disliked));
-      button.disabled = !currentKey || pending || Boolean(browsingOtherSource && inPanel)
+      button.disabled = !currentKey || pending || mismatchDisabled
         || (kind === 'like' && (!canUseLike() || likePending))
         || (kind === 'dislike' && !currentTrack?.queueItemId);
       button.setAttribute('aria-busy', String(kind === 'like' ? likePending : pending));
-      if (kind === 'like') {
+      if (mismatchDisabled) {
+        button.setAttribute('aria-label', kind === 'like' ? '喜欢（正在浏览别的聊天）' : '不喜欢（正在浏览别的聊天）');
+        button.setAttribute('title', '正在浏览别的聊天，暂不可在此页评价；切回正在听的聊天或点封面进全屏即可操作');
+      } else if (kind === 'like') {
         const copy = likeCopy();
         button.setAttribute('aria-label', copy ? `喜欢（${copy}）` : '喜欢');
-        button.setAttribute('title', copy || '喜欢');
+        button.setAttribute('title', !canUseLike() ? '这首歌暂不支持喜欢状态同步' : (copy || '喜欢'));
       } else {
         button.setAttribute('aria-label', '不喜欢，移出播放列表并跳过');
-        button.setAttribute('title', '从当前播放列表移出并跳过，不修改远端歌单');
+        button.setAttribute('title', !currentTrack?.queueItemId ? '当前没有可跳过的队列歌曲' : '从当前播放列表移出并跳过，不修改远端歌单');
       }
     }
+
+    // 没有当前歌曲时整组收起：一排点了没反应的按钮只会让人以为坏了。
+    for (const group of documentLike.querySelectorAll('[data-reactions]')) group.hidden = !currentKey;
 
     const copy = likeCopy();
     for (const slot of statusSlots()) {

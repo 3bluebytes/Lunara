@@ -25,19 +25,31 @@ files:
 asarUnpack:
   - node_modules/better-sqlite3/**/*
   - node_modules/ffmpeg-static/**/*
+  # 本地语义召回（可选依赖）：onnxruntime 与 sharp 的原生库。
+  - node_modules/onnxruntime-node/**/*
+  - node_modules/sharp/**/*
+  - node_modules/@img/**/*
 
 npmRebuild: true
 
 mac:
+  # 只带本平台的 onnxruntime 二进制（三个平台合计约 290 MB）。
+  files:
+    - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+    - "!node_modules/onnxruntime-node/bin/napi-v6/win32/**"
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
   icon: build/icon.icns
   category: public.app-category.music
   # 签名由 scripts/dist-desktop.mjs 决定：检测到 CSC_LINK 时自动签名，
   # 否则设置 CSC_IDENTITY_AUTO_DISCOVERY=false 显式出未签名包（构建不得因缺证书失败）。
 
 win:
+  files:
+    - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+    - "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
   target:
     - target: nsis
       arch: [x64]

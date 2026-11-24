@@ -297,7 +297,8 @@ export function listResolvedVoiceProfiles({ providers = null } = {}) {
   return listVoiceProfiles().map(profile => {
     const resolved = resolveVoiceRef(profile.id, { providers: available });
     const preset = _customPresets.find(item => item.id === profile.id);
-    const sourceLabel = resolved?.providerId ? (preset?.providerName || '自定义接口') : '未就绪';
+    const sourceLabel = resolved?.providerId ? (preset?.providerName || '自定义接口')
+      : preset?.native?.providerId === 'free-edge' ? '免费声音（Edge）· 未启用' : '未就绪';
     return {
       ...profile,
       sourceLabel,

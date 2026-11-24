@@ -110,6 +110,11 @@ test('回来了（app_open）：只说对方刚打开 app 和粗粒度离开时�
   assert.match(marker, /对方刚打开 app，离你们上次见面过了大半天，此刻还没有跟你说话/);
   assert.match(marker, /这次醒来是因为：对方回来了/);
   assert.doesNotMatch(marker, /一起听|在放|距对方|这段时间|\d+ 小时|app_open/);
-  assert.deepEqual([0.5, 1.5, 3, 8, 30, 80].map(h => awayBucket(h * 3_600_000)), [null, 'hour', 'hours', 'overnight', 'day', 'days']);
-  assert.deepEqual(['hour', 'hours', 'overnight', 'day', 'days'].map(b => awayText(b)), ['一个多小时', '几个小时', '大半天', '一天多', '好几天']);
+  assert.deepEqual([0, 0.5, 1.5, 3, 8, 30, 80].map(h => awayBucket(h * 3_600_000)),
+    [null, 'brief', 'hour', 'hours', 'overnight', 'day', 'days']);
+  assert.deepEqual(['brief', 'hour', 'hours', 'overnight', 'day', 'days'].map(b => awayText(b)),
+    ['一小会儿', '一个多小时', '几个小时', '大半天', '一天多', '好几天']);
+  const shortReturn = buildAmbientMarker({ timeZone: SHANGHAI,
+    wake: wake({ reason: 'app_open', awayMs: 20 * 60_000, firedAtMs: Date.parse('2026-10-20T00:30:00.000Z') }) });
+  assert.match(shortReturn, /离你们上次见面过了一小会儿/);
 });

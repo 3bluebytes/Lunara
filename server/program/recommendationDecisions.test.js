@@ -113,3 +113,23 @@ test('outcome bridge forwards only classified transitions with an occurrence', (
     { type: 'TRACK_ENDED', natural: true, songId: '1', programId: 'p', correlationId: 'stale' }, previous);
   assert.deepEqual(applied, [{ queueItemId: 'q-1', outcome: 'completed', playedSeconds: 180 }]);
 });
+
+test('CARD_SELECTED classifies as partial instead of skipped', () => {
+  const track = { queueItemId: 'q-1', songId: '1', programId: 'p' };
+  const previous = { queue: [track, { queueItemId: 'q-2', songId: '2', programId: 'p' }], currentIndex: 0,
+    txn: { correlationId: 'c1' }, phase: 'playing', activeListeningSessionId: 'room' };
+  const cardPicked = classifyPlaybackTransition({ ...previous, currentIndex: 1, txn: { correlationId: 'c2' } },
+    { type: 'CARD_SELECTED', queueItemId: 'q-2' }, previous);
+  assert.equal(cardPicked?.outcome, 'partial');
+});
+
+test('technical_failure can recover to completed on retry while completed stays final', t => {
+  const { db, store } = storeFixture(t);
+  store.record([row({ queueItemId: 'q-retry' }), row({ queueItemId: 'q-done' })]);
+  assert.equal(store.applyOutcome({ queueItemId: 'q-retry', outcome: 'technical_failure', playedSeconds: 0 }), 1);
+  assert.equal(store.applyOutcome({ queueItemId: 'q-retry', outcome: 'completed', playedSeconds: 210 }), 1);
+  assert.equal(store.applyOutcome({ queueItemId: 'q-done', outcome: 'completed', playedSeconds: 200 }), 1);
+  assert.equal(store.applyOutcome({ queueItemId: 'q-done', outcome: 'technical_failure', playedSeconds: 0 }), 0);
+  const rows = db.prepare('SELECT queue_item_id, outcome FROM music_recommendation_decisions ORDER BY id').all();
+  assert.deepEqual(rows.map(r => [r.queue_item_id, r.outcome]), [['q-retry', 'completed'], ['q-done', 'completed']]);
+});

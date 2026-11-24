@@ -3,8 +3,8 @@
 // 合同（见 openspec speech-performance）：
 // - 行内表演只能写成白名单标记：{笑}{轻笑}{叹气}{换气}{清嗓子}{停顿:x}，x ∈ [0.2, 2.0] 秒。
 //   这些标记只用于发声；显示、持久化的人读文本一律经 toPlainText 剥离。
-// - 非白名单的花括号（如歌名 {Love}）按原文保留；看起来像标记的 1–4 个汉字花括号
-//   记为 unknown_marker，供提交校验拒绝。
+// - 非白名单的花括号（如歌名 {Love}）按原文保留；看起来像标记的 1–4 个汉字花括号，
+//   以及写坏的转义码、英文标记名、带冒号数字的花括号，记为 unknown_marker，供提交校验拒绝。
 // - 段落风格 SpeechPerformance = { emotion, pace, intensity, direction }，全部可选；
 //   未知枚举值归 null，direction 最多 60 字。供应商原生参数不经过这里。
 
@@ -30,6 +30,8 @@ export const EVENT_MARKERS = Object.freeze(Object.fromEntries(Object.entries(MAR
 const BRACE = /\{([^{}\n]{1,24})\}/g;
 const PAUSE = /^停顿\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:s|秒)?$/;
 const MARKER_LIKE = /^[一-鿿]{1,4}$/;
+// 写坏的气口标记：转义码（u2026、\u6362气）、英文标记名（pause、breath…）、带冒号数字（顿:0.4）。
+const BROKEN_MARKER_LIKE = /^(?:\\?u[0-9a-f]{4}|(?:pause|break|breath|sigh|laugh|chuckle|cough|inhale|exhale)\b|[^:：]{0,12}[:：]\s*\d)/iu;
 const NATIVE_SYNTAX = [
   /<#\s*\d+(?:\.\d+)?\s*#>/g,
   /\[(?:笑|轻笑|叹气|换气|清嗓子|咳嗽)\]/g,
@@ -49,7 +51,7 @@ function classify(inner, literal) {
     if (!(seconds >= PAUSE_RANGE.min && seconds <= PAUSE_RANGE.max)) return { type: 'invalid', reason: 'pause_out_of_range' };
     return { type: 'pause', seconds };
   }
-  if (MARKER_LIKE.test(content) && !literal.has(`{${inner}}`)) return { type: 'invalid', reason: 'unknown_marker', strip: false };
+  if ((MARKER_LIKE.test(content) || BROKEN_MARKER_LIKE.test(content)) && !literal.has(`{${inner}}`)) return { type: 'invalid', reason: 'unknown_marker', strip: false };
   return { type: 'literal' };
 }
 

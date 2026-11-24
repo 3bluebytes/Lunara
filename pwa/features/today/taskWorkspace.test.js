@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterTaskEntries, taskCounts, entryOccurrence, rescheduleEntry } from './taskWorkspace.js';
+import { filterTaskEntries, taskCounts, entryOccurrence, rescheduleEntry, recencyBucketLabel } from './taskWorkspace.js';
 const todo = (id, localDate, extra = {}) => ({ id, type: 'todo', title: id, localDate, ...extra });
 test('task filters separate completion and anchor seven dates on today', () => {
   const entries = [todo('overdue', '2026-12-30'), todo('today', '2026-12-31'), todo('last', '2027-01-06'), todo('later', '2027-01-07'), todo('done', '2026-12-01', { done: true }), todo('legacy', '2026-12-31', { type: 'event' })];
@@ -40,7 +40,7 @@ test('completed occurrences archive automatically across dates and leave other d
  const once=todo('once','2026-10-08',{done:true});
  const entries=[repeat,once];const opts={today:'2026-10-08',selectedDate:'2026-10-08'};
  assert.equal(filterTaskEntries(entries,{...opts,view:'all'}).some(e=>e.id==='once'),false);
- assert.equal(filterTaskEntries(entries,{...opts,view:'today'}).some(e=>e.id==='once'),false);
+ assert.equal(filterTaskEntries(entries,{...opts,view:'today'}).some(e=>e.id==='once'),true);
  const archive=filterTaskEntries(entries,{...opts,view:'todo',filter:'completed'});
  assert.equal(archive.length,3);assert.equal(taskCounts(entries,opts.today).completed,3);
  assert.equal(filterTaskEntries(entries,{...opts,view:'todo'})[0].occurrenceDate,'2026-10-08');
@@ -51,4 +51,50 @@ test('archive preserves history after weekly rule edits and disabling recurrence
   const archived=filterTaskEntries([edited],{view:'todo',filter:'completed',today:'2026-10-09'});
   assert.equal(archived.length,1);assert.equal(archived[0].occurrenceDate,'2026-10-08');assert.equal(archived[0].done,true);
  }
+});
+test('pinned entries float first, updated-desc sorts by recency, search spans mood/tags/track, and archived hides', () => {
+  const entries = [
+    todo('old', '2026-10-01', { updatedAt: '2026-10-01T10:00:00Z', mood: '平静', tags: ['阅读'] }),
+    todo('pinned', '2026-09-01', { pinned: true, updatedAt: '2026-09-01T10:00:00Z', attachedTrack: { title: '夜曲' } }),
+    todo('recent', '2026-10-02', { updatedAt: '2026-10-05T10:00:00Z' }),
+    todo('gone', '2026-10-06', { archived: true, title: '夜曲' }),
+  ];
+  assert.deepEqual(filterTaskEntries(entries, { sort: 'updated-desc', today: '2026-10-08' }).map(e => e.id), ['pinned', 'recent', 'old']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '夜曲', today: '2026-10-08' }).map(e => e.id), ['pinned']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '平静', today: '2026-10-08' }).map(e => e.id), ['old']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '阅读', today: '2026-10-08' }).map(e => e.id), ['old']);
+});
+
+test('updated-desc compares numeric ms updatedAt/createdAt cleanly against older dates', () => {
+  const entries = [
+    todo('sep', '2026-09-23', { createdAt: Date.UTC(2026, 8, 23, 1, 0), updatedAt: Date.UTC(2026, 8, 23, 2, 0) }),
+    todo('oct-old', '2026-10-27', { createdAt: Date.UTC(2026, 9, 27, 8, 0), updatedAt: Date.UTC(2026, 9, 27, 8, 0) }),
+    todo('sep-edited-now', '2026-09-10', { createdAt: Date.UTC(2026, 8, 10, 8, 0), updatedAt: Date.UTC(2026, 10, 20, 22, 0) }),
+  ];
+  assert.deepEqual(
+    filterTaskEntries(entries, { sort: 'updated-desc', today: '2026-11-20' }).map(e => e.id),
+    ['sep-edited-now', 'oct-old', 'sep'],
+  );
+});
+
+test('recencyBucketLabel groups notes like Apple Notes and search spans co-page attachments', () => {
+  const today = '2026-11-21';
+  assert.equal(recencyBucketLabel({ pinned: true, localDate: '2025-01-01' }, today), '置顶');
+  assert.equal(recencyBucketLabel({ localDate: '2026-11-21' }, today), '今天');
+  assert.equal(recencyBucketLabel({ localDate: '2026-11-16' }, today), '过去 7 天');
+  assert.equal(recencyBucketLabel({ localDate: '2026-10-27' }, today), '过去 30 天');
+  assert.equal(recencyBucketLabel({ localDate: '2026-09-23' }, today), '9月');
+  assert.equal(recencyBucketLabel({ localDate: '2025-12-10' }, today), '2025年12月');
+
+  const entries = [
+    todo('t1', today, { attachedTracks: [{ title: 'Endless Story', artist: 'REIRA' }] }),
+    todo('t2', today, { attachedQuotes: [{ speaker: 'Lunara', text: '今夜的风很轻。' }] }),
+    todo('t3', today, { checklist: [{ id: 'c1', text: '重听爵士唱片', done: false }] }),
+    todo('t4', today, { annotations: [{ id: 'a1', text: '页边记得泡乌龙茶', reply: '马上就去' }] }),
+  ];
+  assert.deepEqual(filterTaskEntries(entries, { search: 'reira', today }).map(e => e.id), ['t1']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '风很轻', today }).map(e => e.id), ['t2']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '爵士唱片', today }).map(e => e.id), ['t3']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '乌龙茶', today }).map(e => e.id), ['t4']);
+  assert.deepEqual(filterTaskEntries(entries, { search: '马上就去', today }).map(e => e.id), ['t4']);
 });

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ServiceError } from '../../services/ServiceError.js';
 import { registerVirtualPersonRoutes } from './virtualPersonRoutes.js';
 
 function fakeApp() {
@@ -200,4 +201,41 @@ test('确认 ambient 推荐：成功 200；找不到 404；过期/非当前来�
   const busy = await send('busy');
   assert.deepEqual([busy.statusCode, busy.body.retryable], [503, true]);
   assert.deepEqual(calls[0], ['room', 'ok']);
+});
+
+test('GET /api/persona-presets 返回带 templateText 与 defaultTemperament 的预设；POST /api/persona-presets/expand 透传结果与 400/503/502 状态码', async () => {
+  const app = fakeApp();
+  let expandImpl = async body => ({ personaDocument: `## 我是谁\n${body.draft}` });
+  registerVirtualPersonRoutes(app, {
+    virtualPersonService: {
+      expandPersonaDraft: body => expandImpl(body),
+    },
+  });
+
+  const presetsRes = response();
+  app.routes.get('GET /api/persona-presets')({}, presetsRes);
+  assert.equal(presetsRes.statusCode, 200);
+  assert.equal(presetsRes.body.presets.length, 6);
+  assert.ok(presetsRes.body.presets[0].templateText.includes('## 我是谁'));
+  assert.ok(['quiet', 'balanced', 'lively'].includes(presetsRes.body.presets[0].defaultTemperament));
+
+  const expandRoute = app.routes.get('POST /api/persona-presets/expand');
+  const okRes = response();
+  await expandRoute({ body: { draft: '喜欢爵士的酒保' } }, okRes);
+  assert.deepEqual([okRes.statusCode, okRes.body], [200, { ok: true, personaDocument: '## 我是谁\n喜欢爵士的酒保' }]);
+
+  expandImpl = async () => { throw new ServiceError(400, '请先写几句人物想法', 'persona_expand_empty_input'); };
+  const badRes = response();
+  await expandRoute({ body: {} }, badRes);
+  assert.equal(badRes.statusCode, 400);
+
+  expandImpl = async () => { throw new ServiceError(503, '请先配置模型', 'llm_not_configured'); };
+  const unconfRes = response();
+  await expandRoute({ body: { draft: 'x' } }, unconfRes);
+  assert.equal(unconfRes.statusCode, 503);
+
+  expandImpl = async () => { throw new ServiceError(502, '这次 AI 扩写没有成功', 'persona_expand_failed'); };
+  const failRes = response();
+  await expandRoute({ body: { draft: 'x' } }, failRes);
+  assert.equal(failRes.statusCode, 502);
 });

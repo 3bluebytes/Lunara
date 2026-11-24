@@ -34,7 +34,7 @@ function freePort() {
 }
 
 if (process.platform === 'win32') {
-  console.log('smoke:packaged 在 Windows 需先经 NSIS 安装后人工验收（docs/engineering/packaging.md）。本轮跳过，退出码 2。');
+  console.log('smoke:packaged 在 Windows 需先经 NSIS 安装后人工验收。本轮跳过，退出码 2。');
   process.exit(2);
 }
 
@@ -63,11 +63,16 @@ const childEnv = {
 };
 
 console.log(`━━━ 打包冒烟: ${appPath}（port=${port}，数据根=${dataRoot}）━━━`);
-// 文件在位不等于能执行：架构不对的二进制会报 bad CPU type。实际跑一次随包 ffmpeg。
+// 文件在位不等于能执行：架构不对的二进制会报 bad CPU type。实际跑一次随包 ffmpeg，并校验证书不含 nonfree。
 const bundledFfmpeg = join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', 'ffmpeg');
 const ffmpegRun = spawnSync(bundledFfmpeg, ['-version'], { timeout: 10_000, encoding: 'utf8' });
 check('随包 ffmpeg 可在本机执行', ffmpegRun.status === 0,
   String(ffmpegRun.error?.message || ffmpegRun.stderr || '').slice(0, 200));
+const ffmpegLicense = spawnSync(bundledFfmpeg, ['-L'], { timeout: 10_000, encoding: 'utf8' });
+const ffmpegLicenseText = `${ffmpegLicense.stdout || ''}\n${ffmpegLicense.stderr || ''}`;
+check('随包 ffmpeg 不含 nonfree（可合法再分发）',
+  ffmpegLicense.status === 0 && !/\bnonfree\b|not legally redistributable|--enable-nonfree/i.test(ffmpegLicenseText),
+  ffmpegLicenseText.slice(-240));
 
 const child = spawn(bin, [], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 const bootLog = [];
@@ -92,6 +97,11 @@ try {
     const page = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(3000) })
       .then(r => r.text()).catch(() => '');
     check('页面 200 且含 Lunara 标识', page.includes('Lunara'));
+    const people = await fetch(`http://127.0.0.1:${port}/api/virtual-persons`, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    check('首次启动只有根 Lunara，没有同名默认伙伴', people?.ok === true
+      && people.persons?.length === 1 && people.persons[0].id === 'lunara'
+      && people.persons[0].kind === 'root' && people.persons[0].displayName === 'Lunara');
   }
 
   const dataDir = join(dataRoot, 'data');

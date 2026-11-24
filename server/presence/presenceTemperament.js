@@ -19,13 +19,13 @@ const PROFILES = Object.freeze({
   quiet: Object.freeze({ id: 'quiet', perWindow: 1, perSession: 4, hooks: 'strong', every: Object.freeze({}),
     heartbeatMs: 30 * MIN, minSpacingMs: 12 * MIN, perHour: 2,
     moments: new Set(['session_open', 'queue_exhausted', 'boundary_without_intro']),
-    hint: '你话不多：没有真想说的就不说，开口也很短。' }),
+    hint: '默认在场节奏偏安静简短，有贴切的话时轻声点到为止；具体语气与热络度以你的角色人设为准。' }),
   balanced: Object.freeze({ id: 'balanced', perWindow: 2, perSession: 8, hooks: 'any', every: Object.freeze({}),
     heartbeatMs: 15 * MIN, minSpacingMs: 6 * MIN, perHour: 4,
     moments: null, hint: '' }),
   lively: Object.freeze({ id: 'lively', perWindow: 3, perSession: 12, hooks: 'any', every: Object.freeze({ track_completed: 3 }),
     heartbeatMs: 8 * MIN, minSpacingMs: 3 * MIN, perHour: 8,
-    moments: null, hint: '你话比较多，愿意接话，但也不硬聊。' }),
+    moments: null, hint: '默认在场节奏偏健谈，看到合适的话头愿意主动分享或接话；具体语气与分寸以你的角色人设为准。' }),
 });
 
 // 模式上限：music_only 不主动开口；occasional 最多 balanced；对话型与 legacy 会话不额外收紧。
@@ -56,4 +56,34 @@ export function resolvePresencePolicy({ modeId = null, temperament = 'balanced',
   const chosen = PRESENCE_TEMPERAMENTS.includes(userLevel) ? userLevel
     : (PRESENCE_TEMPERAMENTS.includes(temperament) ? temperament : 'balanced');
   return PROFILES[rank(chosen) <= rank(ceiling) ? chosen : ceiling];
+}
+
+/**
+ * 生效话量：把四层开关（启动参数 / 全局开关 / 陪伴模式 / 本次「安静点」/ 在场性格）折成界面能说清的一句话。
+ * 只读、无副作用；档位来自上面同一个 resolvePresencePolicy，界面不另算一遍。
+ *
+ * @returns {{ level: 'silent'|'quiet'|'balanced'|'lively', limitedBy: null|'unavailable'|'ambient-off'|'listener-quiet'|'mode'|'temperament' }}
+ *   limitedBy = 把话量压到「所选模式上限」以下的那个原因；'mode' 表示就是模式自己选的（界面不必另外解释）。
+ *
+ * Python 伪代码：
+ *   if not available: return silent, 'unavailable'
+ *   if not ambient_enabled: return silent, 'ambient-off'
+ *   policy = resolve(mode, temperament)
+ *   if policy is None: return silent, 'mode'          # 只听歌
+ *   if listener_quiet: return silent, 'listener-quiet'
+ *   if policy.id == 'quiet' and ceiling(mode) > 'quiet': return 'quiet', 'temperament'   # 「自然」是默认，不算被压低
+ *   return policy.id, ('mode' if policy.id < temperament else None)
+ */
+export function describeEffectivePresence({ available = true, ambientEnabled = true, listenerQuiet = false,
+  modeId = null, temperament = 'balanced' } = {}) {
+  const silent = limitedBy => ({ level: 'silent', limitedBy });
+  if (available !== true) return silent('unavailable');
+  if (ambientEnabled !== true) return silent('ambient-off');
+  const declared = PRESENCE_TEMPERAMENTS.includes(temperament) ? temperament : 'balanced';
+  const policy = resolvePresencePolicy({ modeId, temperament: declared });
+  if (!policy) return silent('mode');
+  if (listenerQuiet === true) return silent('listener-quiet');
+  const ceiling = resolvePresencePolicy({ modeId, temperament: 'lively' });
+  if (policy.id === 'quiet' && rank(ceiling.id) > rank('quiet')) return { level: 'quiet', limitedBy: 'temperament' };
+  return { level: policy.id, limitedBy: rank(policy.id) < rank(declared) ? 'mode' : null };
 }

@@ -9,8 +9,8 @@ test('voice profiles accept canonical API objects and legacy source wrappers', (
     { voice_id: 'fish-1', name: 'Fish', source: 'fish', tags: 'soft,gentle', sourceLabel: '自定义接口' },
     { id: '', displayName: 'broken' },
   ]), [
-    { id: 'mini-1', displayName: '暖声', description: '温柔', styleTags: ['warm'], source: 'unknown', sourceLabel: '', isFallback: false, unavailable: false },
-    { id: 'fish-1', displayName: 'Fish', description: '', styleTags: ['soft', 'gentle'], source: 'fish', sourceLabel: '自定义接口', isFallback: false, unavailable: false },
+    { id: 'mini-1', displayName: '暖声', description: '温柔', styleTags: ['warm'], source: 'unknown', sourceProvider: '', resolvedProviderId: null, endpointId: '', sourceLabel: '', isFallback: false, unavailable: false },
+    { id: 'fish-1', displayName: 'Fish', description: '', styleTags: ['soft', 'gentle'], source: 'fish', sourceProvider: '', resolvedProviderId: null, endpointId: '', sourceLabel: '自定义接口', isFallback: false, unavailable: false },
   ]);
 });
 
@@ -156,4 +156,79 @@ test('voice loading fails visibly on an empty server result', async () => {
     apiClient: { get: async () => ({ ok: true, voices: [] }) },
   });
   await assert.rejects(controller.loadVoices(), /设置 → 声音/);
+});
+
+test('只有未启用晓晓时按可用声音数为 0 失败，同意后的晓晓可以加载', async () => {
+  const calls = [];
+  let consented = false;
+  const xiaoxiao = () => ({
+    id: 'vp_cx_a0c168ef',
+    displayName: '晓晓',
+    sourceProvider: 'free-edge',
+    unavailable: !consented,
+    resolvedProviderId: consented ? 'free-edge' : null,
+  });
+  const controller = createRadiohostController({
+    store: createAppState(),
+    apiClient: {
+      get: async path => {
+        calls.push(path);
+        if (path === '/api/station/voices') return { ok: true, voices: [xiaoxiao()] };
+        if (path === '/api/tts/custom') {
+          return {
+            ok: true,
+            config: {
+              fallback: consented
+                ? { freeVoicesEnabled: true, consentAt: '2026-11-03T00:00:00.000Z' }
+                : { freeVoicesEnabled: false, consentAt: null },
+            },
+          };
+        }
+        throw new Error(path);
+      },
+    },
+  });
+
+  await assert.rejects(controller.loadVoices(), error => error?.code === 'NO_USABLE_VOICE');
+  assert.equal(calls.some(path => /^https?:/i.test(path)), false);
+  consented = true;
+  const voices = await controller.loadVoices();
+  assert.equal(voices.length, 1);
+  assert.equal(voices[0].sourceProvider, 'free-edge');
+  assert.equal(voices[0].unavailable, false);
+});
+
+test('loadPersonaPresets retains templateText/defaultTemperament and tolerates empty preset list; expandPersonaDraft posts to expand endpoint', async () => {
+  const calls = [];
+  const controller = createRadiohostController({
+    store: createAppState(),
+    apiClient: {
+      get: async path => {
+        calls.push(['GET', path]);
+        return {
+          ok: true,
+          presets: [{
+            id: 'cool_analytical', displayName: '冷感理性', summary: '冷静清晰',
+            templateText: '## 我是谁\n冷静清晰。', defaultTemperament: 'quiet', nameCandidates: ['陆行'],
+          }],
+        };
+      },
+      post: async (path, body) => {
+        calls.push(['POST', path, body]);
+        return { ok: true, personaDocument: '## 我是谁\n扩写后的人格。' };
+      },
+    },
+  });
+  const presets = await controller.loadPersonaPresets();
+  assert.equal(presets[0].templateText, '## 我是谁\n冷静清晰。');
+  assert.equal(presets[0].defaultTemperament, 'quiet');
+  const expanded = await controller.expandPersonaDraft({ draft: '毒舌摇滚老炮', displayName: '阿烈', presetId: 'cool_analytical' });
+  assert.equal(expanded.personaDocument, '## 我是谁\n扩写后的人格。');
+  assert.deepEqual(calls.at(-1), ['POST', '/api/persona-presets/expand', { draft: '毒舌摇滚老炮', displayName: '阿烈', presetId: 'cool_analytical' }]);
+
+  const emptyController = createRadiohostController({
+    store: createAppState(),
+    apiClient: { get: async () => ({ ok: true, presets: [] }) },
+  });
+  assert.deepEqual(await emptyController.loadPersonaPresets(), []);
 });

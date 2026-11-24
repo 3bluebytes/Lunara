@@ -12,23 +12,26 @@ export function relativeTime(milliseconds, now = Date.now()) {
 
 export function initTasteView({
   controller,
+  container = null,
   documentLike = globalThis.document,
-  scheduleInterval = globalThis.setInterval.bind(globalThis),
-  cancelInterval = globalThis.clearInterval.bind(globalThis),
+  scheduleInterval = globalThis.setInterval?.bind(globalThis),
+  cancelInterval = globalThis.clearInterval?.bind(globalThis),
   refreshIntervalMs = 60_000,
   now = () => Date.now(),
 } = {}) {
-  const $ = selector => documentLike.querySelector(selector);
+  const $ = selector => documentLike?.querySelector?.(selector) ?? null;
+  const resolveStatus = () => container || $('#sb-taste-status');
+  const resolvePopover = () => container?.querySelector?.('#sb-taste-popover') ?? $('#sb-taste-popover');
   const cleanups = [];
   let intervalId = null;
 
   function listen(element, type, listener) {
-    element?.addEventListener(type, listener);
-    if (element) cleanups.push(() => element.removeEventListener(type, listener));
+    element?.addEventListener?.(type, listener);
+    if (element?.removeEventListener) cleanups.push(() => element.removeEventListener(type, listener));
   }
 
   function close() {
-    $('#sb-taste-popover')?.classList.remove('visible');
+    resolvePopover()?.classList.remove('visible');
   }
 
   function bindClose(popover) {
@@ -39,7 +42,7 @@ export function initTasteView({
   }
 
   async function refresh() {
-    const wrapper = $('#sb-taste-status');
+    const wrapper = resolveStatus();
     if (!wrapper) return null;
     try {
       const result = await controller.status();
@@ -48,7 +51,10 @@ export function initTasteView({
         return result;
       }
       wrapper.style.display = '';
-      $('#sb-taste-time').textContent = `${relativeTime(result.lastFinishedAt, now())}${result.running ? ' · 整理中' : ''}`;
+      const timeEl = wrapper.querySelector?.('#sb-taste-time') ?? $('#sb-taste-time');
+      if (timeEl) {
+        timeEl.textContent = `${relativeTime(result.lastFinishedAt, now())}${result.running ? ' · 整理中' : ''}`;
+      }
       wrapper.title = result.lastSummary || '';
       return result;
     } catch {
@@ -58,7 +64,7 @@ export function initTasteView({
   }
 
   async function open() {
-    const popover = $('#sb-taste-popover');
+    const popover = resolvePopover();
     if (!popover) return;
     popover.classList.add('visible');
     popover.innerHTML = '<button class="sb-taste-popover-close" id="sb-taste-popover-close" aria-label="close">✕</button><div style="opacity:.6">加载中…</div>';
@@ -80,28 +86,42 @@ export function initTasteView({
     }
   }
 
-  listen($('#sb-taste-status'), 'click', event => {
-    if (event.target.closest('#sb-taste-popover')) return;
-    event.stopPropagation();
-    const popover = $('#sb-taste-popover');
+  const statusElement = resolveStatus();
+  if (!statusElement) {
+    return Object.freeze({
+      refresh,
+      open,
+      close,
+      destroy() {
+        if (intervalId != null) cancelInterval?.(intervalId);
+        intervalId = null;
+        cleanups.splice(0).forEach(cleanup => cleanup());
+      },
+    });
+  }
+
+  listen(statusElement, 'click', event => {
+    if (event.target?.closest?.('#sb-taste-popover')) return;
+    event.stopPropagation?.();
+    const popover = resolvePopover();
     if (popover?.classList.contains('visible')) close();
     else void open();
   });
   listen(documentLike, 'click', event => {
-    if (!event.target.closest('#sb-taste-status')) close();
+    if (!event.target?.closest?.('#sb-taste-status') && event.target !== statusElement) close();
   });
   listen(documentLike, 'keydown', event => {
     if (event.key === 'Escape') close();
   });
 
   void refresh();
-  intervalId = scheduleInterval(refresh, refreshIntervalMs);
+  intervalId = scheduleInterval?.(refresh, refreshIntervalMs) ?? null;
   return Object.freeze({
     refresh,
     open,
     close,
     destroy() {
-      if (intervalId != null) cancelInterval(intervalId);
+      if (intervalId != null) cancelInterval?.(intervalId);
       intervalId = null;
       cleanups.splice(0).forEach(cleanup => cleanup());
     },

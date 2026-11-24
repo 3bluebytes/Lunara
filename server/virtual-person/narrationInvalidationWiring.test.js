@@ -9,7 +9,7 @@ import { createVirtualPersonRuntimeComposition } from './createVirtualPersonRunt
 process.chdir(mkdtempSync(resolve(tmpdir(), 'lunara-narration-stale-wiring-')));
 
 test('a saved memory invalidates prepared narrations and the candidate pool for that conversation', async t => {
-  const staleCalls = [], poolCalls = [];
+  const staleCalls = [], poolCalls = [], droppedLines = [];
   // 隔离：不固定 LUNARA_DB_PATH 时 MemoryService 会落到真实数据根 ~/.lunara。
   const previousDbPath = process.env.LUNARA_DB_PATH;
   process.env.LUNARA_DB_PATH = resolve(process.cwd(), 'memory.db');
@@ -30,7 +30,8 @@ test('a saved memory invalidates prepared narrations and the candidate pool for 
     queueService: { snapshot: () => ({}), publishSnapshot() {} },
     playbackRuntime: { snapshot: () => ({ version: 1 }),
       invalidatePreparedNarrations: sessionId => { staleCalls.push(sessionId); return Promise.resolve({ accepted: true }); } },
-    getMusicService: () => ({ execute: async () => ({ ok: true }), pool: { invalidate: () => poolCalls.push('pool') } }),
+    getMusicService: () => ({ execute: async () => ({ ok: true }), pool: { invalidate: () => poolCalls.push('pool') },
+      dropPreparedLines: sessionId => droppedLines.push(sessionId) }),
     getMemoryService: () => memory,
     logger: { error() {}, warn() {} },
   });
@@ -46,11 +47,13 @@ test('a saved memory invalidates prepared narrations and the candidate pool for 
   await new Promise(resolveTick => setImmediate(resolveTick));
   assert.deepEqual(poolCalls, ['pool']);
   assert.deepEqual(staleCalls, ['conversation:room']);
-  // 普通关系事实同样刷新候选池，但不重备串词。
+  assert.deepEqual(droppedLines, ['conversation:room'], '预热批次上还没说的串词也作废');
+  // 普通关系事实同样刷新候选池，但不动串词。
   await composition.toolRegistry.execute('remember_person_fact', {
     content: '用户叫小月亮', sourceQuote: '我叫小月亮',
   }, { ...context, userTurnId: 'turn-10', userText: '我叫小月亮' });
   await new Promise(resolveTick => setImmediate(resolveTick));
   assert.deepEqual(poolCalls, ['pool', 'pool']);
   assert.deepEqual(staleCalls, ['conversation:room']);
+  assert.deepEqual(droppedLines, ['conversation:room']);
 });

@@ -83,6 +83,7 @@
     color: var(--t-mid);
     cursor: pointer;
   }
+  .chat-focus-toggle::before { content: ''; position: absolute; inset: -4px -13px; }
   .chat-focus-toggle:hover { color: var(--t-hi); }
   .chat-focus-toggle:focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 2px; }
   .chat-focus-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

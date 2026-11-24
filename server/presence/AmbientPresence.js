@@ -87,7 +87,7 @@ export function createAmbientPresence({ runtime, presentationService, queueServi
         const activity = (state, outcome) => runtime.emitActivity({ sessionId, personId, correlationId: memberWake.id, state, outcome });
         if (typing) {
           activity('composing');
-          await sleep(revealDelayMs(turn.visibleText), wake.signal);
+          await sleep(revealDelayMs(turn.message?.beats?.[0]?.say || turn.visibleText), wake.signal);
         }
         try {
           return await deliverPresenceTurn({
@@ -118,7 +118,7 @@ export function createAmbientPresence({ runtime, presentationService, queueServi
     const names = new Map(candidates.map(id => [id, nameOf(id)]));
     const openLoopOf = personId => {
       try {
-        return (store()?.notes?.listVisible?.({ personId, sessionId: wake.sessionId, isGroup: true, mode: 'ambient', wake }) || [])
+        return (store()?.notes?.listVisible?.({ personId, sessionId: wake.sessionId, mode: 'ambient', wake }) || [])
           .some(note => note.kind === 'open_loop');
       } catch { return false; }
     };

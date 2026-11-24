@@ -20,9 +20,7 @@
 // 单任务突发与回合上限沿用既有边界值（收编，不重复实现）：AgentLoop maxRounds × 任务规格生效额度、
 // 打标队列并发 1 + 占位 TTL —— 账本负责的是它们之外的"日内总量"。
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from './sqlite.js';
 import { resolveDatabasePath } from './runtimePaths.js';
 
 // 保留期默认一年：设置页的用量热力图按「周为列」展示 53 周，30 天会让它只剩 5 列。
@@ -54,6 +52,7 @@ export const DEFAULT_DAILY_TOKEN_CAPS = Object.freeze({
   song_tag: 300_000,
   reflection: 120_000,
   taste_schema: 120_000,
+  relationship_digest: 120_000,
   taste_consolidation: 120_000,
   persona_generation: 60_000,
   // 能力探测也是真实调用：给一个有界的日内额度，探测失控时不拖累聊天与播放。
@@ -91,9 +90,7 @@ export function localDayStart(now = Date.now(), dayOffset = 0) {
 
 function openDatabase(dbPath) {
   const path = dbPath || resolveDatabasePath();
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
+  const db = openSqliteDatabase(path);
   db.exec(`
 CREATE TABLE IF NOT EXISTS llm_usage (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,

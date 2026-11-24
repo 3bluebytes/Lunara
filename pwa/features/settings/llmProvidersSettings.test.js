@@ -542,3 +542,30 @@ test('获取模型列表保留声明的档位与容量，并在保存时写入 m
   assert.deepEqual(updated[0].modelInfo['m-rich'], { reasoningEfforts: ['low', 'max'], contextWindow: 272000 });
   assert.deepEqual(updated[0].models, ['deepseek/deepseek-flash', 'zhipu/glm-5.3', 'm-rich']);
 });
+
+test('删除模型服务需要先进入二次确认态再发起 DELETE', async () => {
+  const { dom, apiClient, view } = setup();
+  await view.refresh();
+  dom.host.querySelector('#llm-prov-delete').dispatch('click');
+  assert.equal(apiClient.calls.some(call => call[0] === 'DELETE'), false, '首次点击仅进入确认态');
+  assert.ok(dom.host.querySelector('[data-llm-delete-armed="1"]'));
+  assert.match(dom.host.innerHTML, /确认删除该服务/);
+
+  dom.host.querySelector('#llm-prov-delete').dispatch('click');
+  await settle();
+  assert.deepEqual(apiClient.calls.filter(call => call[0] === 'DELETE'), [['DELETE', '/api/llm/providers/p-magpie']]);
+});
+
+test('表单与模型编辑面板面向用户使用自然中文术语，同时保留协议 option 值不变', async () => {
+  const { dom, view } = setup();
+  await view.refresh();
+  dom.host.querySelector('[data-llm-edit-model="zhipu/glm-5.3"]').dispatch('click');
+  const html = dom.host.innerHTML;
+  assert.match(html, /<span>接口地址<\/span>/);
+  assert.match(html, /<span>接口密钥<\/span>/);
+  assert.match(html, /<span>模型标识<\/span>/);
+  assert.match(html, /<option value="reasoning_effort">按强度分档<\/option>/);
+  assert.match(html, /<option value="thinking_budget">按字数上限<\/option>/);
+  assert.match(html, /<option value="json_object">JSON 对象<\/option>/);
+  assert.doesNotMatch(html, /Base URL|模型 id/);
+});

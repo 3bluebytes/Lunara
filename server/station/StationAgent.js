@@ -14,11 +14,11 @@ import {
 } from '../memory/MemoryConsolidator.js';
 import * as VoiceDirectory from './VoiceDirectory.js';
 import { createRadioHost, RadioHostRegistry } from './RadioHost.js';
-import { generatePersona, personaToMarkdown } from './PersonaGenerator.js';
+import { generatePersona, personaToMarkdown, resolvePreset } from './PersonaGenerator.js';
+import { clearPersonaCache } from '../persona/personaLoader.js';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { resolvePersonaRoot } from '../runtimePaths.js';
-import { buildDefaultPersonaRecords } from '../memory/seedPersonaMemory.js';
 import { trace } from '../trace.js';
 
 import { createBus } from './communication/AgentMessageBus.js';
@@ -61,10 +61,8 @@ export class StationAgent {
     // 3. RadioHost registry
     this.registry.initialize();
 
-    // 6. Create default radiohost if none exists
-    if (this.registry.count() === 0) {
-      await this._createDefaultRadiohost();
-    }
+    // Default Lunara belongs to VirtualPersonRegistry.ensureRoot(). An empty legacy
+    // registry is valid; creating a default child here would import a second Lunara.
 
     // 9. ReflectionAgent — 带外反思（add-reflection-layer change）
     //    必须放在伙伴注册之后；REFLECTION_AGENT_DISABLED=1 时 initialize 内部会跳过订阅。
@@ -87,6 +85,12 @@ export class StationAgent {
       console.warn('[station] WarmPoolService init failed (non-fatal):', e.message);
       this._warmPool = null;
     }
+
+    // 反思产出的新音乐洞察发布后，作废对应伙伴未采用的预热批次，避免续播继续采用旧偏好。
+    this._insightUnsub = this.bus?.subscribe?.(EventType.REFLECTION_INSIGHT_PUBLISHED, event => {
+      const personId = event?.payload?.virtualPersonId || event?.payload?.radiohostId || null;
+      this._warmPool?.invalidate(personId ? { personId } : {});
+    }) || null;
 
     this._initialized = true;
     return this;
@@ -129,6 +133,8 @@ export class StationAgent {
    * 清理 station 持有的订阅与定时器。测试和未来的优雅退出会用到。
    */
   async shutdown() {
+    try { this._insightUnsub?.(); } catch { /* ignore */ }
+    this._insightUnsub = null;
     if (this._reflectionAgent) {
       try { this._reflectionAgent.shutdown(); } catch (e) { console.warn('[station] reflection shutdown error:', e.message); }
       this._reflectionAgent = null;
@@ -277,12 +283,20 @@ export class StationAgent {
     const voiceProfile = VoiceDirectory.getVoiceProfile(voiceProfileId);
     if (!voiceProfile) throw new Error(`Voice profile not found: ${voiceProfileId}`);
 
-    // 人格来源只有预令人设、调用方 Agent 的草稿与用户描述，不传 voiceProfile。
-    const persona = await generatePersona({ personaPreset: personaPresetId, personaHint, personaDraft });
+    const hasDirectDocument = Object.hasOwn(opts, 'personaDocument') && typeof opts.personaDocument === 'string';
+    const directDocument = hasDirectDocument ? opts.personaDocument.trim() : null;
+    if (hasDirectDocument && personaPresetId) {
+      resolvePreset(personaPresetId);
+    }
+
+    // 直通模式跳过模型生成与默认预设回退；旧调用方未传 personaDocument 时保持原生成路径。
+    const persona = hasDirectDocument
+      ? null
+      : await generatePersona({ personaPreset: personaPresetId, personaHint, personaDraft });
 
     // 名字不得从声音推导（spec：name MUST NOT be derived from a voice）。
-    // persona.name 由预令人设候选/用户描述构造，恒非空。
-    const name = displayName || persona.name;
+    const name = String(displayName || persona?.name || '').trim();
+    if (!name) throw new TypeError('displayName is required when personaDocument is provided');
     const host = createRadioHost({
       id: opts.id,
       voiceProfileId,
@@ -302,9 +316,18 @@ export class StationAgent {
       mkdirSync(personaDir, { recursive: true });
       const personaPath = resolve(personaDir, 'persona.md');
       if (!existsSync(personaPath)) {
-        const markdown = personaToMarkdown(persona, host.name);
-        writeFileSync(personaPath, markdown, 'utf8');
-        trace(`[station] persona.md written: ${personaPath}`);
+        if (hasDirectDocument) {
+          if (directDocument) {
+            writeFileSync(personaPath, `${directDocument}\n`, 'utf8');
+            clearPersonaCache(host.id);
+            trace(`[station] direct persona.md written: ${personaPath}`);
+          }
+        } else {
+          const markdown = personaToMarkdown(persona, host.name);
+          writeFileSync(personaPath, markdown, 'utf8');
+          clearPersonaCache(host.id);
+          trace(`[station] persona.md written: ${personaPath}`);
+        }
       } else {
         trace(`[station] persona.md already exists for ${host.id}, preserving user's edits`);
       }
@@ -348,45 +371,5 @@ export class StationAgent {
       this.registry.register(host);
     }
     return host;
-  }
-
-  async _createDefaultRadiohost() {
-    const vp = VoiceDirectory.getVoiceProfile('vp_radio_host') ||
-               VoiceDirectory.getVoiceProfile('Chinese (Mandarin)_Radio_Host') ||
-               VoiceDirectory.listVoiceProfiles()[0] || null;
-
-    if (!vp) {
-      // No voice profile available — minimal local host, initialize its own default persona.
-      const host = createRadioHost({
-        id: 'default',
-        voiceProfileId: '',
-        name: 'Lunara',
-        status: 'inactive',
-      });
-      this.registry.register(host);
-
-      const radiohostMemory = new MemoryService(host.namespace);
-      await radiohostMemory.initialize();
-      this._radiohostMemoryCache.set(host.id, radiohostMemory);
-
-      const defaultRecords = buildDefaultPersonaRecords(host.namespace);
-      for (const record of defaultRecords) radiohostMemory.addMemory(record);
-
-      const stats = radiohostMemory.stats();
-      this.registry.updateStats(host.id, {
-        persona: defaultRecords.length,
-        semantic: stats.semantic || 0,
-        episodic: stats.episodic || 0,
-        working: stats.working || 0,
-      });
-      return;
-    }
-
-    await this.createRadioHost({
-      voiceProfileId: vp.id,
-      personaPresetId: 'retro_broadcaster',
-      displayName: 'Lunara',
-      personaHint: '',
-    });
   }
 }

@@ -12,15 +12,18 @@
 // 因此 server/index.js 与 server/settingsService.js 不需要改动。
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { trace } from './trace.js';
 import { resolveTtsCacheDir } from './runtimePaths.js';
 import { TtsProviderRegistry } from './tts/TtsProviderRegistry.js';
 import { TtsSynthesisError, TtsProviderUnavailableError } from './tts/TtsProvider.js';
 import { normalizeLoudnessSafely } from './tts/loudness.js';
+import { concatMp3Buffers } from './tts/mp3.js';
+import { concatWavBuffers } from './tts/wav.js';
+import { splitSpeechChunks } from '../pwa/features/chat/roleplaySpeech.js';
 import { createCustomProvider, CUSTOM_PROVIDER_ID } from './tts/providers/custom.js';
-import { getCustomTtsEndpoint, readCustomTtsConfig } from './ttsCustomConfig.js';
+import { DEFAULT_FREE_VOICE, getCustomTtsEndpoint, readCustomTtsConfig } from './ttsCustomConfig.js';
 import { readTtsFallbackConfig } from './ttsFallbackConfig.js';
 import { createFreeEdgeProvider, FREE_EDGE_PROVIDER_ID } from './tts/providers/freeEdge.js';
 import { NO_PERFORMANCE_CAPABILITY } from './tts/performance/capabilities.js';
@@ -30,7 +33,101 @@ import { renderSpeech } from './tts/performance/render.js';
 /** 已知的输出容器。provider 未声明扩展名时按此顺序探测缓存。 */
 const CACHE_EXTENSIONS = ['wav', 'mp3'];
 
-const DEFAULT_VOICE = process.env.MINIMAX_VOICE_ID || 'Chinese (Mandarin)_Sweet_Lady';
+const DEFAULT_VOICE = process.env.MINIMAX_VOICE_ID || DEFAULT_FREE_VOICE.profileId;
+export const LONG_SPEECH_THRESHOLD = 240;
+export const LONG_SPEECH_CHUNK_LIMIT = 220;
+
+function writeAtomicFile(targetPath, bytes) {
+  const tempPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  writeFileSync(tempPath, bytes);
+  try {
+    renameSync(tempPath, targetPath);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch {}
+    throw error;
+  }
+}
+
+function stitchAudioParts(parts, { providerId, pausesMs = [] } = {}) {
+  if (!Array.isArray(parts) || !parts.length) return null;
+  if (parts.length === 1) return parts[0];
+  const first = parts[0];
+  const ext = first.extension;
+  if (parts.some(part => part.extension !== ext)) {
+    throw new TtsSynthesisError('inconsistent chunk container format across long speech segments', {
+      providerId,
+      code: 'TTS_INCOMPATIBLE_CHUNK_FORMAT',
+    });
+  }
+  if (ext === 'wav') {
+    const concatenated = concatWavBuffers(parts.map(part => part.bytes), { providerId, pausesMs });
+    return {
+      bytes: concatenated.bytes,
+      extension: 'wav',
+      contentType: first.contentType || 'audio/wav',
+      source: first.source || 'provider',
+      durationMs: concatenated.durationMs,
+    };
+  }
+  if (ext === 'mp3') {
+    const concatenated = concatMp3Buffers(parts, { pausesMs });
+    return {
+      bytes: concatenated.bytes,
+      extension: 'mp3',
+      contentType: first.contentType || 'audio/mpeg',
+      source: first.source || 'provider',
+      durationMs: concatenated.durationMs,
+    };
+  }
+  throw new TtsSynthesisError(`chunked synthesis does not support "${ext}" concatenation`, {
+    providerId,
+    code: 'TTS_UNSUPPORTED_CHUNK_FORMAT',
+  });
+}
+
+async function synthAudioWithChunking(provider, renderedText, { voiceRef, signal, params, native } = {}) {
+  const chunks = [...renderedText].length > LONG_SPEECH_THRESHOLD
+    ? splitSpeechChunks(renderedText, { maxChars: LONG_SPEECH_CHUNK_LIMIT })
+    : [renderedText];
+  const segments = chunks.length > 0 ? chunks : [renderedText];
+  if (segments.length === 1) {
+    return provider.synth(segments[0], { voiceRef, signal, params, native });
+  }
+  const parts = [];
+  for (const chunk of segments) {
+    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    parts.push(await provider.synth(chunk, { voiceRef, signal, params, native }));
+  }
+  return stitchAudioParts(parts, { providerId: provider.id });
+}
+
+async function synthAudioPlan(provider, renderedBeats, { voiceRef, signal } = {}) {
+  if (!renderedBeats.length) return null;
+  if (renderedBeats.length === 1) {
+    const only = renderedBeats[0];
+    return synthAudioWithChunking(provider, only.text, {
+      voiceRef, signal, params: only.params, native: only.native,
+    });
+  }
+  const parts = new Array(renderedBeats.length);
+  const concurrency = Math.min(2, renderedBeats.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+      const idx = cursor;
+      cursor += 1;
+      if (idx >= renderedBeats.length) return;
+      const beat = renderedBeats[idx];
+      parts[idx] = await synthAudioWithChunking(provider, beat.text, {
+        voiceRef, signal, params: beat.params, native: beat.native,
+      });
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const pausesMs = renderedBeats.map(beat => Math.max(0, Number(beat.pauseBeforeMs) || 0));
+  return stitchAudioParts(parts, { providerId: provider.id, pausesMs });
+}
 
 /** 稳定序列化：参数顺序不同不应产生不同缓存键。 */
 function stableParams(params) {
@@ -157,9 +254,10 @@ export function createTtsGateway({
    * @returns {Promise<{hash,path,url,source,providerId,extension,contentType}|null>}
    *   文本为空返回 null；合成失败抛出 TtsSynthesisError。
    */
-  async function synth(text, { voiceId = null, signal = null, providerId = null, params: callParams = {}, performance = null } = {}) {
+  async function synth(text, { voiceId = null, signal = null, providerId = null, params: callParams = {}, performance = null, speechPlan = null } = {}) {
+    const planItems = Array.isArray(speechPlan) && speechPlan.length ? speechPlan : null;
     const cleaned = String(text ?? '').trim();
-    if (!cleaned || !toPlainText(cleaned)) {
+    if (!planItems && (!cleaned || !toPlainText(cleaned))) {
       trace('tts.synth: empty text, returning null');
       return null;
     }
@@ -178,22 +276,57 @@ export function createTtsGateway({
     const failures = [];
     for (const provider of selection.providers) {
       signal?.throwIfAborted?.();
-      let rendered;
+      let renderedBeats = null;
+      let rendered = null;
       try {
-        rendered = renderFor(provider, cleaned, performance, { voiceRef, params });
+        if (planItems) {
+          renderedBeats = [];
+          for (const beat of planItems) {
+            const rawBeat = String(beat?.text ?? '').trim();
+            if (!rawBeat || !toPlainText(rawBeat)) continue;
+            const beatRendered = renderFor(provider, rawBeat, beat.performance || performance, { voiceRef, params });
+            if (!beatRendered.text) continue;
+            renderedBeats.push({
+              text: beatRendered.text,
+              native: beatRendered.native || {},
+              params,
+              pauseBeforeMs: Math.max(0, Number(beat?.pauseBeforeMs) || 0),
+            });
+          }
+          if (!renderedBeats.length) continue;
+        } else {
+          rendered = renderFor(provider, cleaned, performance, { voiceRef, params });
+          if (!rendered.text) continue;
+        }
       } catch (error) {
         failures.push({ providerId: provider.id, error });
         logger?.warn?.(`[tts] provider "${provider.id}" render failed: ${error.message}`);
         continue;
       }
-      if (!rendered.text) continue;
-      const native = rendered.native || {};
-      // 没有原生参数时键与旧实现完全一致，已有缓存不失效。
-      const keyParams = Object.keys(native).length ? { ...params, native } : params;
-      const hash = cacheKey({ providerId: provider.id, voiceRef, text: rendered.text, params: keyParams });
+
+      const native = rendered?.native || {};
+      // 没有原生参数时键与旧实现完全一致，已有缓存不失效；计划模式使用完整分句表演哈希隔离缓存。
+      const hash = renderedBeats
+        ? cacheKey({
+          providerId: provider.id,
+          voiceRef,
+          text: `plan:${JSON.stringify(renderedBeats)}`,
+          params: { planVersion: 2 },
+        })
+        : cacheKey({
+          providerId: provider.id,
+          voiceRef,
+          text: rendered.text,
+          params: Object.keys(native).length ? { ...params, native } : params,
+        });
+      const previewLabel = renderedBeats ? renderedBeats[0].text : rendered.text;
       const cached = readCache(hash);
       if (cached) {
-        trace(`tts.synth: cache HIT provider=${provider.id} text="${rendered.text.slice(0, 40)}"`);
+        try {
+          const now = new Date();
+          utimesSync(cached.path, now, now);
+        } catch {}
+        trace(`tts.synth: cache HIT provider=${provider.id} text="${previewLabel.slice(0, 40)}"`);
         return {
           hash,
           path: cached.path,
@@ -205,13 +338,15 @@ export function createTtsGateway({
         };
       }
       try {
-        trace(`tts.synth: provider=${provider.id} text="${rendered.text.slice(0, 40)}"`);
+        trace(`tts.synth: provider=${provider.id} text="${previewLabel.slice(0, 40)}"${renderedBeats ? ` beats=${renderedBeats.length}` : ''}`);
         await provider.ensureReady();
-        const audio = await provider.synth(rendered.text, { voiceRef, signal, params, native });
+        const audio = renderedBeats
+          ? await synthAudioPlan(provider, renderedBeats, { voiceRef, signal })
+          : await synthAudioWithChunking(provider, rendered.text, { voiceRef, signal, params, native });
         // 响度归一化在网关层做，所有 provider 一致受益；非 WAV 会原样透传。
         const normalized = normalizeLoudnessSafely(audio.bytes, { providerId: provider.id });
         const path = resolve(cacheDir, `${hash}.${audio.extension}`);
-        writeFileSync(path, normalized.bytes);
+        writeAtomicFile(path, normalized.bytes);
         trace(`tts.synth: provider=${provider.id} OK url=/tts/${hash}.${audio.extension}`
           + (normalized.changed ? ` gain=+${normalized.gainDb.toFixed(1)}dB` : ''));
         return {
@@ -228,7 +363,7 @@ export function createTtsGateway({
           appliedGainDb: normalized.changed ? normalized.gainDb : 0,
         };
       } catch (error) {
-        if (error?.name === 'AbortError') throw error;
+        if (error?.name === 'AbortError' || signal?.aborted) throw error;
         failures.push({ providerId: provider.id, error });
         trace(`tts.synth: provider=${provider.id} failed: ${error.message}`);
         logger?.warn?.(`[tts] provider "${provider.id}" failed: ${error.message}`);

@@ -12,14 +12,17 @@ test('QQ is no longer an independently launched music source', () => {
   }), /QQ SDK 已内置/);
 });
 
-test('NCM launch resolves the installed package entry and rejects unknown sources', () => {
+test('NCM launch checks the package and uses the protected entry, and rejects unknown sources', () => {
   const launch = buildMusicSourceLaunch('ncm', {
     root: '/repo',
     env: {},
     fileExists: () => true,
   });
   // 实现内部用 path.resolve 拼路径：Windows 会把 '/repo/...' 解析为带盘符的绝对路径，断言跟随平台语义。
-  assert.deepEqual(launch.args, [resolve('/repo/node_modules/NeteaseCloudMusicApi/app.js')]);
+  assert.deepEqual(launch.args, [resolve('/repo/scripts/ncm-server.mjs')]);
+  assert.throws(() => buildMusicSourceLaunch('ncm', {
+    root: '/repo', env: {}, fileExists: () => false,
+  }), /服务未安装/);
   assert.throws(() => buildMusicSourceLaunch('spotify', {
     root: '/repo', env: {}, fileExists: () => true,
   }), /不支持的独立音乐源/);

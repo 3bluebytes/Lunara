@@ -35,14 +35,15 @@ function scriptedChat(responses) {
 
 test('calls after an accepted terminal outcome in the same batch are skipped, not executed', async () => {
   const registry = fakeRegistry({
-    control_listening: () => ok('LISTENING_CONTROLLED', { terminal: true, presentation: { displayText: '好，继续播放。', speak: false } }),
+    // 不用已被 IntentRouter 排到最后的真实终结工具名（如 control_listening / commit_music_selection）。
+    finish_playback: () => ok('LISTENING_CONTROLLED', { terminal: true, presentation: { displayText: '好，继续播放。', speak: false } }),
     remember_person_fact: () => ok('PERSON_FACT_REMEMBERED'),
   });
-  const chat = scriptedChat([{ calls: [call('c1', 'control_listening', { action: 'resume' }), call('c2', 'remember_person_fact', { fact: 'x' })] }]);
+  const chat = scriptedChat([{ calls: [call('c1', 'finish_playback', { action: 'resume' }), call('c2', 'remember_person_fact', { fact: 'x' })] }]);
   const messages = [];
   const result = await new AgentLoop({ chat, toolRegistry: registry }).run({ systemPrompt: 's', messages: [],
     onMessage: event => { if (event.kind === 'tool_result') messages.push(event); } });
-  assert.deepEqual(registry.executed, ['control_listening']);
+  assert.deepEqual(registry.executed, ['finish_playback']);
   assert.equal(result.finalText, '好，继续播放。');
   assert.deepEqual(result.outcomes.map(item => item.code), ['LISTENING_CONTROLLED', 'SKIPPED_AFTER_TERMINAL']);
   // tool 协议保持完整：每个 provider call id 都有结果。
@@ -53,18 +54,18 @@ test('calls after an accepted terminal outcome in the same batch are skipped, no
 test('cancellation arriving after an accepted terminal outcome does not turn it into an error', async () => {
   const outer = new AbortController();
   const registry = fakeRegistry({
-    // 不用 commit_music_selection：IntentRouter 会把它排到同批最后。
-    control_listening: () => {
+    // 不用已被 IntentRouter 排到同批最后的真实终结工具。
+    finish_playback: () => {
       const outcome = ok('LISTENING_CONTROLLED', { terminal: true, presentation: { displayText: '已经安排好了。', speak: false } });
       outer.abort(new Error('user cancelled'));
       return outcome;
     },
     remember_person_fact: () => ok('PERSON_FACT_REMEMBERED'),
   });
-  const chat = scriptedChat([{ calls: [call('c1', 'control_listening', { action: 'play' }), call('c2', 'remember_person_fact')] }]);
+  const chat = scriptedChat([{ calls: [call('c1', 'finish_playback', { action: 'play' }), call('c2', 'remember_person_fact')] }]);
   const result = await new AgentLoop({ chat, toolRegistry: registry }).run({ systemPrompt: 's', signal: outer.signal });
   assert.equal(result.finalText, '已经安排好了。');
-  assert.deepEqual(registry.executed, ['control_listening']);
+  assert.deepEqual(registry.executed, ['finish_playback']);
 });
 
 test('read-only tools re-execute in a later round so the model sees current state', async () => {
@@ -158,9 +159,10 @@ test('consecutive read-only calls in one batch run concurrently and keep their r
 });
 
 test('a side-effect call never overlaps read-only calls around it', async () => {
-  const registry = deferredRegistry(['search_music', 'remember_person_fact'], { readOnly: ['search_music'] });
+  // 使用未按写操作后置的测试副作用名，验证 AgentLoop 对并发只读栅栏的隔离约束。
+  const registry = deferredRegistry(['search_music', 'write_note'], { readOnly: ['search_music'] });
   const chat = scriptedChat([
-    { calls: [call('a', 'search_music', { id: 1 }), call('b', 'remember_person_fact', { id: 2 }), call('c', 'search_music', { id: 3 })] },
+    { calls: [call('a', 'search_music', { id: 1 }), call('b', 'write_note', { id: 2 }), call('c', 'search_music', { id: 3 })] },
     { content: '好。' },
   ]);
   const running = new AgentLoop({ chat, toolRegistry: registry }).run({ systemPrompt: 's' });

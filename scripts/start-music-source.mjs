@@ -21,7 +21,7 @@ export function buildMusicSourceLaunch(source, {
     }
     return {
       command: process.execPath,
-      args: [entry],
+      args: [resolve(root, 'scripts/ncm-server.mjs')],
       env: { ...env },
       notice: '网易云音乐服务启动中，默认地址 http://127.0.0.1:3000',
     };

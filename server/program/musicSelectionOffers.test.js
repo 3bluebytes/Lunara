@@ -214,3 +214,19 @@ test('MUSIC_PREWARM_TTL_MS 可覆盖预热 TTL，过小/非法值回落到不短
   assert.equal(musicSelectionPreparedTtlMs({ MUSIC_SELECTION_OFFER_TTL_MS: '3600000' }), 3_600_000,
     '至少不短于普通 offer 的有效期');
 });
+
+test('prewarmBatchKey tracks likesRevision and binary skipMomentumBucket; invalidate filters by personId', (t) => {
+  const base = { mode: 'discovery', delivery: 'append', count: 3, artist: '', constraints: {} };
+  const k0 = prewarmBatchKey({ request: base, sessionId: 'room', personId: 'a', likesRevision: '1:1:1:100', skipMomentumBucket: 0 });
+  const kLike = prewarmBatchKey({ request: base, sessionId: 'room', personId: 'a', likesRevision: '2:2:2:200', skipMomentumBucket: 0 });
+  const kSkip = prewarmBatchKey({ request: base, sessionId: 'room', personId: 'a', likesRevision: '1:1:1:100', skipMomentumBucket: 1 });
+  assert.notEqual(k0, kLike);
+  assert.notEqual(k0, kSkip);
+
+  const prepared = preparedFixture(t);
+  prepared.create({ sessionId: 'room', personId: 'a', outputGeneration: 1, offerId: 'o1', indexes: [1], request: base, prewarmKey: k0 });
+  prepared.create({ sessionId: 'room', personId: 'b', outputGeneration: 1, offerId: 'o2', indexes: [1], request: base, prewarmKey: k0 });
+  assert.equal(prepared.invalidate({ personId: 'a' }), 1);
+  assert.equal(prepared.listReady({ sessionId: 'room', personId: 'a' }).length, 0);
+  assert.equal(prepared.listReady({ sessionId: 'room', personId: 'b' }).length, 1);
+});

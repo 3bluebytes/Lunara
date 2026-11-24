@@ -45,12 +45,13 @@ test('publishable package contract: bin, files whitelist, no private flag', asyn
   assert.ok(!pkg.files?.some(entry => String(entry).includes('cache')), 'cache/ 运行时自建不入包');
 });
 
-test('repo-only npm scripts are documented as requiring a repository clone', async () => {
-  // scripts/start-music-source.mjs、qq-sdk-ready.mjs、setup.sh、doctor.mjs 不入发布包：
-  // 全局安装态 npm run ncm/qq/setup/doctor 不可用，README 必须标注「需在仓库克隆内运行」。
+test('public startup instructions use the embedded music sources without a separate command', async () => {
   const readme = await readFile(new URL('README.md', root), 'utf8');
+  const setup = await readFile(new URL('setup.sh', root), 'utf8');
   assert.match(readme, /仓库克隆内运行/);
-  assert.match(readme, /doctor|ncm|qq|setup/);
+  assert.match(readme, /npm start/);
+  assert.match(setup, /npm start/);
+  assert.doesNotMatch(`${readme}\n${setup}`, /npm run (?:music:)?ncm\b/);
 });
 
 test('desktop packaging contract: builder config whitelist excludes private runtime data', async () => {
@@ -68,6 +69,20 @@ test('desktop packaging contract: builder config whitelist excludes private runt
   assert.ok(builderConfig.includes('icon.icns') && builderConfig.includes('icon.ico'), '打包配置应引用生成的图标');
 });
 
+test('desktop candidates are built manually for Apple Silicon and Windows, without publishing a Release', async () => {
+  const workflow = await readFile(new URL('.github/workflows/build-desktop.yml', root), 'utf8');
+  const builder = await readFile(new URL('electron-builder.yml', root), 'utf8');
+  const dist = await readFile(new URL('scripts/dist-desktop.mjs', root), 'utf8');
+  assert.match(workflow, /^on:\n  workflow_dispatch:\n/m);
+  assert.doesNotMatch(workflow, /contents:\s*write|action-gh-release|^  push:/m);
+  assert.match(workflow, /actions\/upload-artifact/);
+  assert.match(workflow, /npm run dist:mac/);
+  assert.match(workflow, /npm run dist:win/);
+  assert.match(builder, /target: dmg\n\s+arch: \[arm64\]/);
+  assert.match(builder, /target: nsis\n\s+arch: \[x64\]/);
+  assert.match(dist, /'--publish', 'never'/);
+});
+
 test('desktop packaging contract: only a host-runnable ffmpeg ships as the audio tool', async () => {
   // ffprobe-static 的 darwin/arm64 实际是 x86_64，无 Rosetta 的 Apple Silicon 上跑不起来；
   // 格式与时长改由随包 ffmpeg 读出，安装包不再携带 ffprobe。
@@ -79,16 +94,23 @@ test('desktop packaging contract: only a host-runnable ffmpeg ships as the audio
   assert.ok(!builderConfig.includes('ffprobe'), '打包配置不得再引用 ffprobe');
   const smoke = await readFile(new URL('scripts/smoke-packaged-app.mjs', root), 'utf8');
   assert.match(smoke, /ffmpeg-static/, '打包冒烟必须实际执行随包 ffmpeg，不能只查文件存在');
+  assert.match(smoke, /nonfree/i, '打包冒烟必须校验随包 ffmpeg 不含 nonfree');
+  const dist = await readFile(new URL('scripts/dist-desktop.mjs', root), 'utf8');
+  assert.match(dist, /ensureRedistributableFfmpeg/, '打包前必须通过可再分发 ffmpeg 门禁');
+  assert.match(dist, /@electron.*rebuild/, '打包前必须强制重编 Electron 原生模块');
 });
 
-test('desktop packaging contract: publish metadata and LICENSE exist', async () => {
+test('desktop packaging contract: publish metadata, LICENSE and open-source governance docs exist', async () => {
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
   assert.ok(pkg.author, 'author 是打包与发布的必填元数据');
   assert.ok(pkg.license, 'license 字段是开源发布前提');
+  assert.ok(pkg.repository?.url, 'repository 元数据应指向公开仓库');
   assert.equal(pkg.scripts['dist:mac'], 'node scripts/dist-desktop.mjs --mac');
   assert.equal(pkg.scripts['dist:win'], 'node scripts/dist-desktop.mjs --win');
   assert.equal(pkg.scripts['smoke:packaged'], 'node scripts/smoke-packaged-app.mjs');
-  await assert.doesNotReject(() => readFile(new URL('LICENSE', root), 'utf8'), 'LICENSE 文件必须存在');
+  for (const file of ['LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md']) {
+    await assert.doesNotReject(() => readFile(new URL(file, root), 'utf8'), `${file} 文件必须存在`);
+  }
   const ffmpegLicense = await readFile(new URL('build/licenses/README-ffmpeg.md', root), 'utf8');
   assert.match(ffmpegLicense, /GPL-3\.0/);
   assert.match(ffmpegLicense, /不传染|不链接/, '必须说明独立进程调用下的许可边界');

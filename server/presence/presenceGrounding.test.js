@@ -93,13 +93,17 @@ test('recent chat: last 30 minutes, at most 6 turns and 1200 characters; a hook 
   } finally { h.close(); }
 });
 
-test('a group brief never contains a turn that is private to one member', () => {
+test('a group brief carries what she herself heard in private, but not what only another member heard', () => {
   const h = harness(['lunara', 'xiaoman']);
   try {
     h.exchange('p1', '只告诉你，我最近睡不好', '嗯，我记着。');
-    h.exchange('p2', '大家晚上好', '晚上好呀。', { personId: 'xiaoman' });
+    h.exchange('p2', '别告诉别人，我想换工作', '好，我不说。', { personId: 'xiaoman' });
+    h.exchange('p3', '大家晚上好', '晚上好呀。', { personId: 'xiaoman' });
     const grounding = gather(h, boundary(song()));
-    assert.equal(JSON.stringify(grounding).includes('睡不好'), false);
+    // 她自己听到的私下话照样在素材里：当着大家提不提是她的分寸。
+    assert.equal(JSON.stringify(grounding).includes('睡不好'), true);
+    // 只有小满听到的私下话不是她经历过的事。
+    assert.equal(JSON.stringify(grounding).includes('换工作'), false);
     assert.ok(grounding.recentChat.some(item => item.said === '大家晚上好'));
     assert.ok(grounding.recentChat.some(item => item.speaker === '小满'));
   } finally { h.close(); }

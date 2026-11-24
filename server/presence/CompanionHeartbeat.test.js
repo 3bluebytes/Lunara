@@ -269,6 +269,20 @@ test('the heartbeat is measured from the latest of arming, the previous wake and
   assert.equal(h.heartbeat.pending().dueAtMs, NOON + 35 * MIN);
 });
 
+test('a greeting that ran in this room counts as a beat: the next wake is a full interval later and earlier nudges are dropped', async () => {
+  const h = harness();
+  h.heartbeat.refresh();
+  h.heartbeat.noteMoment({ kind: 'session_open', sessionId: 'chat-a', personId: 'lunara' });
+  assert.equal(h.heartbeat.pending().reason, 'session_open');
+  await h.clock.advance(10_000);
+  h.heartbeat.noteExternalWake('chat-a');
+  assert.deepEqual({ reason: h.heartbeat.pending().reason, dueAtMs: h.heartbeat.pending().dueAtMs },
+    { reason: 'heartbeat', dueAtMs: NOON + 10_000 + 15 * MIN });
+  h.heartbeat.noteExternalWake('other');
+  assert.equal(h.heartbeat.pending().dueAtMs, NOON + 10_000 + 15 * MIN, '别的聊天的问候不动这里的心跳');
+  assert.equal(h.wakes.length, 0);
+});
+
 // ---- 10.2 不降档 ----
 
 test('unanswered lines never slow the heartbeat, restrict nudges or pause the day', async () => {

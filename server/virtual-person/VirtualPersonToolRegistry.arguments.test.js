@@ -133,3 +133,42 @@ test('未知工具的 prepareArguments 是 no-op，execute 保持既有 TOOL_NOT
   assert.equal(outcome.ok, false);
   assert.equal(outcome.code, 'TOOL_NOT_AVAILABLE');
 });
+
+test('回合已取消或发言人已变时，工具中止不按错误级别记日志；真正的工具故障照常记 error', async () => {
+  const logs = [];
+  const registry = new VirtualPersonToolRegistry({ logger: { error: line => logs.push(['error', line]), info: line => logs.push(['info', line]) } });
+  registry.register('boom', { capability: 'x', definition: { description: 'x', parameters: { type: 'object', properties: {} } },
+    handler: async () => { throw new Error('handler exploded'); } });
+  const aborted = new AbortController();
+  aborted.abort();
+  for (const context of [{ signal: aborted.signal }, { isCurrent: () => false }]) {
+    const outcome = await registry.execute('boom', {}, { capabilities: ['x'], ...context });
+    assert.equal(outcome.code, 'INTERNAL_TOOL_ERROR');
+  }
+  assert.deepEqual(logs.map(([level]) => level), ['info', 'info']);
+  await registry.execute('boom', {}, { capabilities: ['x'] });
+  assert.equal(logs.at(-1)[0], 'error');
+});
+
+test('resolveDefinition and prepareArgs isolate action dynamically across interactionMode and group', async () => {
+  const { REPLY_CAPABILITY, registerDeliverReplyTool } = await import('./replyBeats.js');
+  const registry = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  registerDeliverReplyTool(registry);
+
+  const radioDefs = registry.definitions({ capabilities: [REPLY_CAPABILITY], interactionMode: 'radio', isGroup: false });
+  assert.equal('action' in radioDefs[0].function.parameters.properties.beats.items.properties, false);
+
+  const groupDefs = registry.definitions({ capabilities: [REPLY_CAPABILITY], interactionMode: 'roleplay', isGroup: true });
+  assert.equal('action' in groupDefs[0].function.parameters.properties.beats.items.properties, false);
+
+  const rpDefs = registry.definitions({ capabilities: [REPLY_CAPABILITY], interactionMode: 'roleplay', isGroup: false });
+  assert.equal('action' in rpDefs[0].function.parameters.properties.beats.items.properties, true);
+
+  const rejected = await registry.execute(
+    'deliver_reply',
+    { beats: [{ action: '点头', say: '你好' }] },
+    { capabilities: [REPLY_CAPABILITY], interactionMode: 'radio', isGroup: false },
+  );
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'INVALID_TOOL_ARGUMENTS');
+});

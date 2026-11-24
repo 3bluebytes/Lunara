@@ -184,10 +184,36 @@ test('正在输入：只认这个聊天的成员；更新的 correlation 覆盖�
   h.controller.consumeActivity({ sessionId: 'one', personId: 'a', correlationId: 'c4', state: 'composing' });
   timers.at(-1).fn();
   assert.deepEqual(h.controller.snapshot().composing, [], '丢了 idle 也会兜底收起');
-  assert.equal(timers.at(-1).ms, 30_000);
+  assert.equal(timers.at(-1).ms, 65_000);
   await h.controller.select('two');
   h.controller.consumeActivity({ sessionId: 'one', personId: 'a', correlationId: 'c5', state: 'composing' });
   assert.deepEqual(h.controller.snapshot().composing, [], '只显示正在看的聊天');
+});
+
+test('长等待计时：pendingSince 只记录正在等待的那一个房间，结束后归零', async () => {
+  let clock = 1_000;
+  const h = fixture({ now: () => clock });
+  await h.controller.refresh();
+  let finishChat;
+  h.apiClient.chat = () => new Promise(resolve => { finishChat = resolve; });
+
+  const flight = h.controller.send('帮我找一首适合雨夜的爵士');
+  assert.equal(h.controller.snapshot().pending, true);
+  assert.equal(h.controller.snapshot().pendingSince, 1_000);
+
+  clock = 9_500;
+  await h.controller.select('two');
+  assert.equal(h.controller.snapshot().pending, false);
+  assert.equal(h.controller.snapshot().pendingSince, null, '别的聊天不继承等待起点');
+
+  await h.controller.select('one');
+  assert.equal(h.controller.snapshot().pending, true);
+  assert.equal(h.controller.snapshot().pendingSince, 1_000, '切回原聊天保留真实起点');
+
+  finishChat({ ok: true });
+  await flight;
+  assert.equal(h.controller.snapshot().pending, false);
+  assert.equal(h.controller.snapshot().pendingSince, null);
 });
 
 test('安静点：只在被要求安静的听歌来源里显示；服务端确认后才收起；失败保留并报错', async () => {
@@ -265,4 +291,232 @@ test('a message from the listening chat names the occurrence the listener is hea
   h.store.update(() => ({ runtimeState: { activeListeningSessionId: 'one', phase: 'exhausted', currentIndex: -1, queue: [] } }));
   await h.controller.send('继续');
   assert.equal('playbackIdentity' in sent[2], false);
+});
+
+test('pendingPhase follows music activity and synthesizeTurnSpeech / touchTurnSpeech sync local voice state', async () => {
+  const h = fixture();
+  await h.controller.refresh();
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      say: '（轻轻点头）好。',
+      sourceTurnId: 'turn_rp_1',
+      virtualPersonId: 'a',
+      segments: [{ type: 'action', content: '（轻轻点头）' }, { type: 'speech', content: '好。' }],
+      voice: { canSynthesize: true, audioUrl: null },
+    },
+  });
+  const stored = h.controller.snapshot().local.turns.find(t => t.turnId === 'turn_rp_1');
+  assert.equal(stored.segments.length, 2);
+  assert.equal(stored.voice.canSynthesize, true);
+
+  h.controller.consumeActivity({ sessionId: 'one', personId: 'a', correlationId: 'c1', state: 'composing', phase: 'music' });
+  assert.equal(h.controller.snapshot().pendingPhase, 'music');
+  h.controller.consumeActivity({ sessionId: 'one', personId: 'a', correlationId: 'c1', state: 'idle', outcome: 'ended' });
+
+  h.apiClient.post = async path => {
+    if (path.endsWith('/speech')) return { ok: true, audioUrl: '/tts/s1.wav', durationMs: 800 };
+    if (path.endsWith('/touch')) return { ok: true, exists: false, touched: false };
+    return {};
+  };
+  await h.controller.synthesizeTurnSpeech('turn_rp_1', 'one');
+  assert.equal(h.controller.snapshot().local.turns.find(t => t.turnId === 'turn_rp_1').voice.audioUrl, '/tts/s1.wav');
+
+  const touch = await h.controller.touchTurnSpeech('turn_rp_1', 'one');
+  assert.equal(touch.exists, false);
+  assert.equal(h.controller.snapshot().local.turns.find(t => t.turnId === 'turn_rp_1').voice.audioUrl, null);
+});
+
+test('create forwards explicit hostId to POST /api/conversations', async () => {
+  const h = fixture();
+  await h.controller.refresh();
+  h.apiClient.post = async (...args) => {
+    h.calls.push(args);
+    return { ok: true, conversation: { sessionId: 'new-room', memberIds: ['a', 'b'], activeVirtualPersonId: 'b' } };
+  };
+  await h.controller.create({ title: '和 B 的聊天', memberIds: ['a', 'b'], hostId: 'b' });
+  assert.deepEqual(h.calls[0], ['/api/conversations', { title: '和 B 的聊天', memberIds: ['a', 'b'], hostId: 'b' }]);
+});
+
+test('consume merges pipelined multi-beat updates in-place keeping original sequence and createdAt', async () => {
+  let clock = 5_000;
+  const h = fixture({ now: () => clock });
+  await h.controller.refresh();
+
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_other_before',
+      virtualPersonId: 'a',
+      say: '先前的句子',
+      sequence: 1,
+    },
+  });
+
+  clock = 6_000;
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_pipe_1',
+      virtualPersonId: 'a',
+      say: '第一拍',
+      beats: [{ index: 0, say: '第一拍', pauseAfterMs: 400 }],
+      beatProgress: { deliveredCount: 1, totalCount: 3, done: false },
+      voice: { canSynthesize: true, status: 'partial', url: '/tts/b0.wav', audioUrl: '/tts/b0.wav' },
+    },
+  });
+
+  clock = 7_000;
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_other_after',
+      virtualPersonId: 'a',
+      say: '后面的句子',
+    },
+  });
+
+  const beforeMerge = h.controller.stateFor('one').turns.find(t => t.turnId === 'turn_pipe_1');
+  const origSeq = beforeMerge.sequence;
+  const origCreatedAt = beforeMerge.createdAt;
+  assert.equal(origSeq, 2);
+  assert.equal(origCreatedAt, 6_000);
+
+  clock = 9_000;
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_pipe_1',
+      virtualPersonId: 'a',
+      say: '第一拍\n第二拍\n第三拍',
+      beats: [
+        { index: 0, say: '第一拍', pauseAfterMs: 400, audioUrl: '/tts/b0.wav' },
+        { index: 1, say: '第二拍', pauseAfterMs: 500, audioUrl: '/tts/b1.wav' },
+        { index: 2, say: '第三拍', pauseAfterMs: 0, audioUrl: '/tts/b2.wav' },
+      ],
+      beatProgress: { deliveredCount: 3, totalCount: 3, done: true },
+      voice: { canSynthesize: true, status: 'ready', url: '/tts/b0.wav', audioUrl: '/tts/b0.wav', durationMs: 3200 },
+    },
+  });
+
+  const turns = h.controller.stateFor('one').turns;
+  assert.deepEqual(turns.map(t => t.turnId), ['turn_other_before', 'turn_pipe_1', 'turn_other_after']);
+  const updated = turns[1];
+  assert.equal(updated.sequence, origSeq);
+  assert.equal(updated.createdAt, origCreatedAt);
+  assert.equal(updated.beats.length, 3);
+  assert.equal(updated.beatProgress.done, true);
+  assert.equal(updated.voice.status, 'ready');
+});
+
+test('synthesizeTurnSpeech writes per-beat audioUrl, hash, and durationMs onto turn.beats and touch clear resets beats', async () => {
+  const h = fixture();
+  await h.controller.refresh();
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_rp_beats',
+      virtualPersonId: 'a',
+      say: '（抬头）怎么了。\n别站在门口。',
+      beats: [
+        { index: 0, action: '（抬头）', say: '怎么了。', pauseAfterMs: 550 },
+        { index: 1, say: '别站在门口。', pauseAfterMs: 0 },
+      ],
+      voice: { canSynthesize: true, status: 'missing', url: null, audioUrl: null },
+    },
+  });
+
+  h.apiClient.post = async path => {
+    if (path.endsWith('/speech')) {
+      return {
+        ok: true,
+        audioUrl: '/tts/b0.wav',
+        durationMs: 2400,
+        cached: false,
+        beats: [
+          { index: 0, audioUrl: '/tts/b0.wav', hash: 'h0', durationMs: 1100, pauseAfterMs: 550 },
+          { index: 1, audioUrl: '/tts/b1.wav', hash: 'h1', durationMs: 1300, pauseAfterMs: 0 },
+        ],
+      };
+    }
+    if (path.endsWith('/touch')) return { ok: true, exists: false, touched: false };
+    return {};
+  };
+
+  await h.controller.synthesizeTurnSpeech('turn_rp_beats', 'one');
+  const turn = h.controller.stateFor('one').turns.find(t => t.turnId === 'turn_rp_beats');
+  assert.equal(turn.beats[0].audioUrl, '/tts/b0.wav');
+  assert.equal(turn.beats[0].hash, 'h0');
+  assert.equal(turn.beats[0].durationMs, 1100);
+  assert.equal(turn.beats[1].audioUrl, '/tts/b1.wav');
+  assert.equal(turn.voice.status, 'ready');
+  assert.equal(turn.voice.audioUrl, '/tts/b0.wav');
+
+  await h.controller.touchTurnSpeech('turn_rp_beats', 'one');
+  assert.equal(turn.voice.audioUrl, null);
+  assert.equal(turn.voice.status, 'missing');
+  assert.equal(turn.beats[0].audioUrl, undefined);
+  assert.equal(turn.beats[1].audioUrl, undefined);
+});
+
+test('[P0-1] silent/breath-only beats preserve canSynthesize: false through synthesizeTurnSpeech and touchTurnSpeech clears voice.beats cache', async () => {
+  const h = fixture();
+  await h.controller.refresh();
+  h.controller.consume({
+    sessionId: 'one',
+    message: {
+      sourceTurnId: 'turn_silent_mix',
+      virtualPersonId: 'a',
+      say: '……\n……\n我在这里。',
+      beats: [
+        { index: 0, action: '看着你', say: '……', pauseAfterMs: 300 },
+        { index: 1, say: '……', spoken: '{叹气}', pauseAfterMs: 300 },
+        { index: 2, say: '我在这里。', pauseAfterMs: 0 },
+      ],
+      voice: {
+        canSynthesize: true,
+        status: 'missing',
+        url: null,
+        audioUrl: null,
+        beats: [
+          { index: 0, canSynthesize: false, status: 'none', audioUrl: null, durationMs: null },
+          { index: 1, canSynthesize: false, status: 'none', audioUrl: null, durationMs: null },
+          { index: 2, canSynthesize: true, status: 'missing', audioUrl: null, durationMs: null },
+        ],
+      },
+    },
+  });
+
+  h.apiClient.post = async path => {
+    if (path.endsWith('/speech')) {
+      return {
+        ok: true,
+        audioUrl: '/tts/b2.wav',
+        durationMs: 1200,
+        beats: [
+          { index: 0, canSynthesize: false, status: 'none', audioUrl: null, durationMs: null },
+          { index: 1, canSynthesize: false, status: 'none', audioUrl: null, durationMs: null },
+          { index: 2, canSynthesize: true, status: 'ready', audioUrl: '/tts/b2.wav', hash: 'h2', durationMs: 1200, pauseAfterMs: 0 },
+        ],
+      };
+    }
+    if (path.endsWith('/touch')) return { ok: true, exists: false, touched: false };
+    return {};
+  };
+
+  await h.controller.synthesizeTurnSpeech('turn_silent_mix', 'one');
+  const turn = h.controller.stateFor('one').turns.find(t => t.turnId === 'turn_silent_mix');
+  assert.equal(turn.voice.status, 'ready');
+  assert.equal(turn.voice.audioUrl, '/tts/b2.wav');
+  assert.equal(turn.voice.beats[0].canSynthesize, false);
+  assert.equal(turn.voice.beats[1].canSynthesize, false);
+  assert.equal(turn.voice.beats[2].audioUrl, '/tts/b2.wav');
+
+  await h.controller.touchTurnSpeech('turn_silent_mix', 'one');
+  assert.equal(turn.voice.audioUrl, null);
+  assert.equal(turn.voice.status, 'missing');
+  assert.equal(turn.voice.beats[0].canSynthesize, false);
+  assert.equal(turn.voice.beats[0].status, 'none');
+  assert.equal(turn.voice.beats[2].audioUrl, null);
+  assert.equal(turn.voice.beats[2].status, 'missing');
 });

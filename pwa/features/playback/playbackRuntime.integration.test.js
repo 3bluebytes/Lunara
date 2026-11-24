@@ -9,6 +9,13 @@ import { createNarrationCoordinator } from './narrationCoordinator.js';
 import { createPlaybackRuntimeClient } from './playbackRuntimeClient.js';
 import { createConversationController } from '../conversations/conversationController.js';
 
+// 写好文字，再合成声音：两步走完才有 PLAY_TRACK_NARRATION。
+async function writeAndVoice(host, { ttsUrl, contentHash, text, ...identity }) {
+  const written = await host.submit({ ...identity, type: 'TRACK_NARRATION_READY', text });
+  assert.equal(written.accepted, true, written.reason);
+  return host.submit({ ...identity, type: 'TRACK_NARRATION_ASSET_READY', eventId: `${identity.eventId}:asset`, ttsUrl, contentHash });
+}
+
 class FakeAudio {
   constructor() {
     this.src = '';
@@ -162,8 +169,8 @@ test('committed music starts immediately and runtime narration uses preflight th
   music.emit('playing');
   await settle();
   assert.equal(host.snapshot().phase, 'playing');
-  const ready = await host.submit({
-    type: 'TRACK_NARRATION_READY', eventId: 'voice-ready', queueItemId: activation.txn.queueItemId,
+  const ready = await writeAndVoice(host, {
+    eventId: 'voice-ready', queueItemId: activation.txn.queueItemId,
     generationRevision: activation.txn.narrationGenerationRevision,
     listeningSessionId: activation.activeListeningSessionId, outputGeneration: activation.outputGeneration,
     text: '接下来是卫兰的《街灯晚餐》。', ttsUrl: '/street-tts.mp3', contentHash: 'voice-hash',
@@ -256,8 +263,8 @@ test('foreground narration delays only the runtime voice overlay, never the conf
   const activation = host.snapshot();
   music.emit('playing');
   await settle();
-  await host.submit({
-    type: 'TRACK_NARRATION_READY', eventId: 'continued-voice-ready', queueItemId: activation.txn.queueItemId,
+  await writeAndVoice(host, {
+    eventId: 'continued-voice-ready', queueItemId: activation.txn.queueItemId,
     generationRevision: activation.txn.narrationGenerationRevision,
     listeningSessionId: activation.activeListeningSessionId, outputGeneration: activation.outputGeneration,
     text: '接下来是歌手的《下一首》。', ttsUrl: '/continued-tts.mp3',
@@ -312,8 +319,8 @@ test('foreground wait revalidates the delivery window and drops a narration that
   music.emit('playing');
   await settle();
   const activation = host.snapshot();
-  await host.submit({
-    type: 'TRACK_NARRATION_READY', eventId: 'late-voice-ready', queueItemId: activation.txn.queueItemId,
+  await writeAndVoice(host, {
+    eventId: 'late-voice-ready', queueItemId: activation.txn.queueItemId,
     generationRevision: activation.txn.narrationGenerationRevision,
     listeningSessionId: activation.activeListeningSessionId, outputGeneration: activation.outputGeneration,
     text: '接下来是歌手的《等候》。', ttsUrl: '/late-tts.mp3',
@@ -369,8 +376,8 @@ test('replacing the active track cancels its narration overlay and restores musi
   music.emit('playing');
   await settle();
   const oldActivation = host.snapshot();
-  await host.submit({
-    type: 'TRACK_NARRATION_READY', eventId: 'replaceable-voice-ready', queueItemId: oldActivation.txn.queueItemId,
+  await writeAndVoice(host, {
+    eventId: 'replaceable-voice-ready', queueItemId: oldActivation.txn.queueItemId,
     generationRevision: oldActivation.txn.narrationGenerationRevision,
     listeningSessionId: oldActivation.activeListeningSessionId, outputGeneration: oldActivation.outputGeneration,
     text: '旧歌介绍。', ttsUrl: '/old-tts.mp3',

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密报告安全或隐私漏洞
+    url: https://github.com/3bluebytes/Lunara/security/advisories/new
+    about: 如涉及 API 凭据、Cookie、本地边界或隐私泄露，请勿发公开 Issue，点击这里私密提交
+  - name: 使用交流与问答（Discussions）
+    url: https://github.com/3bluebytes/Lunara/discussions
+    about: 安装配置、模型/语音对接经验、使用感受分享与问答请前往 Discussions

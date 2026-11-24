@@ -62,3 +62,19 @@ test('provider error codes map to closed synthesis reasons; unknown codes stay g
   });
   for (const reason of Object.values(reasons)) assert.equal(synthesisReason(reason), reason);
 });
+
+test('window-clipped deadline aborts with AbortError NARRATION_WINDOW_EXPIRED instead of provider TimeoutError', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  let signal;
+  const pending = synthesizeWithin(async (_text, opts) => {
+    signal = opts.signal;
+    await new Promise(() => {});
+  }, '窗口快到期的串词', {}, { budgetMs: 30_000, deadlineMs: 11_000 });
+  await Promise.resolve();
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.reason, 'timeout');
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason?.name, 'AbortError');
+  assert.equal(signal.reason?.code, 'NARRATION_WINDOW_EXPIRED');
+});

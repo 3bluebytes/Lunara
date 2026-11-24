@@ -4,10 +4,12 @@ import { createPlaybackRuntimeComposition } from './createPlaybackRuntimeComposi
 import { PlaybackRuntimeHost } from './PlaybackRuntimeHost.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
+const written = id => ({ ...track(id), intro: null,
+  narration: { status: 'ready', assetStatus: 'missing', generationRevision: 1, text: `《${id}》这首可以听下去。` } });
 const track = id => ({ songId: id, programId: 'p', requestId: 'r', title: id, artist: 'Fixture', source: 'qq',
   url: '/fixture.mp3', duration: 180, intro: { text: 'Fixture', context: { fixture: true } } });
 
-test('stop aborts preparation, clears timers/queue and discards late results across restart', async () => {
+test('stop aborts narration audio work, clears timers/queue and discards late results across restart', async () => {
   const pending = [], timers = new Map(), published = [], saved = new Map();
   let sequence = 0;
   const runtime = createPlaybackRuntimeComposition({
@@ -16,10 +18,10 @@ test('stop aborts preparation, clears timers/queue and discards late results acr
     maxPreparationConcurrency: 1,
     schedule: callback => { const id = ++sequence; timers.set(id, callback); return id; },
     cancelSchedule: id => timers.delete(id),
-    prepareTrackNarration: (_effect, { signal }) => new Promise(resolve => pending.push({ signal, resolve })),
+    resolveTrackNarrationAsset: (_effect, { signal }) => new Promise(resolve => pending.push({ signal, resolve })),
   });
   await runtime.submit({ type: 'PROGRAM_COMMITTED', eventId: 'commit', delivery: 'replace_now', source: 'user',
-    tracks: [track('one'), track('two')] });
+    tracks: [written('one'), written('two')] });
   await settle();
   let state = runtime.snapshot();
   await runtime.submit({ type: 'TRACK_STARTED', eventId: 'started', runtimeVersion: state.version,
@@ -37,13 +39,13 @@ test('stop aborts preparation, clears timers/queue and discards late results acr
   assert.equal(pending.length, 2, 'restart recovers fresh work while obsolete provider ignores abort');
   const restarted = runtime.snapshot();
   const afterRestart = published.length;
-  pending[0].resolve({ text: 'STALE', ttsUrl: '/stale.wav' });
+  pending[0].resolve({ ttsUrl: '/stale.wav' });
   await settle();
   assert.deepEqual(runtime.snapshot(), restarted);
   assert.equal(published.length, afterRestart);
-  pending[1].resolve({ text: 'Fresh', ttsUrl: '/fresh.wav' });
+  pending[1].resolve({ ttsUrl: '/fresh.wav' });
   await settle();
-  assert.equal(runtime.snapshot().queue[0].narration.text, 'Fresh');
+  assert.equal(runtime.snapshot().queue[0].narration.ttsUrl, '/fresh.wav');
   assert.ok(published.length >= before);
   await runtime.stop();
 });

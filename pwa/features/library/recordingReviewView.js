@@ -8,7 +8,7 @@ const duration = seconds => seconds > 0 && Number.isFinite(seconds)
 export function createRecordingReviewView({ apiClient, documentLike = globalThis.document, onOpen = () => {}, beforeToggle = () => true } = {}) {
   const host = documentLike.querySelector('#recording-review-panel');
   const launcher = documentLike.querySelector('#recording-review-open');
-  if (!host || !launcher) return { handleServerEvent() {}, destroy() {} };
+  if (!host || !launcher) return { close() {}, handleServerEvent() {}, destroy() {} };
   const controller = createRecordingReviewController({ apiClient });
   const memberCopy = member => `<span class="recording-review__source-name">${esc(member.sourceName)}</span>
     <span>${esc(member.album || '专辑未知')}</span><small>${duration(member.duration)}</small>`;
@@ -54,7 +54,7 @@ export function createRecordingReviewView({ apiClient, documentLike = globalThis
     <div class="recording-review__body" tabindex="0" aria-label="待确认与已对齐的歌曲" data-review-focus="body">
       ${state.loading ? '<p role="status">正在读取本地曲库…</p>' : ''}
       ${view ? `<div class="recording-review__toolbar"><div><h3>${view.proposalCount} 组歌曲待确认</h3>
-        <p>根据歌名、歌手和专辑找到的相似歌曲，尚未合并。</p></div>
+        <p>已默认勾选声学指纹一致的歌曲；仅凭歌名相近找到的条目请核对后手动勾选。</p></div>
         <button type="button" class="recording-review__confirm" data-review-confirm data-review-focus="confirm"
           ${locked || !state.selected.length ? 'disabled' : ''}>对齐所选 · ${state.selected.length} 组</button></div>
       ${view.showPrompt ? `<p class="recording-review__prompt">不急着整理也没关系。
@@ -141,7 +141,7 @@ export function createRecordingReviewView({ apiClient, documentLike = globalThis
   host.addEventListener('change', change);
   host.addEventListener('keydown', keydown);
   render(controller.getSnapshot());
-  return { handleServerEvent: controller.handleServerEvent, destroy() {
+  return { close, handleServerEvent: controller.handleServerEvent, destroy() {
     unsubscribe(); controller.destroy();
     launcher.removeEventListener('click', toggle);
     host.removeEventListener('click', click); host.removeEventListener('change', change); host.removeEventListener('keydown', keydown);

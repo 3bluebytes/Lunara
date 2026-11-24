@@ -199,3 +199,75 @@ test('an accepted mutation survives interruption and is not repeated', async t =
   assert.equal((await next).ok, true);
   assert.equal(mutations, 1);
 });
+
+test('rapid interjections end superseded responses quietly and the last one answers all messages together', async t => {
+  const gates = [deferred(), deferred()], started = [deferred(), deferred()];
+  const seen = [];
+  let calls = 0;
+  const h = fixture(t, async messages => {
+    const index = calls++;
+    seen.push(messages);
+    if (index < 2) { started[index].resolve(); await gates[index].promise; }
+    return reply(index < 2 ? '旧回复' : '一起回答');
+  });
+  const first = h.runtime.handleTurn(input('m1', { userText: '你喜欢什么样的歌' }));
+  await started[0].promise;
+  const second = h.runtime.handleTurn(input('m2', { userText: '认识这么久还不知道', interruptRequestId: 'm1' }));
+  await first;
+  await started[1].promise;
+  const third = h.runtime.handleTurn(input('m3', { userText: '我想听听你的喜欢', interruptRequestId: 'm2' }));
+  gates.forEach(gate => gate.resolve());
+  assert.equal((await second).cancelled, true);
+  assert.equal((await third).ok, true);
+  const turns = h.store.listTurns('room');
+  assert.deepEqual(turns.filter(turn => turn.role === 'user').map(turn => turn.message.content),
+    ['你喜欢什么样的歌', '认识这么久还不知道', '我想听听你的喜欢']);
+  const assistant = turns.filter(turn => turn.role === 'assistant');
+  assert.deepEqual(assistant.map(turn => turn.message.content), ['一起回答']);
+  assert.equal(h.store.getRequest('m1:lunara:0')?.state ?? h.store.getRequest('m1')?.state, 'aborted');
+  const lastUser = seen.at(-1).filter(message => message.role === 'user').at(-1).content;
+  assert.match(lastUser, /你喜欢什么样的歌[\s\S]*认识这么久还不知道[\s\S]*我想听听你的喜欢/);
+});
+
+test('an explicit stop keeps its stop notice', async t => {
+  const started = deferred(), finish = deferred();
+  const h = fixture(t, async () => { started.resolve(); await finish.promise; return reply('回答'); });
+  const running = h.runtime.handleTurn(input('s1'));
+  await started.promise;
+  h.runtime.cancel('room', 's1');
+  finish.resolve();
+  assert.equal((await running).ok, false);
+  const assistant = h.store.listTurns('room').filter(turn => turn.role === 'assistant');
+  assert.deepEqual(assistant.map(turn => turn.message.content), ['已停止这轮对话。']);
+});
+
+test('流式草稿在会话修订号未变时不再逐 delta 查库，成员/归档变更时回落并阻断滞后草稿', async t => {
+  const events = [];
+  let membershipReads = 0;
+  let sessionReads = 0;
+  let sawDeltaInsideLoop = false;
+  const h = fixture(t, async (_messages, _tools, options) => {
+    const beforeMem = membershipReads;
+    const beforeSess = sessionReads;
+    options.onTextDelta({ text: '第一段', attempt: 1 });
+    options.onTextDelta({ text: '第二段', attempt: 1 });
+    options.onTextDelta({ text: '第三段', attempt: 1 });
+    assert.equal(membershipReads, beforeMem, '稳定期间每个 delta 不再查 membershipToken');
+    assert.equal(sessionReads, beforeSess, '稳定期间每个 delta 不再查 getSession');
+    sawDeltaInsideLoop = true;
+    // 真实归档/变更会让 sessionRevision 递增，草稿门控随之回落核验并阻止后续草稿发出。
+    h.store.updateRoom('room', { archived: true });
+    options.onTextDelta({ text: '归档后的滞后草稿', attempt: 1 });
+    return reply('已提交');
+  });
+  h.store.ensureSession('room', 'lunara');
+  const origToken = h.store.membershipToken.bind(h.store);
+  const origSession = h.store.getSession.bind(h.store);
+  h.store.membershipToken = (...args) => { membershipReads += 1; return origToken(...args); };
+  h.store.getSession = (...args) => { sessionReads += 1; return origSession(...args); };
+  await h.runtime.handleTurn(input('stream-rev', { mode: 'text_stream', onDraft: e => events.push(e) }));
+  assert.equal(sawDeltaInsideLoop, true);
+  const deltas = events.filter(e => e.type === 'delta').map(e => e.text).join('');
+  assert.equal(deltas, '第一段第二段第三段');
+  assert.doesNotMatch(deltas, /归档后的滞后草稿/);
+});

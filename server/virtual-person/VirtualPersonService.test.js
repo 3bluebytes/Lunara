@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Database from 'better-sqlite3';
+import { LLMNotConfiguredError } from '../llm.js';
 import { ConversationStore, presenceTurnId } from './ConversationStore.js';
-import { VirtualPersonRegistry } from './VirtualPersonRegistry.js';
+import { ROOT_PERSONA, ROOT_RELATIONSHIP, VirtualPersonRegistry } from './VirtualPersonRegistry.js';
 import { VirtualPersonService } from './VirtualPersonService.js';
 
 test('service imports legacy radiohost identity and activates exactly one session speaker', async () => {
@@ -39,10 +40,13 @@ test('service imports legacy radiohost identity and activates exactly one sessio
 
   conversationStore.recordTrackIntro({
     sessionId: 'session-a', personId: 'lunara', correlationId: 'transition:1',
-    queueItemId: 'queue:item-one', text: '适合现在听的一首。',
+    queueItemId: 'queue:item-one', text: '适合现在听的一首。', about: '这会儿听正合适',
     track: { songId: 'song-one', title: '一首歌', artist: '歌手', source: 'qq' },
   });
   const [intro] = service.transcript('session-a');
+  // 要点备忘入账，但不进聊天记录的对外投影。
+  assert.equal(conversationStore.listTurns('session-a', { limit: 5, visibleOnly: true })[0].message.about, '这会儿听正合适');
+  assert.ok(!JSON.stringify(intro).includes('这会儿听正合适'));
   assert.equal(intro.presentation, 'track_intro');
   assert.equal(intro.queueItemId, 'queue:item-one');
   assert.equal(intro.text, '适合现在听的一首。');
@@ -217,4 +221,135 @@ test('transcript 带 ambient 推荐的实时状态；确认交给推荐模块并
     recommendedBy: 'lunara', status: 'queued', expiresAt: 99 }, '确认结果同样不带内部 selection');
   assert.equal(service.transcript('room')[0].musicRecommendation.status, 'queued', '状态以推荐表为准');
   registry.close();
+});
+
+test('create 支持零预设直通保存 personaDocument，且提供预设时初始化 defaultTemperament', async () => {
+  const db = new Database(':memory:');
+  const registry = new VirtualPersonRegistry({ db });
+  const conversationStore = new ConversationStore({ db });
+  const radiohostCalls = [];
+  const service = new VirtualPersonService({
+    registry,
+    conversationStore,
+    createRadiohost: async input => {
+      radiohostCalls.push(input);
+      return {
+        id: `host_${radiohostCalls.length}`,
+        name: input.displayName,
+        voiceProfileId: input.voiceProfileId,
+        namespace: `radiohost:host_${radiohostCalls.length}`,
+        status: 'inactive',
+      };
+    },
+    loadPersona: () => '不应读取旧磁盘模板',
+  }).initialize();
+
+  const customDoc = '## 我是谁\n住在海边的爵士鼓手。\n\n## 我对这个用户的态度\n像合拍的乐队队友。';
+  const pureCustom = await service.create({
+    displayName: '阿海',
+    voiceProfileId: 'vp_1',
+    personaDocument: customDoc,
+  });
+  assert.equal(radiohostCalls[0].personaPresetId, null);
+  assert.equal(radiohostCalls[0].personaDocument, customDoc);
+  assert.equal(pureCustom.personaDocument, customDoc);
+  assert.equal(pureCustom.relationshipStance, '像合拍的乐队队友。');
+  assert.equal(pureCustom.metadata?.presence, undefined);
+
+  const withPreset = await service.create({
+    displayName: '晴天',
+    voiceProfileId: 'vp_1',
+    personaPresetId: 'morning_bright',
+    personaDocument: '## 我是谁\n早起跑步的电台同伴。\n\n## 我对这个用户的态度\n自在熟稔。',
+  });
+  assert.equal(withPreset.metadata?.presence?.temperament, 'lively');
+
+  await assert.rejects(
+    () => service.create({ displayName: '超长', voiceProfileId: 'vp_1', personaDocument: '甲'.repeat(4001) }),
+    /exceeds 4000 characters/,
+  );
+  await assert.rejects(
+    () => service.create({ displayName: '控制符\u0007', voiceProfileId: 'vp_1', personaDocument: '正常' }),
+    /control characters/,
+  );
+  registry.close();
+  conversationStore.close();
+  db.close();
+});
+
+test('expandPersonaDraft 返回可编辑正文，未配模型返 503，生成失败返 502 且绝不静默回退预设', async () => {
+  const db = new Database(':memory:');
+  const registry = new VirtualPersonRegistry({ db });
+  const conversationStore = new ConversationStore({ db });
+  let askImpl = async () => JSON.stringify({
+    personaDocument: '# 阿澈\n\n## 我是谁\n复古唱片店老板。\n\n## 我对这个用户的态度\n像聊得来的熟客。',
+  });
+  const service = new VirtualPersonService({
+    registry,
+    conversationStore,
+    askText: (prompt, opts) => askImpl(prompt, opts),
+  }).initialize();
+
+  await assert.rejects(
+    () => service.expandPersonaDraft({ draft: '   ' }),
+    err => err.statusCode === 400,
+  );
+
+  const ok = await service.expandPersonaDraft({ draft: '开复古唱片店', displayName: '阿澈', presetId: 'music_obsessive' });
+  assert.equal(ok.personaDocument, '## 我是谁\n复古唱片店老板。\n\n## 我对这个用户的态度\n像聊得来的熟客。');
+  assert.equal(service.list().length, 1, '扩写绝不能副作用创建虚拟人');
+
+  askImpl = async () => { throw new LLMNotConfiguredError('missing api key'); };
+  await assert.rejects(
+    () => service.expandPersonaDraft({ draft: '开复古唱片店' }),
+    err => err.statusCode === 503 && err.code === 'llm_not_configured',
+  );
+
+  askImpl = async () => { throw new Error('upstream timeout'); };
+  await assert.rejects(
+    () => service.expandPersonaDraft({ draft: '开复古唱片店', presetId: 'late_night_companion' }),
+    err => err.statusCode === 502 && err.code === 'persona_expand_failed',
+  );
+
+  registry.close();
+  conversationStore.close();
+  db.close();
+});
+
+test('updatePerson 同步提取 relationshipStance、回写 persona.md，并支持 lunara 传空串恢复默认人格', () => {
+  const db = new Database(':memory:');
+  const registry = new VirtualPersonRegistry({ db });
+  const conversationStore = new ConversationStore({ db });
+  const savedFiles = [];
+  const service = new VirtualPersonService({
+    registry,
+    conversationStore,
+    savePersonaFile: (id, content) => savedFiles.push([id, content]),
+  }).initialize();
+
+  const child = registry.createRadiohost({ displayName: '小晚', voiceProfileId: 'vp_1' });
+  const updatedChild = service.updatePerson(child.id, {
+    personaDocument: '## 我是谁\n改写后的自建伙伴。\n\n## 我对这个用户的态度\n坦诚直接的老友。',
+  });
+  assert.equal(updatedChild.relationshipStance, '坦诚直接的老友。');
+  assert.deepEqual(savedFiles, [[
+    child.id,
+    '## 我是谁\n改写后的自建伙伴。\n\n## 我对这个用户的态度\n坦诚直接的老友。\n',
+  ]]);
+
+  const customLunara = service.updatePerson('lunara', {
+    personaDocument: '## 我是谁\n用户定制版 Lunara。\n\n## 我对这个用户的态度\n幽默损友。',
+  });
+  assert.equal(customLunara.metadata.userAuthoredPersona, true);
+  assert.equal(customLunara.relationshipStance, '幽默损友。');
+
+  const resetLunara = service.updatePerson('lunara', { personaDocument: '' });
+  assert.equal(resetLunara.personaDocument, ROOT_PERSONA);
+  assert.equal(resetLunara.relationshipStance, ROOT_RELATIONSHIP);
+  assert.equal(resetLunara.metadata.userAuthoredPersona, false);
+  assert.equal(savedFiles.length, 1, '根角色 lunara 不写磁盘 radiohost persona.md');
+
+  registry.close();
+  conversationStore.close();
+  db.close();
 });

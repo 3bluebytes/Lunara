@@ -87,3 +87,17 @@ test('splitting: the quote callback does not touch edit or fork', () => {
   h.controller.replaceTranscript([{ turnId: 'turn_a1', role: 'assistant', text: '回应1', sequence: 1 }]);
   assert.deepEqual(h.children[0].buttons.map(button => button.dataset.msgAction), ['quote']);
 });
+
+test('onSaveToJournal adds a journal action that passes message text and first track without altering playback', () => {
+  const h = fixture({
+    onEditMessage: null,
+    onForkMessage: null,
+    onSaveToJournal: item => h.calls.push(['journal', item.speakerName, item.text, item.track?.songId]),
+  });
+  h.controller.replaceTranscript([
+    { turnId: 'turn_a2', role: 'assistant', text: '这首歌适合雨夜听。', tracks: [{ songId: 'trk_1', title: 'Rain', artist: 'A' }], sequence: 1 },
+  ]);
+  assert.deepEqual(h.children[0].buttons.map(button => button.dataset.msgAction), ['quote', 'journal']);
+  h.children[0].buttons[1].click({ stopPropagation() {} });
+  assert.deepEqual(h.calls, [['journal', 'Lunara', '这首歌适合雨夜听。', 'trk_1']]);
+});

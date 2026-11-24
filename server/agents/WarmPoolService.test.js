@@ -105,3 +105,22 @@ test('a prepare-only pool is enabled without a legacy candidate select', async (
   assert.equal(runs, 1);
   pool.shutdown();
 });
+
+test('pool.invalidate({ personId }) selectively discards matching person entries and aborts running prep', async () => {
+  let signalA = null;
+  let activePerson = 'a';
+  const invalidations = [];
+  const pool = new WarmPoolService({ disabled: false,
+    getActiveDemand: () => ({ request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append' }),
+      context: { sessionId: 'room', virtualPersonId: activePerson } }),
+    prepare: ({ signal }) => { signalA = signal; return new Promise(() => {}); } });
+  pool.attachPreparedSource({ stats: () => ({ prepared: 1, consumed: 0 }), invalidate: opts => invalidations.push(opts) });
+  void pool.refresh();
+  assert.equal(signalA.aborted, false);
+  pool.invalidate({ personId: 'b' });
+  assert.equal(signalA.aborted, false, '其他伙伴反思不打断当前伙伴在跑预热');
+  pool.invalidate({ personId: 'a' });
+  assert.equal(signalA.aborted, true, '对应伙伴反思应立即作废在跑与待采用批次');
+  assert.deepEqual(invalidations, [{ sessionId: null, personId: 'b' }, { sessionId: null, personId: 'a' }]);
+  pool.shutdown();
+});

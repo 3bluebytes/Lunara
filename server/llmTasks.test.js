@@ -27,7 +27,7 @@ test('内置规格全部通过校验；坏规格如实抛错', () => {
 
 test('resolveTaskSpec：已知任务返回冻结规格；未知任务如实抛错', () => {
   assert.equal(resolveTaskSpec('song_tag').id, 'song_tag');
-  assert.equal(Object.isFrozen(resolveTaskSpec('narration')), true);
+  assert.equal(Object.isFrozen(resolveTaskSpec('track_lines')), true);
   assert.throws(() => resolveTaskSpec('not_a_task'), /unknown LLM task/);
   assert.throws(() => resolveTaskSpec(''), /unknown LLM task/);
 });
@@ -51,12 +51,21 @@ test('未知能力：输出额度 = 正文 + 思考余量，不假设思考免�
 
 test('思考有帮助的任务：即使调用方请求 disabled 也不关闭，且保留思考余量', () => {
   const capable = normalizeCapability({ thinking: { canDisable: true }, source: 'user' });
-  for (const taskId of ['chat_dialogue', 'music_selection', 'narration']) {
+  for (const taskId of ['chat_dialogue', 'music_selection']) {
     const budget = resolveTaskBudget({ taskId, capability: capable, thinkingMode: 'disabled' });
     assert.equal(budget.disableThinking, false, taskId);
     assert.equal(budget.allowance, DEFAULT_REASONING_ALLOWANCE_TOKENS, taskId);
     assert.equal(budget.effective, resolveTaskSpec(taskId).answerTokens + DEFAULT_REASONING_ALLOWANCE_TOKENS, taskId);
   }
+});
+
+test('写串词不要思维链：档案可关就关，只给正文额度；超时安静播放不重试', () => {
+  const capable = normalizeCapability({ thinking: { canDisable: true }, source: 'user' });
+  const budget = resolveTaskBudget({ taskId: 'track_lines', capability: capable, thinkingMode: 'disabled' });
+  assert.equal(budget.disableThinking, true);
+  assert.equal(budget.effective, resolveTaskSpec('track_lines').answerTokens);
+  assert.deepEqual(resolveTaskSpec('track_lines').attempts, [1]);
+  assert.equal(resolveTaskSpec('track_lines').onExhausted, 'skip');
 });
 
 test('机械任务 + 档案可关思考：关闭并只给正文额度（成本选择）', () => {
@@ -76,7 +85,7 @@ test('原生思考预算旋钮：旋钮值取思考余量并 clamp 到范围；�
     thinking: { default: 'on', canDisable: true, budgetKnob: 'thinking_budget', budgetRange: [2048, 4096] },
     source: 'probe',
   });
-  const budget = resolveTaskBudget({ taskId: 'narration', capability: capable });
+  const budget = resolveTaskBudget({ taskId: 'music_selection', capability: capable });
   assert.equal(budget.thinkingBudget, 2048, '默认余量 1024 低于下限，clamp 到 2048');
   assert.equal(budget.effective, 1024 + 2048, '输出上限仍按正文 + 余量给，协议侧再受旋钮约束');
 });
@@ -95,7 +104,7 @@ test('覆盖层：显式参数与环境覆盖给出生效总额，不再追加�
   assert.equal(envOverride('song_tag', 'answerTokens', { SONG_TAG_MAX_TOKENS: 'abc' }), null, '坏值回落规格');
   assert.equal(envOverride('song_tag', 'answerTokens', { SONG_TAG_MAX_TOKENS: '0' }), null);
   assert.equal(envOverride('song_tag', 'answerTokens', { SONG_TAG_MAX_TOKENS: '99999' }).value, 8192, '越界 clamp');
-  assert.equal(envOverride('narration', 'answerTokens', { SONG_TAG_MAX_TOKENS: '2500' }), null, 'env 只作用于声明过覆盖的任务');
+  assert.equal(envOverride('track_lines', 'answerTokens', { SONG_TAG_MAX_TOKENS: '2500' }), null, 'env 只作用于声明过覆盖的任务');
 });
 
 test('上限：hardCap 与模型输出上限取小；思考余量 env 可覆盖', () => {
@@ -142,7 +151,7 @@ test('升级阶梯：第 2 次尝试 ×2、受 ceiling 约束；单步任务没�
 });
 
 test('规格自检覆盖全部内置任务的关键字段', () => {
-  for (const id of ['chat_dialogue', 'music_selection', 'narration', 'song_tag', 'reflection',
+  for (const id of ['chat_dialogue', 'music_selection', 'track_lines', 'song_tag', 'reflection',
     'taste_schema', 'taste_consolidation', 'persona_generation',
     'connectivity_probe']) {
     assert.ok(LLM_TASKS[id], id);
@@ -169,15 +178,20 @@ test('ambient_turn 规格：一轮带完整上下文的主动唤醒，单次、�
   assert.equal(spec.reasoning, 'light');
   assert.equal(spec.structured, 'tool');
   assert.deepEqual(spec.attempts, [1]);
-  assert.equal(spec.timeoutMs, 20_000);
+  // 每个模型各给 12 秒（主模型一万六千 token 上下文要 4–6 秒），最坏 36 秒后安静。
+  assert.equal(spec.timeoutMs, 36_000);
+  assert.equal(spec.attemptTimeoutMs, 12_000);
   assert.equal(spec.onExhausted, 'skip');
   assert.ok(spec.answerTokens <= spec.hardCapTokens);
 });
 
-test('单次请求上限：chat_dialogue 60s、music_selection 30s，其余为 null；env 覆盖 clamp、坏值回落', () => {
+test('单次请求上限：chat_dialogue 60s、music_selection 30s、track_lines 25s、ambient_turn 12s、response_routing 7s，其余为 null；env 覆盖 clamp、坏值回落', () => {
   assert.equal(resolveTaskBudget({ taskId: 'chat_dialogue' }).attemptTimeoutMs, 60_000);
   assert.equal(resolveTaskBudget({ taskId: 'music_selection' }).attemptTimeoutMs, 30_000);
-  for (const id of ['narration', 'song_tag', 'ambient_turn', 'unspecified']) {
+  assert.equal(resolveTaskBudget({ taskId: 'track_lines' }).attemptTimeoutMs, 25_000);
+  assert.equal(resolveTaskBudget({ taskId: 'ambient_turn' }).attemptTimeoutMs, 12_000);
+  assert.equal(resolveTaskBudget({ taskId: 'response_routing' }).attemptTimeoutMs, 7_000);
+  for (const id of ['song_tag', 'unspecified']) {
     assert.equal(resolveTaskBudget({ taskId: id }).attemptTimeoutMs, null, id);
   }
   const chat = resolveTaskBudget({ taskId: 'chat_dialogue', env: { CHAT_ATTEMPT_TIMEOUT_MS: '45000' } });

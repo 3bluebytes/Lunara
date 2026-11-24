@@ -7,7 +7,29 @@ import {
   resumeCommandsForState,
   resumeEffectsForState,
 } from './PlaybackRuntime.js';
-import { cloneRuntimeValue, deepFreeze } from './playbackRuntimeTypes.js';
+import { deepFreeze } from './playbackRuntimeTypes.js';
+
+/** 判断单个会话中是否存在尚未说出口（或当前正在口播且要求连带取消）的已准备/准备中串词。 */
+export function sessionHasPreparedNarration(
+  sessionState,
+  { includeCurrent = false, queueItemIds = null, isActive = true } = {},
+) {
+  const queue = Array.isArray(sessionState?.queue) ? sessionState.queue : [];
+  const currentIndex = Number.isInteger(sessionState?.currentIndex) ? sessionState.currentIndex : -1;
+  const first = includeCurrent === true ? Math.max(0, currentIndex) : currentIndex + 1;
+  const only = Array.isArray(queueItemIds) ? new Set(queueItemIds) : null;
+  for (let index = first; index < queue.length; index += 1) {
+    const track = queue[index];
+    const narration = track?.narration;
+    if (only && !only.has(track?.queueItemId)) continue;
+    if (!narration || !['ready', 'preparing'].includes(narration.status)) continue;
+    const currentInFlight = index === currentIndex && isActive
+      && ['queued', 'starting', 'speaking'].includes(sessionState?.txn?.narrationDelivery);
+    if (narration.spoken === true && !currentInFlight) continue;
+    return true;
+  }
+  return false;
+}
 
 /** 封面 repair 事件的 eventId 后缀：同一个 occurrence + 同一张图只提交一次。 */
 function artworkEventSuffix(artwork) {
@@ -56,8 +78,11 @@ export class PlaybackRuntimeHost {
     this._artworkTimer = null;
     this._artworkBusy = false;
     this._artworkRecheck = false;
-    // 任何被接受的迁移都可能带进「没有封面」的 occurrence；补全只改元数据。
-    this.events.on('snapshot', () => this._scheduleArtworkBackfill());
+    this._artworkSeq = 0;
+    // 任何被接受的迁移（封面自愈本身除外）都可能带进「没有封面」的 occurrence；补全只改元数据。
+    this.events.on('snapshot', (_snapshot, event) => {
+      if (event?.type !== 'TRACK_ARTWORK_RESOLVED') this._scheduleArtworkBackfill();
+    });
     this.ready = this._restore().then(snapshot => {
       this._scheduleArtworkBackfill();
       return snapshot;
@@ -80,8 +105,12 @@ export class PlaybackRuntimeHost {
     let repaired = 0;
     let checked = 0;
     try {
-      const pending = this._artworkCandidates();
+      const snapshot = await this._snapshotInChain();
+      if (!snapshot || !active()) return { repaired: 0, checked: 0 };
+      const sessionId = snapshot.activeListeningSessionId;
+      const pending = this._artworkCandidates(snapshot);
       checked = pending.length;
+      const knownRepairs = [];
       const remote = [];
       for (const item of pending) {
         if (!active()) break;
@@ -89,25 +118,46 @@ export class PlaybackRuntimeHost {
         if (!provider) continue;
         const known = this.artwork.peek?.(provider, item.songId) || null;
         if (known) {
-          if (await this._repairArtwork(item, known)) repaired += 1;
+          knownRepairs.push({ queueItemId: item.queueItemId, artwork: known });
           continue;
         }
         remote.push(item);
       }
-      // 有界并发：整队列可能一次有二十多个空封面，逐个串行会把恢复拖长。
-      let cursor = 0;
-      const worker = async () => {
-        while (active() && cursor < remote.length) {
-          const item = remote[cursor];
-          cursor += 1;
-          const provider = providerOf(item);
-          let found = null;
-          try { found = await this.artwork.resolve(provider, item.songId); } catch { found = null; }
-          if (!found || !active()) continue;
-          if (await this._repairArtwork(item, found)) repaired += 1;
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(this.artworkBackfillConcurrency, remote.length) }, worker));
+      if (knownRepairs.length && active()) {
+        repaired += await this._repairArtwork(knownRepairs, sessionId);
+      }
+      if (remote.length && active()) {
+        const pendingRemote = [];
+        let flushing = null;
+        const flushRemote = () => {
+          if (flushing) return flushing;
+          flushing = (async () => {
+            await Promise.resolve();
+            while (pendingRemote.length && active()) {
+              const batch = pendingRemote.splice(0);
+              repaired += await this._repairArtwork(batch, sessionId);
+            }
+          })().finally(() => { flushing = null; });
+          return flushing;
+        };
+        // 有界并发：整队列可能一次有二十多个空封面，逐个串行会把恢复拖长；
+        // 同一波完成的修复合并成单个批量事件提交，减少无谓版本跳变。
+        let cursor = 0;
+        const worker = async () => {
+          while (active() && cursor < remote.length) {
+            const item = remote[cursor];
+            cursor += 1;
+            const provider = providerOf(item);
+            let found = null;
+            try { found = await this.artwork.resolve(provider, item.songId); } catch { found = null; }
+            if (!found || !active()) continue;
+            pendingRemote.push({ queueItemId: item.queueItemId, artwork: found });
+            void flushRemote();
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(this.artworkBackfillConcurrency, remote.length) }, worker));
+        while (flushing || (pendingRemote.length && active())) await (flushing || flushRemote());
+      }
     } finally {
       this._artworkBusy = false;
       if (this._artworkRecheck && active()) {
@@ -118,22 +168,62 @@ export class PlaybackRuntimeHost {
     return { repaired, checked };
   }
 
-  _artworkCandidates() {
-    return (this.state?.queue || []).filter(item => item
+  _artworkCandidates(state = this.state) {
+    return (state?.queue || []).filter(item => item
       && String(item.queueItemId || '').trim()
       && String(item.songId || '').trim()
       && !String(item.artwork || '').trim());
   }
 
-  async _repairArtwork(item, artwork) {
-    const result = await this.submit({
-      type: 'TRACK_ARTWORK_RESOLVED',
-      eventId: `artwork:${item.queueItemId}:${artworkEventSuffix(artwork)}`,
-      listeningSessionId: this.state.activeListeningSessionId,
-      queueItemId: item.queueItemId,
-      artwork,
+  async _snapshotInChain() {
+    const generation = this.lifecycleGeneration;
+    const run = async () => {
+      await this.ready;
+      if (this.stopped || generation !== this.lifecycleGeneration) return null;
+      return this.snapshot();
+    };
+    const chained = this.chain.then(run, run);
+    this.chain = chained.then(() => undefined, () => undefined);
+    return chained;
+  }
+
+  async _repairArtwork(entries, expectedSessionId = null) {
+    const items = Array.isArray(entries) ? entries.filter(Boolean) : [entries].filter(Boolean);
+    if (!items.length) return 0;
+    let repairCount = 0;
+    const result = await this._enqueueEvent(state => {
+      if (expectedSessionId && state.activeListeningSessionId !== expectedSessionId) return null;
+      const byId = new Map();
+      for (const entry of items) {
+        const queueItemId = entry?.queueItemId;
+        const artwork = typeof entry?.artwork === 'string' ? entry.artwork.trim() : '';
+        if (!queueItemId || !artwork || byId.has(queueItemId)) continue;
+        const target = state.queue.find(track => track.queueItemId === queueItemId);
+        if (!target || String(target.artwork || '').trim()) continue;
+        byId.set(queueItemId, artwork);
+      }
+      if (!byId.size) return null;
+      const repairs = [...byId.entries()].map(([queueItemId, artwork]) => ({ queueItemId, artwork }));
+      repairCount = repairs.length;
+      if (repairs.length === 1) {
+        const [only] = repairs;
+        return {
+          type: 'TRACK_ARTWORK_RESOLVED',
+          eventId: `artwork:${only.queueItemId}:${artworkEventSuffix(only.artwork)}`,
+          listeningSessionId: state.activeListeningSessionId,
+          queueItemId: only.queueItemId,
+          artwork: only.artwork,
+        };
+      }
+      const batchDigest = artworkEventSuffix(repairs.map(item => `${item.queueItemId}=${item.artwork}`).join('\n'));
+      return {
+        type: 'TRACK_ARTWORK_RESOLVED',
+        eventId: `artwork-batch:${state.activeListeningSessionId}:${batchDigest}:${++this._artworkSeq}`,
+        listeningSessionId: state.activeListeningSessionId,
+        repairs,
+      };
     });
-    return result?.accepted === true;
+    return result?.accepted === true ? repairCount : 0;
   }
 
   _scheduleArtworkBackfill() {
@@ -202,7 +292,7 @@ export class PlaybackRuntimeHost {
   }
 
   snapshot() {
-    return deepFreeze(cloneRuntimeValue(this.state));
+    return this.state;
   }
 
   listeningSnapshot(sessionId) {
@@ -215,23 +305,62 @@ export class PlaybackRuntimeHost {
   }
 
   /**
-   * A memory change (expression preference saved/revoked, feedback recorded) can
-   * contradict what an already prepared introduction says. Best-effort: a rejected
-   * event merely means the next preparation keeps the older context.
+   * A memory change (expression preference saved/revoked, memory forgotten or corrected)
+   * can contradict what an unspoken line says, so it is dropped rather than rewritten.
+   * `queueItemIds` narrows the drop to those occurrences and `dropReason` records why.
+   * Best-effort: a rejected event merely leaves the line to its delivery-time check.
    */
-  invalidatePreparedNarrations(listeningSessionId, { includeCurrent = false } = {}) {
+  invalidatePreparedNarrations(listeningSessionId, { includeCurrent = false, queueItemIds = null, dropReason = null } = {}) {
     if (!listeningSessionId) return Promise.resolve({ accepted: false, reason: 'listeningSessionId required' });
-    return this.submit({ type: 'NARRATION_CONTEXT_STALE_REQUESTED',
-      eventId: `narration-stale:${listeningSessionId}:${Date.now()}:${this.narrationStaleSeq += 1}`,
-      listeningSessionId: String(listeningSessionId), includeCurrent });
+    return this._enqueueEvent(state => {
+      const targetSessionId = String(listeningSessionId);
+      const isActive = state.activeListeningSessionId === targetSessionId;
+      const sessionState = isActive ? state : state.suspendedSessions?.[targetSessionId];
+      if (!sessionState || !sessionHasPreparedNarration(sessionState, { includeCurrent, queueItemIds, isActive })) return null;
+      return {
+        type: 'NARRATION_CONTEXT_STALE_REQUESTED',
+        eventId: `narration-stale:${targetSessionId}:${Date.now()}:${this.narrationStaleSeq += 1}`,
+        listeningSessionId: targetSessionId,
+        includeCurrent,
+        ...(queueItemIds ? { queueItemIds } : {}),
+        ...(dropReason ? { dropReason } : {}),
+      };
+    });
+  }
+
+  async invalidateAllPreparedNarrations({ includeCurrent = false, queueItemIds = null, dropReason = null } = {}) {
+    const snapshot = await this._snapshotInChain();
+    if (!snapshot || this.stopped) return [];
+    const sessionIds = [...new Set([snapshot.activeListeningSessionId, ...Object.keys(snapshot.suspendedSessions || {})].filter(Boolean))];
+    const targets = sessionIds.filter(sessionId => {
+      const isActive = sessionId === snapshot.activeListeningSessionId;
+      const sessionState = isActive ? snapshot : snapshot.suspendedSessions?.[sessionId];
+      return sessionState && sessionHasPreparedNarration(sessionState, { includeCurrent, queueItemIds, isActive });
+    });
+    if (!targets.length) return [];
+    const results = [];
+    for (let index = 0; index < targets.length; index += 1) {
+      if (index > 0) await new Promise(resolve => setImmediate(resolve));
+      if (this.stopped) break;
+      results.push(await this.invalidatePreparedNarrations(targets[index], { includeCurrent, queueItemIds, dropReason }));
+    }
+    return results;
   }
 
   submit(event) {
+    return this._enqueueEvent(event);
+  }
+
+  _enqueueEvent(resolveEvent) {
     const generation = this.lifecycleGeneration;
     const run = async () => {
       await this.ready;
       if (this.stopped || generation !== this.lifecycleGeneration) {
         return { accepted: false, reason: 'playback runtime stopped', state: this.snapshot(), commands: [], effects: [] };
+      }
+      const event = typeof resolveEvent === 'function' ? resolveEvent(this.state) : resolveEvent;
+      if (!event) {
+        return { accepted: false, reason: 'no event', state: this.snapshot(), commands: [], effects: [] };
       }
       if (event.signal?.aborted || (typeof event.guard === 'function' && !event.guard())) {
         return { accepted: false, reason: 'request cancelled', state: this.snapshot(), commands: [], effects: [] };

@@ -12,7 +12,7 @@
 import { synthesisReasonOfError } from './boundedSynthesis.js';
 import { synthesisTimingOf } from './synthesisTiming.js';
 
-const isTimeout = reason => reason?.name === 'TimeoutError';
+const isTimeout = reason => reason?.name === 'TimeoutError' && reason?.code !== 'NARRATION_WINDOW_EXPIRED';
 
 export function createVoiceHealth({ displayNameOf = () => null, record = null } = {}) {
   const issues = new Map();
@@ -41,7 +41,7 @@ export function createVoiceHealth({ displayNameOf = () => null, record = null } 
     if (signal?.aborted) {
       if (!isTimeout(signal.reason)) return;
       code = 'timeout';
-    } else if (error.name === 'AbortError') {
+    } else if (error.name === 'AbortError' || error?.code === 'NARRATION_WINDOW_EXPIRED') {
       return;
     } else {
       code = synthesisReasonOfError(error);

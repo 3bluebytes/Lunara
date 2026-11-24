@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -201,4 +201,44 @@ test('声音池可以保留免费声音（endpointId=free-edge），不需要对
   resetCustomTtsConfigForTest();
   assert.equal(readCustomTtsConfig().voices.length, 1, '重新读取后仍在');
   assert.equal(getCustomTtsEndpoint('free-edge'), null, '免费声音不是自定义接口');
+});
+
+test('无 MiniMax 配置证据时不因旧角色引用生成空付费接口', t => {
+  const dir = makeConfigDir(t);
+  const result = seedFromLegacyMinimax({ env: {},
+    collectLegacyVoiceSelections: () => ['Chinese (Mandarin)_Sweet_Lady'] });
+  assert.equal(result.seeded, false);
+  assert.deepEqual(readCustomTtsConfig().endpoints, []);
+  assert.deepEqual(readCustomTtsConfig().voices, []);
+  assert.equal(configModule.customTtsConfigured(), false);
+  assert.equal(existsSync(join(dir, 'tts-custom.json')), false, '无真实旧配置不写文件');
+});
+
+test('迁移不覆盖没有 migrated 标记的既有自定义配置', t => {
+  const dir = makeConfigDir(t);
+  saveCustomTtsConfig({ endpoint: { name: '我的接口', baseUrl: 'https://mine.test', apiKey: 'kept-key' },
+    voices: [{ endpointId: 'custom-openai', sourceVoiceId: 'my-voice' }] });
+  const before = readFileSync(join(dir, 'tts-custom.json'), 'utf8');
+  const result = seedFromLegacyMinimax({ env: { MINIMAX_API_KEY: 'other-key' } });
+  assert.equal(result.seeded, false);
+  assert.equal(readFileSync(join(dir, 'tts-custom.json'), 'utf8'), before);
+});
+
+test('新默认池只预选 Edge 晓晓：幂等、尊重已有配置和删除，不记录同意', t => {
+  const dir = makeConfigDir(t);
+  const id = customVoiceProfileId('free-edge', 'zh-CN-XiaoxiaoNeural');
+  assert.equal(typeof configModule.seedDefaultFreeVoice, 'function');
+  assert.equal(configModule.seedDefaultFreeVoice({ voiceProfileId: 'already-selected' }).seeded, false);
+  assert.equal(configModule.seedDefaultFreeVoice({ voiceProfileId: id }).seeded, true);
+  assert.deepEqual(readCustomTtsConfig().endpoints, []);
+  assert.deepEqual(readCustomTtsConfig().voices, [{ profileId: id, endpointId: 'free-edge',
+    sourceVoiceId: 'zh-CN-XiaoxiaoNeural', displayName: '晓晓' }]);
+  assert.equal(existsSync(join(dir, 'tts-fallback.json')), false, '预选不写同意/开关配置');
+  const before = readFileSync(join(dir, 'tts-custom.json'), 'utf8');
+  assert.equal(configModule.seedDefaultFreeVoice({ voiceProfileId: id }).seeded, false);
+  assert.equal(readFileSync(join(dir, 'tts-custom.json'), 'utf8'), before);
+  saveCustomTtsConfig({ voices: [] });
+  resetCustomTtsConfigForTest();
+  configModule.seedDefaultFreeVoice({ voiceProfileId: id });
+  assert.deepEqual(readCustomTtsConfig().voices, [], '用户移除后不重新添加');
 });

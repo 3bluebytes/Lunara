@@ -18,3 +18,15 @@ test('familiar cadence permits novelty after three familiar plays and never excl
   assert.equal(orderFamiliarArtistPool(pool, fourth)[0].songId, 'u1');
   assert.equal(chooseFamiliarArtistClasses({ pool: pool.slice(0, 1), likedArtists: ['熟悉歌手'], count: 1 }), null);
 });
+
+test('likedTrackKeys makes canonical liked tracks familiar without cross-provider leakage', () => {
+  const pool = [
+    { source: 'ncm', songId: '10', artist: '陌生歌手' },
+    { source: 'qq', songId: '10', artist: '红心歌手' },
+  ];
+  const plan = chooseFamiliarArtistClasses({ pool, recentPlays: [], likedArtists: [], likedTrackKeys: new Set(['qq:10']), count: 1 });
+  assert.ok(plan);
+  assert.equal(plan.familiar('红心歌手'), true);
+  assert.equal(plan.familiar('陌生歌手'), false);
+  assert.equal(orderFamiliarArtistPool(pool, plan)[0].artist, '红心歌手');
+});

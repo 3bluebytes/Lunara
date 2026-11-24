@@ -453,6 +453,108 @@ test('TTS and media loading timeouts report explicit failures without implicit a
   client.destroy();
 });
 
+async function narrationWatchdogFixture(type, duration = 95) {
+  const narration = new FakeAudio();
+  narration.currentTime = 0;
+  narration.duration = duration;
+  const music = new FakeAudio();
+  music.duration = 200;
+  music.currentTime = 5;
+  const identity = { runtimeVersion: 5, songId: 'one', programId: 'program',
+    queueItemId: 'q:one', correlationId: 'c:one', listeningSessionId: 'room', outputGeneration: 2 };
+  const state = runtimeState({ version: 5, phase: 'playing', activeListeningSessionId: 'room', outputGeneration: 2,
+    txn: { ...identity, narrationDelivery: 'queued' },
+    queue: [{ ...identity, url: '/one.mp3', duration: 200 }] });
+  const store = createAppState({ runtimeState: state });
+  const calls = [];
+  const timers = new Map();
+  let timerId = 0;
+  const client = createPlaybackRuntimeClient({
+    store, narrationAudio: narration, musicAudio: music, locationHref: 'http://localhost/',
+    schedule: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
+    cancelSchedule: id => timers.delete(id),
+    apiClient: { post: async (_path, body) => {
+      calls.push(body);
+      const delivery = body.type === 'NARRATION_DELIVERY_STARTED' ? 'starting'
+        : body.type === 'NARRATION_DELIVERY_AUDIBLE' ? 'speaking' : 'queued';
+      return { ok: true, state: { ...state, txn: { ...state.txn, narrationDelivery: delivery } } };
+    } },
+  }).init();
+  await client.execute({ ...identity, type: 'PLAY_TRACK', url: '/one.mp3' });
+  music.emit('playing');
+  await settle();
+  const command = { ...identity, type, url: '/long-narration.mp3', text: 'A long introduction',
+    contentHash: 'hash', maxStartOffsetMs: 60_000, minRemainingMs: 15_000 };
+  await client.execute(command);
+  await settle();
+  return { client, narration, calls, timers, command,
+    tick: () => {
+      assert.equal(timers.size, 1, 'exactly one watchdog owns the voice');
+      const [id, timer] = [...timers][0];
+      timers.delete(id);
+      assert.equal(timer.delay, 30_000);
+      timer.callback();
+    } };
+}
+
+for (const type of ['PLAY_TRACK_NARRATION', 'PLAY_TTS']) {
+  for (const duration of [95, NaN, Infinity]) {
+    test(`${type}: progressing long audio is not cut off (duration=${duration})`, async () => {
+      const f = await narrationWatchdogFixture(type, duration);
+      try {
+        for (const seconds of [29, 59, 89]) {
+          f.narration.currentTime = seconds;
+          f.tick();
+          await settle();
+          assert.equal(f.narration.paused, false, '30-second wall clock must not stop healthy speech');
+          assert.equal(f.narration.src, '/long-narration.mp3');
+          assert.equal(f.calls.some(body => /FAILED|FINISHED/.test(body.type)), false);
+        }
+        f.narration.ended = true;
+        f.narration.emit('ended');
+        await settle();
+        assert.equal(f.calls.filter(body => /FINISHED/.test(body.type)).length, 1);
+        assert.equal(f.timers.size, 0, 'natural end clears the watchdog');
+      } finally { f.client.destroy(); }
+    });
+  }
+
+  test(`${type}: stalled audio still fails and releases the voice`, async () => {
+    const f = await narrationWatchdogFixture(type);
+    try {
+      f.narration.currentTime = 29;
+      f.tick();
+      await settle();
+      f.tick(); // No further progress in the next observation window.
+      await settle();
+      const failures = f.calls.filter(body => /FAILED/.test(body.type));
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].queueItemId, 'q:one');
+      assert.equal(f.narration.paused, true);
+      assert.equal(f.narration.src, '');
+      assert.equal(f.timers.size, 0);
+      assert.equal(f.calls.some(body => /FINISHED/.test(body.type)), false);
+    } finally { f.client.destroy(); }
+  });
+
+  test(`${type}: late cancelled watchdog cannot stop replacement speech`, async () => {
+    const f = await narrationWatchdogFixture(type);
+    try {
+      const oldCallback = [...f.timers.values()][0].callback;
+      await f.client.execute({ type: 'STOP_PLAYBACK', runtimeVersion: 6 });
+      await f.client.execute({ ...f.command, type: 'PLAY_TTS', runtimeVersion: 7,
+        queueItemId: 'q:two', correlationId: 'c:two', url: '/replacement.mp3' });
+      await settle();
+      oldCallback();
+      await settle();
+      assert.equal(f.narration.src, '/replacement.mp3');
+      assert.equal(f.narration.paused, false);
+      assert.equal(f.calls.some(body => /FAILED|FINISHED/.test(body.type)), false);
+      assert.equal(f.timers.size, 1, 'replacement retains its own watchdog');
+    } finally { f.client.destroy(); }
+  });
+}
+
 test('runtime reset stops and clears both media channels', async () => {
   const { client, narration, music } = fixture();
   narration.src = '/speech.mp3';
@@ -933,4 +1035,143 @@ test('a stale output generation is ignored instead of touching the media', async
   assert.equal(await f.client.execute({ ...f.command, outputGeneration: 1 }), false);
   assert.equal(f.music.src, '', 'a stale command must not load anything');
   f.client.destroy();
+});
+
+test('media facts retry stale runtime version via /api/now up to twice when the six-tuple matches', async () => {
+  const narration = new FakeAudio();
+  const music = new FakeAudio();
+  music.duration = 180;
+  music.currentTime = 2;
+  narration.duration = 8;
+  narration.currentTime = 0;
+  const coordinator = createNarrationCoordinator({ audio: narration, locationHref: 'http://localhost/' }).init();
+  const identity = {
+    runtimeVersion: 5, listeningSessionId: 'conversation:a', outputGeneration: 2,
+    queueItemId: 'q:1', songId: 'song-1', programId: 'prog-1', correlationId: 'corr-1',
+  };
+  const makeState = (version, narrationDelivery = 'queued') => ({
+    version, currentIndex: 0, currentSongId: 'song-1', phase: 'playing',
+    activeListeningSessionId: 'conversation:a', outputGeneration: 2,
+    txn: { ...identity, narrationDelivery },
+    queue: [{ ...identity, url: '/one.mp3', duration: 180 }],
+  });
+  const store = createAppState({ runtimeState: { ...makeState(5, 'queued'), phase: 'loading' } });
+  const calls = [];
+  const errors = [];
+  let audibleAttempts = 0;
+  const apiClient = {
+    async post(path, body) {
+      calls.push([path, body]);
+      if (body.type === 'TRACK_STARTED') {
+        return { ok: true, state: makeState(5, 'queued') };
+      }
+      if (body.type === 'NARRATION_DELIVERY_STARTED') {
+        return { ok: true, state: makeState(6, 'starting') };
+      }
+      if (body.type === 'NARRATION_DELIVERY_AUDIBLE') {
+        audibleAttempts += 1;
+        // 连续两次遇到 artwork backfill 推进版本导致 409 stale runtime version。
+        if (audibleAttempts <= 2) {
+          const error = new Error('stale runtime version');
+          error.status = 409;
+          throw error;
+        }
+        return { ok: true, state: makeState(9, 'speaking') };
+      }
+      return { ok: true, state: makeState(body.runtimeVersion + 1, 'speaking') };
+    },
+    async get(path) {
+      calls.push([path]);
+      return { runtime: makeState(audibleAttempts === 1 ? 7 : 8, 'starting') };
+    },
+  };
+  const client = createPlaybackRuntimeClient({
+    store, narrationAudio: narration, musicAudio: music, narrationCoordinator: coordinator,
+    locationHref: 'http://localhost/', apiClient,
+    callbacks: { onError: error => errors.push(error.message) },
+  }).init();
+  try {
+    await client.execute({ ...identity, type: 'PLAY_TRACK', url: '/one.mp3' });
+    music.emit('playing');
+    await settle();
+    await client.execute({
+      ...identity, type: 'PLAY_TRACK_NARRATION', url: '/tts.mp3', text: '测试串词',
+      settlingDelayMs: 1_000, maxStartOffsetMs: 60_000, minRemainingMs: 15_000,
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+
+    assert.equal(audibleAttempts, 3, '1 次初发 + 2 次重发后被接受');
+    assert.deepEqual(
+      calls.filter(([, body]) => body?.type === 'NARRATION_DELIVERY_AUDIBLE').map(([, body]) => body.runtimeVersion),
+      [6, 7, 8],
+    );
+    assert.equal(narration.paused, false, '串词未被误掐断');
+    assert.deepEqual(errors, []);
+  } finally {
+    client.destroy();
+    coordinator.destroy();
+  }
+});
+
+test('media facts never retry stale version when the server six-tuple changed', async () => {
+  for (const field of ['listeningSessionId', 'outputGeneration', 'queueItemId', 'songId', 'programId', 'correlationId']) {
+    const identity = {
+      runtimeVersion: 5, listeningSessionId: 'conversation:a', outputGeneration: 2,
+      queueItemId: 'q:1', songId: 'song-1', programId: 'prog-1', correlationId: 'corr-1',
+    };
+    const store = createAppState({
+      runtimeState: {
+        version: 5, currentIndex: 0, currentSongId: 'song-1', phase: 'playing',
+        activeListeningSessionId: 'conversation:a', outputGeneration: 2,
+        txn: { ...identity }, queue: [{ ...identity, url: '/one.mp3', duration: 180 }],
+      },
+    });
+    const narration = new FakeAudio();
+    const music = new FakeAudio();
+    const posts = [];
+    const errors = [];
+    const mutated = {
+      version: 9, currentIndex: 0, currentSongId: field === 'songId' ? 'song-2' : 'song-1', phase: 'playing',
+      activeListeningSessionId: field === 'listeningSessionId' ? 'conversation:b' : 'conversation:a',
+      outputGeneration: field === 'outputGeneration' ? 3 : 2,
+      txn: {
+        ...identity,
+        queueItemId: field === 'queueItemId' ? 'q:2' : identity.queueItemId,
+        songId: field === 'songId' ? 'song-2' : identity.songId,
+        programId: field === 'programId' ? 'prog-2' : identity.programId,
+        correlationId: field === 'correlationId' ? 'corr-2' : identity.correlationId,
+      },
+      queue: [{
+        ...identity,
+        queueItemId: field === 'queueItemId' ? 'q:2' : identity.queueItemId,
+        songId: field === 'songId' ? 'song-2' : identity.songId,
+        programId: field === 'programId' ? 'prog-2' : identity.programId,
+        url: '/two.mp3',
+      }],
+    };
+    const client = createPlaybackRuntimeClient({
+      store, narrationAudio: narration, musicAudio: music, locationHref: 'http://localhost/',
+      apiClient: {
+        async post(path, body) {
+          posts.push([path, body]);
+          if (body.type === 'TRACK_ENDED') throw new Error('stale runtime version');
+          return { ok: true };
+        },
+        async get() { return { runtime: mutated }; },
+      },
+      callbacks: { onError: error => errors.push(error.message) },
+    }).init();
+    try {
+      await client.execute({ ...identity, type: 'PLAY_TRACK', url: '/one.mp3' });
+      music.ended = true;
+      music.duration = 180;
+      music.emit('ended');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      const endedPosts = posts.filter(([, body]) => body.type === 'TRACK_ENDED');
+      assert.equal(endedPosts.length, 1, `${field} 变更后绝不重发旧 TRACK_ENDED`);
+      assert.deepEqual(errors, ['stale runtime version']);
+    } finally {
+      client.destroy();
+    }
+  }
 });

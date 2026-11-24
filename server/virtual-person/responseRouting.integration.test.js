@@ -46,7 +46,7 @@ test('production composition applies both greeting and contextual follow-up plan
   });
   try {
     const greeting = await turn(h, 'r1', '两位早上好');
-    assert.deepEqual(greeting.responses.map(r => r.virtualPersonId), ['night', 'lunara']);
+    assert.deepEqual(greeting.responses.map(r => r.virtualPersonId), ['lunara', 'night']);
     const mention = await turn(h, 'r2', '@楚航 你怎么不回我？');
     assert.equal(mention.virtualPersonId, 'night');
     const continuation = await turn(h, 'r3', '没啥只想你回我一下');

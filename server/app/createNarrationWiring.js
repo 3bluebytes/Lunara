@@ -1,26 +1,28 @@
 // createNarrationWiring.js — 串词的组装（组合根行数守卫）。
 //
-// 串词属于“一切皆 tool”：确定性素材/校验/兜底在 ProgramNarrationComposer（技能）与
-// narrationTools（读素材 + 终止性提交）里，需要模型写的正文由受限主 AgentLoop 任务生成
-// （NarrationAgent）。本模块只负责把两者接到同一个 registry / agentLoop 与真实上下文源上。
+// 写串词是 host 自己的事：write_track_lines 工具登记到 host 的工具表，line pass 接到 host 的 runtime。
+// composer 只负责把写好的文字合成成声音。播放停得够久再接着放时，旧串词交还原 host 重写。
 
 import { ProgramNarrationComposer } from '../program/ProgramNarrationComposer.js';
-import { createNarrationContextProvider } from '../program/narrationContext.js';
-import { createNarrationAgent } from '../program/NarrationAgent.js';
-import { withTasteProbeHint } from '../program/tasteProbeNarration.js';
+import { createTrackLineMaterialProvider } from '../program/trackLineMaterial.js';
+import { createTrackLinePass } from '../program/trackLinePass.js';
+import { createTrackLineRewrite } from '../program/trackLineRewrite.js';
+import { registerTrackLineTools } from '../program/trackLineTools.js';
 
-export function createNarrationWiring({ agentLoop, toolRegistry, registry, conversationStore, getSongTagStore,
-  getMemoryService, getTrackLikeService, getListeningSnapshot, getLifeSnapshot, getMusicService,
+export function createNarrationWiring({ agentLoop, toolRegistry, registry, conversationStore, host, getSongTagStore,
+  getMemoryService, getTrackLikeService, getListening = () => null, getMusicService,
   synthesize, getPerformanceCapability = () => null, sessionTrace = null } = {}) {
-  const getContext = withTasteProbeHint(createNarrationContextProvider({ registry, conversationStore,
-    getSongTagStore, getMemoryService, getTrackLikeService, getCompanionModeSnapshot: getListeningSnapshot,
-    getLifeSnapshot,
-  }), effect => getMusicService?.()?.recentProbeForTrack?.(effect.track) || null);
-  // composer 只保留确定性技能与 TTS 资产重解析（不再持有模型句柄）。
+  registerTrackLineTools(toolRegistry);
+  const getMaterial = createTrackLineMaterialProvider({ registry, conversationStore, getSongTagStore, getMemoryService,
+    getTrackLikeService, getListening, getPerformanceCapability,
+    getProbe: track => getMusicService?.()?.recentProbeForTrack?.(track) || null });
+  const trackLinePass = createTrackLinePass({ agentLoop, getMaterial, sessionTrace });
+  host?.attachTrackLinePass?.(trackLinePass);
   const programNarrationComposer = new ProgramNarrationComposer({ synthesize });
-  const narrationAgent = createNarrationAgent({ agentLoop, toolRegistry, sessionTrace, getContext, synthesize,
-    getPerformanceCapability });
-  return Object.freeze({ programNarrationComposer, narrationAgent });
+  // 停得够久再接着放：runtime 作废了旧串词的几首，交还给原 host 的 line pass 重写。
+  const rewriteTrackLines = createTrackLineRewrite({ getRegistry: () => registry, getHost: () => host,
+    getSelectionService: () => getMusicService?.() || null });
+  return Object.freeze({ programNarrationComposer, trackLinePass, rewriteTrackLines });
 }
 
 export default createNarrationWiring;

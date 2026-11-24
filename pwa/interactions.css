@@ -90,23 +90,35 @@
  * hover on a whole memory card/article when only its disclosure is actionable. */
 @media (hover: hover) and (pointer: fine) {
   :root[data-theme] body :is(
-    .settings-nav-item, .room-row, .person-row, .room-group-heading,
+    .room-row, .person-row, .room-group-heading,
     .room-row-menu-item, .llm-provider-item, .song-tag-row,
-    .cike-queue-row, .sb-q-item, .cast-persona, .cast-voice,
+    .sb-q-item, .cast-persona, .cast-voice,
     .theme-option, .boot-opt, .create-launcher-option, .recording-review__row,
     .recording-review__merged summary, .mem-card summary, .today-add summary
   ):not(.danger):not(:has(input:disabled)):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
     background-image: linear-gradient(var(--control-row-hover), var(--control-row-hover));
   }
+  :root[data-theme]:not([data-theme="nocturne"]) body .settings-nav-item:not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    background-image: linear-gradient(var(--control-row-hover), var(--control-row-hover));
+  }
+  :root[data-theme="nocturne"] body .settings-nav-item:not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):hover {
+    color: var(--text);
+  }
 }
 :root[data-theme] body :is(
-  .settings-nav-item, .room-row, .person-row, .room-group-heading,
+  .room-row, .person-row, .room-group-heading,
   .room-row-menu-item, .llm-provider-item, .song-tag-row,
-  .cike-queue-row, .sb-q-item, .cast-persona, .cast-voice,
+  .sb-q-item, .cast-persona, .cast-voice,
   .theme-option, .boot-opt, .create-launcher-option, .recording-review__row,
   .recording-review__merged summary, .mem-card summary, .today-add summary
 ):not(.danger):not(:has(input:disabled)):not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
   background-image: linear-gradient(var(--control-pressed), var(--control-pressed));
+}
+:root[data-theme]:not([data-theme="nocturne"]) body .settings-nav-item:not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  background-image: linear-gradient(var(--control-pressed), var(--control-pressed));
+}
+:root[data-theme="nocturne"] body .settings-nav-item:not(.disabled):not(:disabled, [aria-disabled="true"], [aria-busy="true"]):active {
+  color: var(--studio-accent-ink);
 }
 
 /* Inline content actions keep their baseline/spacing. Underline, not a chip. */
@@ -158,7 +170,7 @@
 @media (prefers-reduced-motion: no-preference) {
   /* Zero specificity: never replace an existing control/transport transition. */
   :where(:root[data-theme] button, :root[data-theme] select, :root[data-theme] summary, :root[data-theme] .recording-review__row) {
-    transition: background-color 120ms ease-out, color 120ms ease-out;
+    transition: background-color 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out, filter 120ms ease-out, text-decoration-color 120ms ease-out;
   }
 }
 @media (prefers-reduced-motion: reduce) {

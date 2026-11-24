@@ -15,12 +15,15 @@ import { trackMatchesSignal } from './tasteSignals.js';
 
 const FEATURE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_THEMES = 3;
+const MAX_INSTRUMENTS = 4;
 const providerOf = track => String(track?.source || track?.provider || '').split(/[:-]/)[0];
 
-/** 来源分类：收藏 > 自建歌单 > 每日推荐 > 发现 > 其它曲库。 */
-export function candidateOrigin(track) {
+/** 来源分类：收藏（含本地红心真相） > 自建歌单 > 每日推荐 > 发现 > 其它曲库。 */
+export function candidateOrigin(track, likedTrackKeys = null) {
   const origin = String(track?.candidateOrigin || track?.collectionOrigin || track?.source || '');
   if (track?.collectionKind === 'liked' || /:liked(?::|$)/.test(origin)) return 'liked';
+  const songId = String(track?.songId ?? track?.song_id ?? '');
+  if (likedTrackKeys && songId && likedTrackKeys.has(`${providerOf(track)}:${songId}`)) return 'liked';
   if (track?.collectionKind === 'playlist' || /:playlist(?::|$)/.test(origin)) return 'playlist';
   if (/:daily(?::|$)/.test(origin)) return 'daily';
   if (/:discovery(?::|$)/.test(origin)) return 'discovery';
@@ -30,16 +33,22 @@ export function candidateOrigin(track) {
 const text = value => (value == null || value === '' ? null : String(value));
 const number = value => (value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value));
 
-/** 标签行 → 模型可读的精简标签；没有标签记录时为 null（不是空对象）。 */
+/** 标签行 → 模型可读的精简标签；没有标签记录时为 null（不是空对象）。有质感字段时按需透出。 */
 export function candidateTags(tagStore, track) {
   let row = null;
   try { row = tagStore?.getTags?.(track.songId, providerOf(track)) || null; } catch { row = null; }
   if (!row) return null;
   const genres = [...new Set([...(Array.isArray(row.genres) ? row.genres : []), row.genre].filter(Boolean).map(String))];
+  const instruments = (Array.isArray(row.instruments) ? row.instruments : []).filter(Boolean).map(String).slice(0, MAX_INSTRUMENTS);
+  const valence = number(row.valence);
+  const vocalSoftness = number(row.vocal_softness ?? row.vocalSoftness);
   return { language: text(row.language), genres, mood: text(row.mood), tempo: text(row.tempo),
     energy: number(row.energy), year: number(row.year),
     hasVocal: row.has_vocal == null ? (row.hasVocal == null ? null : Boolean(row.hasVocal)) : Boolean(row.has_vocal),
-    themes: (Array.isArray(row.themes) ? row.themes : []).filter(Boolean).map(String).slice(0, MAX_THEMES) };
+    themes: (Array.isArray(row.themes) ? row.themes : []).filter(Boolean).map(String).slice(0, MAX_THEMES),
+    ...(instruments.length ? { instruments } : {}),
+    ...(valence != null ? { valence } : {}),
+    ...(vocalSoftness != null ? { vocalSoftness } : {}) };
 }
 
 function playIndex(recentPlays, now) {
@@ -62,7 +71,7 @@ function playIndex(recentPlays, now) {
  * @returns 与 window 等长的特征数组
  */
 export function buildCandidateFeatures(window, { tagStore = null, signals = [], recentPlays = [], now = Date.now(),
-  cadencePlan = null, probeTrack = null } = {}) {
+  cadencePlan = null, probeTrack = null, likedTrackKeys = null } = {}) {
   const plays = playIndex(recentPlays, now);
   return (Array.isArray(window) ? window : []).map(track => {
     const played = plays.get(`${providerOf(track)}:${track.songId}`);
@@ -71,7 +80,7 @@ export function buildCandidateFeatures(window, { tagStore = null, signals = [], 
       .map(signal => `${signal.polarity === 'negative' ? '-' : '+'}${signal.key}`);
     return {
       tags: candidateTags(tagStore, track),
-      origin: candidateOrigin(track),
+      origin: candidateOrigin(track, likedTrackKeys),
       freshness: { lastPlayedDaysAgo: played ? Number(((now - played.lastTs) / 86_400_000).toFixed(1)) : null,
         plays14d: played?.count || 0 },
       ...(cadencePlan?.familiar ? { familiarity: cadencePlan.familiar(track.artist) ? 'familiar' : 'unfamiliar' } : {}),

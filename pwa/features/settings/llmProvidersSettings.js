@@ -9,7 +9,7 @@
 // 删除把模型移出编辑列表；启用开关只把模型写入 disabledModels（停用但保留在列表），
 // 两者都在「保存 Provider」后落盘。停用模型不参与使用中下拉、会话选择器与默认解析。
 //
-// 用量不在这张卡里：设置另有「使用统计」页（add-usage-dashboard），这里只留一行跳转入口。
+// 用量不在这张卡里：「高级」组的「使用统计」页（data-settings-page="usage"）才读账本，这里只留一行跳转。
 //
 // key 只写不读：已配置的 provider 显示"留空保持不变"，保存时空值由服务端保留旧值。
 //
@@ -20,10 +20,10 @@
 import { createLlmFailoverSettings } from './llmFailoverSettings.js';
 
 const API_OPTIONS = [
-  ['openai-completions', 'openai-completions'],
-  ['openai-responses', 'openai-responses'],
-  ['anthropic-messages', 'anthropic-messages'],
-  ['google-generative-ai', 'google-generative-ai'],
+  ['openai-completions', 'OpenAI 兼容（最常见）'],
+  ['openai-responses', 'OpenAI 响应接口（Responses）'],
+  ['anthropic-messages', 'Anthropic'],
+  ['google-generative-ai', 'Google Gemini'],
 ];
 const esc = value => String(value ?? '').replace(/[&<>"']/gu, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 
@@ -50,6 +50,10 @@ const EFFORT_LABELS = Object.freeze({
   xhigh: '很高', max: '最高', ultra: '超高',
 });
 const effortLabel = level => EFFORT_LABELS[level] || String(level || '');
+const KNOB_LABELS = Object.freeze({
+  reasoning_effort: '按强度分档',
+  thinking_budget: '按字数上限',
+});
 
 /** 开关轨道的公共标记（行启用与 Provider 启用共用一套样式与语义）。 */
 const switchHtml = (id, checked, label) => `
@@ -95,6 +99,8 @@ export function createLlmProvidersSettings({
   let loaded = false;
   let message = '';
   let pendingFocus = null;      // 重渲染后要归还/移入焦点的选择器
+  let confirmDeleteId = null;
+  let confirmDeleteUntil = 0;
 
   async function refresh({ keepDrafts = false } = {}) {
     try {
@@ -132,6 +138,8 @@ export function createLlmProvidersSettings({
     discovered = [];
     expandedModel = null;
     testResults = null;
+    confirmDeleteId = null;
+    confirmDeleteUntil = 0;
   }
 
   /** 模型是否仍留在编辑列表里（含停用）。 */
@@ -145,17 +153,17 @@ export function createLlmProvidersSettings({
   function providerListHtml() {
     const items = providers.map(provider => {
       const disabledCount = Array.isArray(provider.disabledModels) ? provider.disabledModels.length : 0;
-      const count = `${provider.modelCount} 模型${disabledCount ? ` · ${disabledCount} 停用` : ''}${provider.enabled ? '' : ' · Provider 已停用'}`;
+      const count = `${provider.modelCount} 模型${disabledCount ? ` · ${disabledCount} 停用` : ''}${provider.enabled ? '' : ' · 已停用'}`;
       return `
       <li>
         <button type="button" class="llm-provider-item${provider.id === selectedId ? ' active' : ''}"
           data-llm-select-provider="${esc(provider.id)}" aria-pressed="${provider.id === selectedId}">
-          <span>${esc(provider.name || '未命名 Provider')}</span>
+          <span>${esc(provider.name || '未命名服务')}</span>
           <span class="llm-provider-count">${count}</span>
         </button>
       </li>`;
     }).join('');
-    return `${items}<li><button type="button" class="quiet-button" id="llm-provider-add">＋ 添加 Provider</button></li>`;
+    return `${items}<li><button type="button" class="quiet-button" id="llm-provider-add">＋ 添加模型服务</button></li>`;
   }
 
   /** 展示用：剥掉思维链（<think>…</think>），只留最终回复。 */
@@ -171,7 +179,7 @@ export function createLlmProvidersSettings({
       : capability.thinking?.default === 'off' ? '思考关闭' : '思考未知');
     if (capability.thinking?.canDisable === true) bits.push('可关闭');
     else if (capability.thinking?.canDisable === false) bits.push('不可关闭');
-    if (capability.thinking?.budgetKnob) bits.push(`可设思考预算(${capability.thinking.budgetKnob})`);
+    if (capability.thinking?.budgetKnob) bits.push(`可设思考预算（${KNOB_LABELS[capability.thinking.budgetKnob] || capability.thinking.budgetKnob}）`);
     if (capability.structuredOutput && capability.structuredOutput !== 'none') bits.push(`结构化 ${capability.structuredOutput}`);
     const sourceText = capability.source === 'user' ? '手动声明'
       : capability.source === 'observed' ? '运行时识别' : '自动探测';
@@ -211,7 +219,7 @@ export function createLlmProvidersSettings({
     return capabilityOptions(current, options);
   }
 
-  /** 行内编辑面板：模型 id 与手动能力声明（可选覆盖，不设也正确）。 */
+  /** 行内编辑面板：模型标识与手动能力声明（可选覆盖，不设也正确）。 */
   function modelEditorHtml(model) {
     const provider = selectedProvider();
     const capability = provider?.capabilities?.[model] || {};
@@ -221,9 +229,9 @@ export function createLlmProvidersSettings({
       <div class="llm-model-editor" data-llm-model-editor="${esc(model)}" role="group"
         aria-label="编辑模型 ${esc(model)}" tabindex="-1">
         <label class="llm-model-field">
-          <span>模型 id</span>
+          <span>模型标识</span>
           <input type="text" autocomplete="off" data-llm-model-rename="${esc(model)}"
-            value="${esc(model)}" aria-label="模型 id ${esc(model)}">
+            value="${esc(model)}" aria-label="模型标识 ${esc(model)}">
         </label>
         <label class="llm-model-field">
           <span>对话思考强度（默认）</span>
@@ -233,14 +241,14 @@ export function createLlmProvidersSettings({
         <div class="llm-cap-grid" role="group" aria-label="手动能力声明 ${esc(model)}">
           <label>默认<select data-llm-cap-default="${esc(model)}">${capabilityOptions(thinking.default || 'unknown', [['unknown', '未知'], ['on', '开启'], ['off', '关闭']])}</select></label>
           <label>可关闭<select data-llm-cap-disable="${esc(model)}">${capabilityOptions(canDisable, [['', '未知'], ['true', '是'], ['false', '否']])}</select></label>
-          <label>预算旋钮<select data-llm-cap-knob="${esc(model)}">${capabilityOptions(thinking.budgetKnob || '', [['', '无'], ['reasoning_effort', 'reasoning_effort'], ['thinking_budget', 'thinking_budget']])}</select></label>
-          <label>结构化<select data-llm-cap-structured="${esc(model)}">${capabilityOptions(capability.structuredOutput || 'none', [['none', '无'], ['json_object', 'json_object'], ['json_schema', 'json_schema'], ['tool_force', 'tool_force']])}</select></label>
+          <label>预算控制<select data-llm-cap-knob="${esc(model)}">${capabilityOptions(thinking.budgetKnob || '', [['', '无'], ['reasoning_effort', '按强度分档'], ['thinking_budget', '按字数上限']])}</select></label>
+          <label>结构化输出<select data-llm-cap-structured="${esc(model)}">${capabilityOptions(capability.structuredOutput || 'none', [['none', '无'], ['json_object', 'JSON 对象'], ['json_schema', 'JSON 结构约束'], ['tool_force', '强制工具调用']])}</select></label>
         </div>
         <div class="llm-model-editor-actions">
           <button type="button" class="quiet-button" data-llm-probe-model="${esc(model)}">探测能力</button>
           <button type="button" class="quiet-button" data-llm-cap-save="${esc(model)}">保存能力声明</button>
         </div>
-        <p class="llm-model-editor-hint">模型 id 与启用状态随「保存 Provider」生效；能力声明单独写入，手动声明优先于自动探测。</p>
+        <p class="llm-model-editor-hint">模型标识与启用状态随「保存」生效；能力声明单独写入，手动声明优先于自动探测。</p>
       </div>`;
   }
 
@@ -291,7 +299,7 @@ export function createLlmProvidersSettings({
 
   function editorHtml() {
     if (!selectedId) {
-      return `<p class="llm-prov-empty" role="status">还没有接入任何模型。点「＋ 添加 Provider」，填入 Base URL 与 API Key 即可开始。${message ? esc(message) : ''}</p>`;
+      return `<p class="llm-prov-empty" role="status">还没有接入任何模型。点「＋ 添加模型服务」，填入服务商提供的接口地址和接口密钥即可开始。${message ? esc(message) : ''}</p>`;
     }
     const isNew = selectedId === '__new__';
     const provider = selectedProvider();
@@ -305,26 +313,28 @@ export function createLlmProvidersSettings({
     const modelRows = modelIds.map(model => modelRowHtml(model)).join('');
     return `
       <div class="boot-endpoint llm-prov-endpoint">
-        <label class="boot-field"><span>Provider 名称</span>
+        <label class="boot-field"><span>名称（自己起）</span>
           <input id="llm-prov-name" type="text" autocomplete="off" value="${esc(name)}" placeholder="如 magpie"></label>
-        <label class="boot-field"><span>Base URL</span>
+        <label class="boot-field"><span>接口地址</span>
           <input id="llm-prov-url" type="url" autocomplete="url" value="${esc(baseUrl)}" placeholder="http://127.0.0.1:3425/v1"></label>
-        <label class="boot-field"><span>API Key</span>
+        <label class="boot-field"><span>接口密钥</span>
           <input id="llm-prov-key" type="password" autocomplete="new-password"
             placeholder="${!isNew && provider?.hasKey ? '已保存（留空保持不变）' : '本地网关可留空'}"></label>
-        <label class="boot-field"><span>API</span>
+        <label class="boot-field"><span>接口协议</span>
           <select id="llm-prov-api" class="boot-select" value="${esc(api)}">
             ${API_OPTIONS.map(([value, label]) => `<option value="${value}"${value === api ? ' selected' : ''}>${label}</option>`).join('')}
           </select></label>
         <div class="llm-prov-toggle">
-          <span>启用 Provider</span>
-          ${switchHtml('llm-prov-enabled', enabled, '启用 Provider')}
+          <span>启用这个服务</span>
+          ${switchHtml('llm-prov-enabled', enabled, '启用这个服务')}
         </div>
       </div>
       <div class="llm-prov-actions">
         <button type="button" class="quiet-button" id="llm-prov-discover">获取模型列表</button>
-        <button type="button" class="boot-go" id="llm-prov-save">保存 Provider</button>
-        ${isNew ? '' : '<button type="button" class="quiet-button" id="llm-prov-delete">删除 Provider</button>'}
+        <button type="button" class="boot-go" id="llm-prov-save">保存</button>
+        ${isNew ? '' : (confirmDeleteId === selectedId && confirmDeleteUntil > Date.now()
+          ? '<button type="button" class="quiet-button danger-button" id="llm-prov-delete" data-llm-delete-armed="1">确认删除该服务</button>'
+          : '<button type="button" class="quiet-button" id="llm-prov-delete">删除这个服务</button>')}
       </div>
       <p id="llm-prov-status" role="status">${esc(message)}</p>
       <div class="llm-models-card">
@@ -338,11 +348,11 @@ export function createLlmProvidersSettings({
           </div>
         </div>
         <ul class="llm-models" id="llm-prov-models">
-          ${modelRows || '<li class="llm-prov-empty">还没有模型：点「获取模型列表」，或手动添加模型 id。</li>'}
+          ${modelRows || '<li class="llm-prov-empty">还没有模型：点「获取模型列表」，或手动添加模型标识。</li>'}
         </ul>
         <div class="llm-model-add">
-          <input id="llm-prov-manual" type="text" autocomplete="off" aria-label="手动添加模型 id"
-            placeholder="手动填模型 id，如 deepseek/deepseek-flash">
+          <input id="llm-prov-manual" type="text" autocomplete="off" aria-label="手动添加模型标识"
+            placeholder="手动填写模型标识，如 deepseek/deepseek-flash">
           <button type="button" class="quiet-button" id="llm-prov-manual-add">添加模型</button>
         </div>
       </div>`;
@@ -445,7 +455,7 @@ export function createLlmProvidersSettings({
   /** 行内编辑面板：保存单个模型的手动能力声明（source user 由服务端落库）。 */
   async function saveRowCapability(model) {
     if (!selectedId || selectedId === '__new__') {
-      message = '先保存 Provider 再保存能力声明。';
+      message = '先保存这个模型服务，再保存能力声明。';
       render();
       return;
     }
@@ -544,7 +554,7 @@ export function createLlmProvidersSettings({
     on('#llm-prov-discover', 'click', async () => {
       const editor = readEditor();
       editorDraft = editor;
-      if (!editor.baseUrl) { message = '先填 Base URL 再获取模型列表。'; render(); return; }
+      if (!editor.baseUrl) { message = '先填接口地址再获取模型列表。'; render(); return; }
       message = '正在获取模型列表…';
       render();
       try {
@@ -642,7 +652,7 @@ export function createLlmProvidersSettings({
       button.addEventListener('click', async event => {
         event.preventDefault?.();
         const model = button.getAttribute('data-llm-probe-model');
-        if (!selectedId || selectedId === '__new__') { message = '先保存 Provider 再探测能力。'; render(); return; }
+        if (!selectedId || selectedId === '__new__') { message = '先保存这个模型服务，再探测能力。'; render(); return; }
         message = `正在探测 ${model} 的能力…`;
         render();
         try {
@@ -665,7 +675,7 @@ export function createLlmProvidersSettings({
     on('#llm-prov-save', 'click', async () => {
       const editor = readEditor();
       if (!editor.name || !editor.baseUrl || !editor.models.length) {
-        message = '名称、Base URL 与至少一个模型是必填的。';
+        message = '名称、接口地址与至少一个模型是必填的。';
         render();
         return;
       }
@@ -675,7 +685,7 @@ export function createLlmProvidersSettings({
           ? await apiClient.post('/api/llm/providers', editor)
           : await apiClient.put(`/api/llm/providers/${selectedId}`, editor);
         message = '已保存；停用的模型保留在列表但不会被使用，新模型的能力探测在后台进行。';
-        showToast('success', isNew ? 'Provider 已添加' : 'Provider 已保存',
+        showToast('success', isNew ? '模型服务已添加' : '模型服务已保存',
           `${editor.name}：${editor.models.length} 个模型；能力探测在后台进行。`, { curated: true });
         selectedId = saved?.provider?.id || selectedId;
         await refresh();
@@ -686,13 +696,25 @@ export function createLlmProvidersSettings({
     });
     on('#llm-prov-delete', 'click', async () => {
       if (!selectedId || selectedId === '__new__') return;
+      const now = Date.now();
+      if (confirmDeleteId !== selectedId || now >= confirmDeleteUntil) {
+        confirmDeleteId = selectedId;
+        confirmDeleteUntil = now + 4000;
+        editorDraft = readEditor();
+        message = '再点一次「确认删除该服务」将永久移除该模型服务；切换或保存其他项将取消。';
+        pendingFocus = '#llm-prov-delete';
+        render();
+        return;
+      }
+      confirmDeleteId = null;
+      confirmDeleteUntil = 0;
       editorDraft = null;
       try {
         await apiClient.delete(`/api/llm/providers/${selectedId}`);
         selectedId = providers.find(provider => provider.id !== selectedId)?.id ?? null;
         draftProviderId = null;
         message = '已删除。';
-        showToast('info', 'Provider 已删除', '它下面的模型不会再出现在使用中与聊天覆盖里。', { curated: true });
+        showToast('info', '模型服务已删除', '它下面的模型不会再出现在使用中与聊天覆盖里。', { curated: true });
         await refresh();
       } catch (error) {
         message = `删除失败：${error.message}`;

@@ -357,13 +357,33 @@ function openaiResponseFormat(options) {
   return null;
 }
 
-/** openai-completions：Lunara 标准形即原生形状，透传。 */
+/**
+ * providerReplay：供应商要求在同一回合的工具循环里原样带回的思考状态，挂在 assistant 消息上：
+ *   { api, reasoningContent }  openai-completions（DeepSeek 等思考模型的 reasoning_content）
+ *   { api, blocks }            anthropic-messages（thinking / redacted_thinking 块，含 signature）
+ *   { api, parts }             google-generative-ai（带 thoughtSignature 的原始 parts）
+ * 只回放给产生它的同一协议；它由 AgentLoop 保存在一次 run 内，不进对话账本。
+ * Python 伪代码：replay = msg.provider_replay if msg.provider_replay.api == api else None
+ */
+function providerReplayOf(message, api) {
+  const replay = message?.providerReplay;
+  return replay && typeof replay === 'object' && replay.api === api ? replay : null;
+}
+
+function openaiMessage(message) {
+  if (!message || !Object.hasOwn(message, 'providerReplay')) return message;
+  const { providerReplay: _replay, ...rest } = message;
+  const replay = providerReplayOf(message, 'openai-completions');
+  return replay?.reasoningContent ? { ...rest, reasoning_content: replay.reasoningContent } : rest;
+}
+
+/** openai-completions：Lunara 标准形即原生形状，透传（providerReplay 除外）。 */
 function buildOpenaiCompletionsRequest({ endpoint, messages, tools, options }) {
   const body = {
     model: endpoint.model,
     max_tokens: options.maxTokens,
     temperature: options.temperature,
-    messages,
+    messages: messages.map(message => openaiMessage(message)),
   };
   // 可选流式（add-streaming-transport-eval）：只有显式 options.stream === true 才请求 SSE。
   // include_usage 让供应商在 [DONE] 前补一个 usage chunk；网关不返回时用量保持 null，绝不写 0。
@@ -393,12 +413,45 @@ function textOrNull(value) {
   return typeof value === 'string' && value ? value : null;
 }
 
+/**
+ * 归一的缓存用量：usage.cached_tokens = 本次请求里从供应商提示缓存读到的输入 token，
+ * usage.cache_write_tokens = 本次写入缓存的输入 token（只有 anthropic 报告）。供应商没报告就不加字段，绝不写 0。
+ */
+function withCachedTokens(usage, cached, written = null) {
+  if (!usage) return usage;
+  const read = integerOrNull(cached);
+  const write = integerOrNull(written);
+  if (read == null && write == null) return usage;
+  return { ...usage, ...(read != null ? { cached_tokens: read } : {}), ...(write != null ? { cache_write_tokens: write } : {}) };
+}
+
 function integerOrNull(value) {
   return Number.isInteger(value) ? value : null;
 }
 
 function joinedOrNull(parts) {
   return parts.length ? parts.join('\n') : null;
+}
+
+function normalizeOpenaiToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) return null;
+  const usedIds = new Set();
+  for (const call of toolCalls) {
+    const existing = typeof call?.id === 'string' && call.id.trim() ? call.id : null;
+    if (existing) usedIds.add(existing);
+  }
+  return toolCalls.map((call, index) => {
+    const existing = typeof call?.id === 'string' && call.id.trim() ? call.id : null;
+    if (existing) return call;
+    let fallbackIndex = Number.isInteger(call?.index) && call.index >= 0 ? call.index : index;
+    let id = `call_${fallbackIndex}`;
+    while (usedIds.has(id)) {
+      fallbackIndex += 1;
+      id = `call_${fallbackIndex}`;
+    }
+    usedIds.add(id);
+    return { ...call, id };
+  });
 }
 
 function parseOpenaiCompletionsResponse(payload) {
@@ -409,14 +462,20 @@ function parseOpenaiCompletionsResponse(payload) {
     throw error;
   }
   const reasoningTokens = integerOrNull(payload?.usage?.completion_tokens_details?.reasoning_tokens);
+  const toolCalls = normalizeOpenaiToolCalls(message.tool_calls);
   return {
     message: {
       role: message.role || 'assistant',
       content: message.content ?? '',
-      tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls : null,
+      tool_calls: toolCalls,
+      // 只有供应商自己用 reasoning_content 字段返回思考、且这条消息带工具调用时才需要带回。
+      ...(Array.isArray(toolCalls) && toolCalls.length && textOrNull(message.reasoning_content)
+        ? { providerReplay: { api: 'openai-completions', reasoningContent: message.reasoning_content } } : {}),
     },
     finishReason: payload?.choices?.[0]?.finish_reason || null,
-    usage: payload?.usage || null,
+    // cached_tokens：命中提示缓存的输入 token（OpenAI 在 prompt_tokens_details，DeepSeek 在 prompt_cache_hit_tokens）。
+    usage: withCachedTokens(payload?.usage || null,
+      payload?.usage?.prompt_tokens_details?.cached_tokens ?? payload?.usage?.prompt_cache_hit_tokens),
     reasoning: textOrNull(message.reasoning_content) || textOrNull(message.reasoning),
     reasoningTokens,
   };
@@ -476,9 +535,11 @@ function applyOpenaiStreamChunk(chunk, state) {
     ? delta.reasoning_content
     : (typeof delta.reasoning === 'string' ? delta.reasoning : '');
   if (reasoningDelta) state.reasoning += reasoningDelta;
+  // 记住供应商用的是哪个字段：只有 reasoning_content 需要在工具循环里带回。
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) state.reasoningContentField = true;
 
   // 工具调用只给片段：按 index 累积 id/type/name/arguments。缺失 index 视为 0；
-  // 没有 id 就不伪造 id（下游按 name/arguments fail-closed 处理）。
+  // 若供应商未返回 id，交由 normalizeOpenaiToolCalls 合成唯一确定的回退 call.id 保持协议完整。
   for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
     if (!fragment || typeof fragment !== 'object') continue;
     const index = Number.isInteger(fragment.index) ? fragment.index : 0;
@@ -593,13 +654,17 @@ async function readOpenaiCompletionsStream(response, { startedAt, onFirstContent
   // 与 response.json() 解析失败同等归类，调用方仍需按真实请求结算用量。
   if (!state.chunkCount) throw streamFailure('LLM API stream contained no data', 'LLM_INVALID_RESPONSE');
 
-  const toolCalls = [...state.toolCalls.entries()]
+  const toolCalls = normalizeOpenaiToolCalls([...state.toolCalls.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([, call]) => ({
-      ...(call.id ? { id: call.id } : {}),
+    .map(([index, call]) => ({
+      ...(call.id ? { id: call.id } : { index }),
       type: call.type || 'function',
       function: { name: call.name, arguments: call.arguments },
-    }));
+    }))).map(call => {
+    if (!Object.hasOwn(call, 'index')) return call;
+    const { index: _streamIndex, ...rest } = call;
+    return rest;
+  });
 
   // 与非流式响应同形：既有 parser 负责 role/content/tool_calls/reasoning/usage 归一。
   const payload = {
@@ -608,7 +673,7 @@ async function readOpenaiCompletionsStream(response, { startedAt, onFirstContent
         role: 'assistant',
         content: state.content,
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
-        ...(state.reasoning ? { reasoning: state.reasoning } : {}),
+        ...(state.reasoning ? { [state.reasoningContentField ? 'reasoning_content' : 'reasoning']: state.reasoning } : {}),
       },
       finish_reason: state.finishReason,
     }],
@@ -695,11 +760,11 @@ function parseOpenaiResponsesResponse(payload) {
         function: { name: String(item.name || ''), arguments: String(item.arguments || '{}') } });
     }
   }
-  const usage = payload?.usage ? {
+  const usage = withCachedTokens(payload?.usage ? {
     prompt_tokens: payload.usage.input_tokens,
     completion_tokens: payload.usage.output_tokens,
     total_tokens: (payload.usage.input_tokens || 0) + (payload.usage.output_tokens || 0),
-  } : null;
+  } : null, payload?.usage?.input_tokens_details?.cached_tokens);
   const incomplete = payload?.status === 'incomplete' || payload?.incomplete_details != null;
   return {
     message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : null },
@@ -711,6 +776,41 @@ function parseOpenaiResponsesResponse(payload) {
 }
 
 /** anthropic-messages：system 提取、max_tokens 必填、tool_use/tool_result 块。 */
+const EPHEMERAL = Object.freeze({ type: 'ephemeral' });
+
+/** 在一条消息的最后一个内容块上标缓存断点；没有可标的块（空文本、空数组）时返回 false。 */
+function markCacheBreakpoint(message) {
+  if (!message) return false;
+  if (typeof message.content === 'string') {
+    if (!message.content) return false;
+    message.content = [{ type: 'text', text: message.content, cache_control: EPHEMERAL }];
+    return true;
+  }
+  const block = Array.isArray(message.content) ? message.content.at(-1) : null;
+  if (!block || (block.type === 'text' && !block.text)) return false;
+  message.content[message.content.length - 1] = { ...block, cache_control: EPHEMERAL };
+  return true;
+}
+
+/**
+ * 多轮请求的缓存断点（align-context-compaction-and-cache）。缓存按前缀匹配，顺序是 tools → system → messages：
+ * - system 末尾：工具定义 + 稳定的系统提示；
+ * - 本回合用户原话之前的那条消息：到上一轮为止的历史。下一轮读缓存命中的就是这里
+ *   （本回合的 user 消息带本轮背景，下一轮它会变，不能指望它命中）；
+ * - 最后一条消息：同一回合里的后续工具轮从这里读。
+ * Python 伪代码：
+ *   system[-1].cache = True; messages[last_plain_user - 1].cache = True; messages[-1].cache = True
+ */
+function applyAnthropicCacheBreakpoints(body) {
+  if (typeof body.system === 'string' && body.system) {
+    body.system = [{ type: 'text', text: body.system, cache_control: EPHEMERAL }];
+  }
+  const messages = body.messages;
+  const lastUserText = messages.findLastIndex(message => message.role === 'user' && typeof message.content === 'string');
+  if (lastUserText > 0) markCacheBreakpoint(messages[lastUserText - 1]);
+  markCacheBreakpoint(messages.at(-1));
+}
+
 function buildAnthropicRequest({ endpoint, messages, tools, options }) {
   const systemParts = [];
   const converted = [];
@@ -739,7 +839,8 @@ function buildAnthropicRequest({ endpoint, messages, tools, options }) {
     }
     flushToolResults();
     if (message.role === 'assistant') {
-      const blocks = [];
+      // 思考块必须排在这条消息的最前面、原样带回（含 signature）。
+      const blocks = [...(providerReplayOf(message, 'anthropic-messages')?.blocks || [])];
       if (message.content) blocks.push({ type: 'text', text: String(message.content) });
       for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
         blocks.push({ type: 'tool_use', id: String(call.id || ''), name: call?.function?.name || '',
@@ -760,6 +861,7 @@ function buildAnthropicRequest({ endpoint, messages, tools, options }) {
     messages: converted,
   };
   if (systemParts.length) body.system = systemParts.join('\n\n');
+  if (options.promptCache === true) applyAnthropicCacheBreakpoints(body);
   if (tools) {
     body.tools = tools.map(tool => ({
       name: tool?.function?.name || tool?.name || '',
@@ -771,6 +873,7 @@ function buildAnthropicRequest({ endpoint, messages, tools, options }) {
   const anthropicChoiceName = toolChoiceName(options.toolChoice);
   if (anthropicChoiceName) body.tool_choice = { type: 'tool', name: anthropicChoiceName };
   else if (options.toolChoice === 'any') body.tool_choice = { type: 'any' };
+  else if (options.toolChoice === 'none' && body.tools) body.tool_choice = { type: 'none' };
   // 思考 token budget（design §2）：额度 = 正文 + 思考余量，所以 max_tokens > budget_tokens 恒成立；
   // 扩展思考要求 temperature=1（协议约束，不能沿用采样温度）。
   const anthropicThinking = options.thinking || {};
@@ -798,6 +901,7 @@ function parseAnthropicResponse(payload) {
   let content = '';
   const toolCalls = [];
   const reasoningParts = [];
+  const thinkingBlocks = blocks.filter(block => block?.type === 'thinking' || block?.type === 'redacted_thinking');
   for (const block of blocks) {
     if (block?.type === 'text' && block.text) content += (content ? '\n' : '') + block.text;
     else if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
@@ -809,13 +913,19 @@ function parseAnthropicResponse(payload) {
   }
   const finishReason = payload?.stop_reason === 'tool_use' ? 'tool_calls'
     : payload?.stop_reason === 'max_tokens' ? 'length' : 'stop';
-  const usage = payload?.usage ? {
-    prompt_tokens: payload.usage.input_tokens,
+  // anthropic 的 input_tokens 不含缓存读写部分：三者相加才是这次请求的全部输入。
+  const cacheRead = integerOrNull(payload?.usage?.cache_read_input_tokens);
+  const cacheWrite = integerOrNull(payload?.usage?.cache_creation_input_tokens);
+  const inputTokens = (payload?.usage?.input_tokens || 0) + (cacheRead || 0) + (cacheWrite || 0);
+  const usage = withCachedTokens(payload?.usage ? {
+    prompt_tokens: inputTokens,
     completion_tokens: payload.usage.output_tokens,
-    total_tokens: (payload.usage.input_tokens || 0) + (payload.usage.output_tokens || 0),
-  } : null;
+    total_tokens: inputTokens + (payload.usage.output_tokens || 0),
+  } : null, cacheRead, cacheWrite);
   return {
-    message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : null },
+    message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : null,
+      ...(toolCalls.length && thinkingBlocks.length
+        ? { providerReplay: { api: 'anthropic-messages', blocks: structuredClone(thinkingBlocks) } } : {}) },
     finishReason,
     usage,
     // anthropic 的 usage 没有独立推理 token 计数，输入/输出已含思考，不猜测拆分。
@@ -863,6 +973,12 @@ function buildGoogleRequest({ endpoint, messages, tools, options }) {
       continue;
     }
     flushFunctionResponses();
+    const replayParts = message.role === 'assistant' ? providerReplayOf(message, 'google-generative-ai')?.parts : null;
+    if (Array.isArray(replayParts) && replayParts.length) {
+      // 带 thoughtSignature 的 parts 原样带回；函数名与参数和 tool_calls 一一对应，无需重建。
+      contents.push({ role: 'model', parts: structuredClone(replayParts) });
+      continue;
+    }
     const parts = [];
     if (message.content) parts.push({ text: String(message.content) });
     for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
@@ -903,6 +1019,8 @@ function buildGoogleRequest({ endpoint, messages, tools, options }) {
   const googleChoiceName = toolChoiceName(options.toolChoice);
   if (googleChoiceName) {
     body.toolConfig = { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [googleChoiceName] } };
+  } else if (options.toolChoice === 'none' && body.tools) {
+    body.toolConfig = { functionCallingConfig: { mode: 'NONE' } };
   }
   const headers = { 'content-type': 'application/json' };
   if (endpoint.apiKey) headers['x-goog-api-key'] = endpoint.apiKey;
@@ -922,20 +1040,26 @@ function parseGoogleResponse(payload) {
     } else if (part?.text) content += part.text;
     else if (part?.functionCall?.name) {
       const name = String(part.functionCall.name);
-      toolCalls.push({ id: `gcall_${name}`, type: 'function',
+      // google 的 functionCall 没有 id，合成一个。必须带序号：同轮同名两次调用若共用
+      // `gcall_<name>`，第二条 tool 结果就配不上「尚未回应的 call」，conformMessages 会
+      // 以 LLM_MESSAGE_SHAPE_INVALID 拒绝整个请求。回程按 id→name 映射取函数名，
+      // 不解析 id 字符串，所以后缀只要求唯一。
+      toolCalls.push({ id: `gcall_${name}_${toolCalls.length + 1}`, type: 'function',
         function: { name, arguments: JSON.stringify(part.functionCall.args ?? {}) } });
     }
   }
   const finishRaw = String(candidate?.finishReason || '').toUpperCase();
   const finishReason = finishRaw === 'MAX_TOKENS' ? 'length' : (toolCalls.length ? 'tool_calls' : 'stop');
-  const usage = payload?.usageMetadata ? {
+  const usage = withCachedTokens(payload?.usageMetadata ? {
     prompt_tokens: payload.usageMetadata.promptTokenCount,
     completion_tokens: payload.usageMetadata.candidatesTokenCount,
     total_tokens: payload.usageMetadata.totalTokenCount
       || (payload.usageMetadata.promptTokenCount || 0) + (payload.usageMetadata.candidatesTokenCount || 0),
-  } : null;
+  } : null, payload?.usageMetadata?.cachedContentTokenCount);
   return {
-    message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : null },
+    message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : null,
+      ...(toolCalls.length && parts.some(part => part?.thoughtSignature)
+        ? { providerReplay: { api: 'google-generative-ai', parts: structuredClone(parts.filter(part => part?.thought !== true)) } } : {}) },
     finishReason,
     usage,
     reasoning: joinedOrNull(reasoningParts),
@@ -978,6 +1102,7 @@ async function resolveCallEndpoint(options = {}) {
   const resolved = await resolveModelEndpoint({
     sessionId: options.sessionId ?? null,
     overrides: sessionModelOverrides,
+    _routingCache: options._routingCache ?? null,
   });
   if (resolved) return resolved;
   // 兜底：注册表为空但 legacy 设置接口写入了旧三元组（未迁移场景）。

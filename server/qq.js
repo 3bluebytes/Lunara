@@ -6,6 +6,8 @@
 // 失败容错：所有公开函数在网络/服务/接口异常时返回安全空值（[] / null /
 // {ok:false}），决不抛错 —— 上层 musicResolver 看到失败即 fallback 到另一源。
 
+// 先安装稳定的 NCM 日志分发器，认证 SDK 的临时包装器结束后才不会恢复到无保护 sink。
+import './ncmLogBoundary.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { resolveAudioCacheDir } from './runtimePaths.js';

@@ -105,6 +105,7 @@ export class PresenceObserver {
     const nowMs = this.now();
     const result = reducePresence(this.entry(sessionId), { previous, event, next, nowMs });
     let entry = result.entry;
+    this.entries.set(sessionId, entry);
     for (const moment of result.moments) {
       if (this.decided.has(moment.triggerKey)) continue;
       this._markDecided(moment.triggerKey);

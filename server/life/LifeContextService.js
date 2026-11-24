@@ -66,6 +66,171 @@ function cleanText(value, max) {
   return String(value ?? '').trim().slice(0, max);
 }
 
+function parseJson(value, fallback) {
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function cleanTags(value, sceneTag = null) {
+  const list = Array.isArray(value) ? value : [];
+  const normalized = list
+    .map(tag => cleanText(tag, 24))
+    .filter(Boolean);
+  if (!normalized.length && sceneTag) normalized.push(cleanText(sceneTag, 24));
+  return [...new Set(normalized)].slice(0, 8);
+}
+
+const LAYOUT_VARIANTS = new Set(['blank', 'dotgrid', 'playbill']);
+
+function cleanAttachedTrack(track) {
+  if (!track || typeof track !== 'object') return null;
+  const title = cleanText(track.title, 160);
+  const artist = cleanText(track.artist, 120);
+  const provider = cleanText(track.provider, 32);
+  const songId = cleanText(track.songId, 120);
+  if (!title) return null;
+  const playedAt = cleanText(track.playedAt, 16);
+  const attachedAt = cleanText(track.attachedAt, 32);
+  return {
+    provider: provider || 'unknown',
+    songId: songId || '',
+    title,
+    artist: artist || '',
+    album: cleanText(track.album, 160) || '',
+    stampedAt: cleanText(track.stampedAt, 32) || null,
+    introExcerpt: cleanText(track.introExcerpt, 160) || null,
+    ...(playedAt ? { playedAt } : {}),
+    ...(attachedAt ? { attachedAt } : {}),
+    ...(track.liked === true ? { liked: true } : {}),
+    ...(Number.isInteger(track.afterLine) && track.afterLine >= 0 ? { afterLine: track.afterLine } : {}),
+    ...(Number.isFinite(track.order) ? { order: Number(track.order) } : {}),
+  };
+}
+
+function cleanAttachedTracks(list) {
+  const raw = Array.isArray(list) ? list : [];
+  const seen = new Set();
+  const tracks = [];
+  for (const item of raw) {
+    const cleaned = cleanAttachedTrack(item);
+    if (!cleaned) continue;
+    const identity = cleaned.songId ? `${cleaned.provider}:${cleaned.songId}` : `${cleaned.title}::${cleaned.artist}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    tracks.push(cleaned);
+    if (tracks.length >= 12) break;
+  }
+  return tracks;
+}
+
+function cleanAttachedQuotes(list) {
+  const raw = Array.isArray(list) ? list : [];
+  const quotes = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const text = cleanText(item.text, 600);
+    if (!text) continue;
+    const turnId = cleanText(item.turnId, 128) || '';
+    const speaker = cleanText(item.speaker, 64) || '伙伴';
+    const time = cleanText(item.time, 16) || '';
+    const key = turnId || `${speaker}::${time}::${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    quotes.push({
+      ...(turnId ? { turnId } : {}),
+      speaker,
+      ...(item.personId ? { personId: cleanText(item.personId, 64) } : {}),
+      time,
+      text,
+      ...(Number.isInteger(item.afterLine) && item.afterLine >= 0 ? { afterLine: item.afterLine } : {}),
+      ...(Number.isFinite(item.order) ? { order: Number(item.order) } : {}),
+    });
+    if (quotes.length >= 12) break;
+  }
+  return quotes;
+}
+
+function cleanChecklist(list) {
+  const raw = Array.isArray(list) ? list : [];
+  const items = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const id = cleanText(item.id, 64);
+    const text = String(item.text ?? '').slice(0, 240);
+    if (!id && !text.trim()) continue;
+    items.push({
+      id: id || `chk:${items.length + 1}`,
+      text,
+      done: item.done === true,
+      ...(Number.isInteger(item.afterLine) && item.afterLine >= 0 ? { afterLine: item.afterLine } : {}),
+      ...(Number.isFinite(item.order) ? { order: Number(item.order) } : {}),
+    });
+    if (items.length >= 50) break;
+  }
+  return items;
+}
+
+function cleanAnnotations(list) {
+  const raw = Array.isArray(list) ? list : [];
+  const annotations = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const text = cleanText(item.text, 400);
+    if (!text) continue;
+    const id = cleanText(item.id, 128) || `ann:${randomUUID()}`;
+    const personId = cleanText(item.personId, 64) || 'lunara';
+    const personName = cleanText(item.personName, 64) || '伙伴';
+    const time = cleanText(item.time, 16) || '';
+    const anchor = cleanText(item.anchor, 40) || '';
+    const reply = cleanText(item.reply, 400) || '';
+    const createdAt = Number.isFinite(Number(item.createdAt)) ? Number(item.createdAt) : Date.now();
+    const repliedAt = Number.isFinite(Number(item.repliedAt)) ? Number(item.repliedAt) : null;
+    annotations.push({
+      id,
+      personId,
+      personName,
+      createdAt,
+      time,
+      anchor,
+      text,
+      reply,
+      ...(repliedAt ? { repliedAt } : {}),
+    });
+    if (annotations.length >= 20) break;
+  }
+  return annotations;
+}
+
+function cleanLayoutVariant(value) {
+  const v = String(value || '').trim();
+  return LAYOUT_VARIANTS.has(v) ? v : 'blank';
+}
+
+function deriveNoteTitleFromContent(content, { checklist = [], attachedTracks = [], attachedQuotes = [] } = {}) {
+  const firstLine = String(content || '')
+    .split(/\r?\n/u)
+    .map(line => line.replace(/^[-*#\s\[\]xX]+/u, '').trim())
+    .find(Boolean);
+  if (firstLine) return firstLine.slice(0, 36);
+  const firstCheck = (checklist || []).map(item => String(item?.text || '').trim()).find(Boolean);
+  if (firstCheck) return firstCheck.slice(0, 36);
+  if (attachedTracks?.[0]?.title) return `听《${attachedTracks[0].title}》`.slice(0, 36);
+  if (attachedQuotes?.[0]?.text) return String(attachedQuotes[0].text).trim().slice(0, 36);
+  return '';
+}
+
+function shiftDateString(dateStr, deltaDays) {
+  const [year, month, day] = dateStr.split('-').map(part => Number.parseInt(part, 10));
+  const probe = new Date(Date.UTC(year, month - 1, day + deltaDays));
+  return probe.toISOString().slice(0, 10);
+}
+
+function daysBetweenDates(fromDate, toDate) {
+  const a = Date.parse(`${fromDate}T00:00:00Z`);
+  const b = Date.parse(`${toDate}T00:00:00Z`);
+  return Math.round((b - a) / 86400000);
+}
+
 function parseTimeString(value) {
   const [hours, minutes] = value.split(':').map(part => Number.parseInt(part, 10));
   return hours * 60 + minutes;
@@ -85,9 +250,9 @@ export class LifeContextService {
     return this._notifyRevision(revision);
   }
 
-  _notifyRevision(revision) {
+  _notifyRevision(revision, meta = { companionshipAffected: true }) {
     if (this.onRevisionChange) {
-      try { this.onRevisionChange(revision); } catch { /* 通知失败不阻断本地写入 */ }
+      try { this.onRevisionChange(revision, meta); } catch { /* 通知失败不阻断本地写入 */ }
     }
     return revision;
   }
@@ -128,6 +293,16 @@ export class LifeContextService {
   }
 
   static projectEntryRow(row) {
+    const tags = parseJson(row.tags_json || '[]', []);
+    const legacyTrack = row.attached_track_json ? parseJson(row.attached_track_json, null) : null;
+    const rawTracks = row.attached_tracks_json ? parseJson(row.attached_tracks_json, []) : [];
+    const attachedTracks = Array.isArray(rawTracks) && rawTracks.length
+      ? rawTracks
+      : (legacyTrack ? [legacyTrack] : []);
+    const attachedTrack = legacyTrack || attachedTracks[0] || null;
+    const attachedQuotes = parseJson(row.attached_quotes_json || '[]', []);
+    const checklist = parseJson(row.checklist_json || '[]', []);
+    const annotations = parseJson(row.annotations_json || '[]', []);
     return {
       id: row.id,
       type: row.type,
@@ -147,7 +322,20 @@ export class LifeContextService {
       companionNote: row.companion_note || null,
       allowedPersonIds: JSON.parse(row.allowed_person_ids || '[]'),
       sceneTag: row.scene_tag || null,
+      mood: row.mood || null,
+      tags: Array.isArray(tags) ? tags : [],
+      pinned: row.pinned === 1,
+      archived: row.archived === 1,
+      shareScope: row.share_scope === 'summary' ? 'summary' : 'note',
+      attachedTrack,
+      attachedTracks,
+      attachedQuotes: Array.isArray(attachedQuotes) ? attachedQuotes : [],
+      checklist: Array.isArray(checklist) ? checklist : [],
+      annotations: Array.isArray(annotations) ? annotations : [],
+      layoutVariant: cleanLayoutVariant(row.layout_variant),
       revision: row.revision,
+      createdAt: row.created_at ?? null,
+      updatedAt: row.updated_at ?? null,
     };
   }
 
@@ -205,7 +393,23 @@ export class LifeContextService {
   validateEntryInput(input) {
     const type = String(input?.type || '');
     if (!ENTRY_TYPES.has(type)) reject('entry-invalid-type', '条目类型不支持。');
-    const title = cleanText(input?.title, 120);
+    const rawContent = String(input?.content ?? '').trim();
+    if (rawContent.length > 5000) reject('entry-content-too-long', '手帐正文最多 5000 字，请精简后再保存。');
+    const content = rawContent || null;
+    const hasExplicitTracks = Array.isArray(input?.attachedTracks);
+    const singleTrack = cleanAttachedTrack(input?.attachedTrack);
+    const attachedTracks = hasExplicitTracks
+      ? cleanAttachedTracks(input.attachedTracks)
+      : (singleTrack ? [singleTrack] : []);
+    const attachedTrack = attachedTracks[0] || null;
+    const attachedQuotes = cleanAttachedQuotes(input?.attachedQuotes);
+    const checklist = cleanChecklist(input?.checklist);
+    const annotations = cleanAnnotations(input?.annotations);
+    const layoutVariant = cleanLayoutVariant(input?.layoutVariant);
+    let title = cleanText(input?.title, 120);
+    if (!title && type === 'note') {
+      title = deriveNoteTitleFromContent(content, { checklist, attachedTracks, attachedQuotes });
+    }
     if (!title) reject('entry-title-required', '需要填写标题。');
     const localDate = cleanText(input?.localDate, 10);
     if (!isValidLocalDate(localDate)) reject('entry-invalid-date', '日期无效，应为 YYYY-MM-DD。');
@@ -233,12 +437,20 @@ export class LifeContextService {
       reject('entry-persons-required', '开启“用于陪伴与选歌”至少要选择一位伙伴。');
     }
     const companionNote = cleanText(input?.companionNote, 300) || null;
-    const noteUsesTitle = input?.noteUsesTitle === true;
-    if (noteUsesTitle && type === 'important_date' && localDate.slice(5) === '02-29') {
-      // 2 月 29 日条目只在闰年出现；这里不阻止保存，仅由投影控制出现年份。
-    }
-    const content = cleanText(input?.content, 5000) || null;
-    return {
+    const rawScope = input?.shareScope;
+    const noteUsesTitle = input?.noteUsesTitle === true || rawScope === 'summary';
+    const shareScope = rawScope === 'note' || rawScope === 'summary'
+      ? rawScope
+      : (noteUsesTitle ? 'summary' : 'note');
+    const sceneTag = cleanText(input?.sceneTag, 40) || null;
+    const hasExplicitTags = Array.isArray(input?.tags);
+    const tags = hasExplicitTags ? cleanTags(input.tags) : [];
+    const mood = cleanText(input?.mood, 24) || null;
+    const pinned = input?.pinned === true;
+    const archived = input?.archived === true;
+    const storedShareScope = input?.shareScope === 'summary' ? 'summary'
+      : (input?.shareScope === 'note' ? 'note' : (noteUsesTitle ? 'summary' : 'note'));
+    const entryDefaults = {
       type, title, content, localDate, endDate, startTime, endTime,
       done: input?.done === true,
       yearlyRepeat, repeatFrequency: frequency, repeatWeekdays: [...new Set(weekdays)].sort(),
@@ -246,8 +458,20 @@ export class LifeContextService {
       noteUsesTitle,
       companionNote,
       allowedPersonIds,
-      sceneTag: cleanText(input?.sceneTag, 40) || null,
+      sceneTag,
+      ...(mood ? { mood } : {}),
+      ...(tags.length ? { tags } : {}),
+      ...(pinned ? { pinned } : {}),
+      ...(archived ? { archived } : {}),
+      ...(rawScope ? { shareScope: storedShareScope } : {}),
+      ...(attachedTrack ? { attachedTrack } : {}),
+      ...(hasExplicitTracks && attachedTracks.length ? { attachedTracks } : {}),
+      ...(attachedQuotes.length ? { attachedQuotes } : {}),
+      ...(checklist.length ? { checklist } : {}),
+      ...(annotations.length ? { annotations } : {}),
+      ...(layoutVariant !== 'blank' ? { layoutVariant } : {}),
     };
+    return entryDefaults;
   }
 
   createEntry(input) {
@@ -268,18 +492,26 @@ export class LifeContextService {
     const result = this.store.transaction(() => {
       const receipt = requestId === undefined ? null : this.store.getEntryCreateRequest(requestId);
       if (receipt) {
-        if (receipt.payload_hash !== payloadHash && receipt.payload_hash !== legacyPayloadHash) reject('entry-request-conflict', '这次保存请求对应的内容已变化，请核对后重新保存。');
+        if (receipt.payload_hash !== payloadHash && receipt.payload_hash !== legacyPayloadHash) {
+          reject('entry-request-conflict', '这次保存请求对应的内容已变化，请核对后重新保存。');
+        }
         const current = this.getEntry(receipt.entry_id);
         if (!current) reject('entry-request-deleted', '这条内容已经删除，无法重试原来的保存请求。');
         return { entry: current, revision: null };
       }
       const id = `life:${randomUUID()}`;
-      const revision = this.store.insertEntry({ id, ...entry });
+      const revision = this.store.insertEntry({
+        ...entry,
+        id,
+        shareScope: entry.shareScope || (entry.noteUsesTitle ? 'summary' : 'note'),
+      });
       if (requestId !== undefined) this.store.recordEntryCreateRequest(requestId, payloadHash, id);
       return { entry: this.getEntry(id), revision };
     });
     // 只有事务提交后才使消费者失效；请求重放不写入、不重复通知。
-    if (result.revision !== null) this._notifyRevision(result.revision);
+    if (result.revision !== null) {
+      this._notifyRevision(result.revision, { companionshipAffected: Boolean(entry.useForCompanionship) });
+    }
     return result.entry;
   }
 
@@ -293,12 +525,27 @@ export class LifeContextService {
       if (Object.hasOwn(patch, 'completedDates')) reject('entry-completion-readonly', '完成记录需要通过当次完成操作更新。');
       // Compatibility PATCH can still use yearlyRepeat if no explicit rule was sent.
       if (Object.hasOwn(patch, 'yearlyRepeat') && !Object.hasOwn(patch, 'repeatFrequency')) patch.repeatFrequency = patch.yearlyRepeat ? 'yearly' : 'none';
-      const entry = this.validateEntryInput({ ...existing, ...patch });
+      const baseForPatch = {
+        ...existing,
+        // 未传 shareScope 时允许 noteUsesTitle / shareScope 沿旧口径演化
+        ...(!Object.hasOwn(patch, 'shareScope') && Object.hasOwn(patch, 'noteUsesTitle') ? { shareScope: undefined } : {}),
+        // 若调用方只改旧版单曲 attachedTrack 而未传 attachedTracks，清除旧 attachedTracks 避免回流。
+        ...(Object.hasOwn(patch, 'attachedTrack') && !Object.hasOwn(patch, 'attachedTracks') ? { attachedTracks: undefined } : {}),
+      };
+      const entry = this.validateEntryInput({ ...baseForPatch, ...patch });
       if ((isRecurringTask(existing) || isRecurringTask(entry)) && Object.hasOwn(patch, 'done')) reject('entry-completion-date-required', '重复待办请按具体日期标记完成。');
-      const revision = this.store.updateEntry(String(id), { ...entry, revision: nextRevision });
-      return { entry: this.getEntry(id), revision };
+      const revision = this.store.updateEntry(String(id), {
+        ...entry,
+        shareScope: entry.shareScope || (entry.noteUsesTitle ? 'summary' : 'note'),
+        revision: nextRevision,
+      });
+      return {
+        entry: this.getEntry(id),
+        revision,
+        companionshipAffected: Boolean(existing.useForCompanionship || entry.useForCompanionship),
+      };
     });
-    this._notifyRevision(result.revision);
+    this._notifyRevision(result.revision, { companionshipAffected: result.companionshipAffected });
     return result.entry;
   }
 
@@ -318,21 +565,26 @@ export class LifeContextService {
         if (occurrenceDate === existing.localDate && !done) existing.done = false;
       } else existing.done = done === true;
       const revision = this.store.updateEntry(existing.id, { ...existing, revision: nextRevision });
-      return { entry: this.getEntry(existing.id), revision };
+      return {
+        entry: this.getEntry(existing.id),
+        revision,
+        companionshipAffected: Boolean(existing.useForCompanionship),
+      };
     });
-    this._notifyRevision(result.revision);
+    this._notifyRevision(result.revision, { companionshipAffected: result.companionshipAffected });
     return result.entry;
   }
 
   deleteEntry(id, { expectedRevision = null } = {}) {
-    const revision = this.store.transaction(() => {
+    const result = this.store.transaction(() => {
       const existing = this.store.getEntry(String(id || ''));
       if (!existing) return null;
       LifeContextService.checkRevision(existing.revision, expectedRevision, 'entry');
-      return this.store.deleteEntry(String(id));
+      const wasShared = existing.use_for_companionship === 1;
+      return { revision: this.store.deleteEntry(String(id)), companionshipAffected: wasShared };
     });
-    if (revision === null) return { deleted: false };
-    this._notifyRevision(revision);
+    if (result === null) return { deleted: false };
+    this._notifyRevision(result.revision, { companionshipAffected: result.companionshipAffected });
     return { deleted: true };
   }
 
@@ -340,9 +592,33 @@ export class LifeContextService {
   revokeEntryCompanionship(id) {
     const revision = this.store.revokeEntryCompanionship(String(id || ''));
     if (this.onRevisionChange) {
-      try { this.onRevisionChange(revision); } catch { /* 同 _bump */ }
+      try { this.onRevisionChange(revision, { companionshipAffected: true }); } catch { /* 同 _bump */ }
     }
     return this.getEntry(id);
+  }
+
+  /** 为手帐页追加一条伙伴页边批注，并自动授予该伙伴当日同页可见权限。 */
+  appendAnnotation(id, annotationInput, { expectedRevision = null } = {}) {
+    const cleanedList = cleanAnnotations([annotationInput]);
+    if (!cleanedList.length) reject('entry-annotation-invalid', '批注内容不能为空。');
+    const annotation = cleanedList[0];
+    const result = this.store.transaction(() => {
+      const existing = this.getEntry(String(id || ''));
+      if (!existing) reject('entry-not-found', '这条内容已经不存在。');
+      const nextRevision = LifeContextService.checkRevision(existing.revision, expectedRevision, 'entry');
+      const allowedPersonIds = cleanPersonIds([...(existing.allowedPersonIds || []), annotation.personId]);
+      const annotations = [...(existing.annotations || []).slice(-19), annotation];
+      const revision = this.store.updateEntry(String(existing.id), {
+        ...existing,
+        useForCompanionship: true,
+        allowedPersonIds,
+        annotations,
+        revision: nextRevision,
+      });
+      return { entry: this.getEntry(existing.id), revision };
+    });
+    this._notifyRevision(result.revision, { companionshipAffected: true });
+    return { entry: result.entry, annotation };
   }
 
   // ---- 场景默认 ----
@@ -437,6 +713,40 @@ export class LifeContextService {
    * 标题/备注是不可信资料，只作为数据传递，绝不成为指令。
    * confirmedScene 按听歌会话取：只有用户显式操作/原话才存在，本地日结束失效。
    */
+  static projectCompanionNote(entry) {
+    if (!entry || entry.useForCompanionship !== true) return null;
+    const shareSummary = entry.noteUsesTitle === true || entry.shareScope === 'summary';
+    const shareNoteOnly = entry.shareScope === 'note';
+    const titleSummary = (!shareNoteOnly && shareSummary)
+      ? (entry.content ? `${entry.title}: ${cleanText(entry.content, 160)}` : entry.title)
+      : null;
+    const extraNote = cleanText(entry.companionNote, 300) || null;
+    if (shareNoteOnly) return extraNote;
+    if (titleSummary && extraNote) return `${titleSummary}（选歌备注：${extraNote}）`;
+    return titleSummary || extraNote || null;
+  }
+
+  previewCompanionshipText(input = {}, { partnerNames = [] } = {}) {
+    const names = Array.isArray(partnerNames) && partnerNames.length ? partnerNames.join('、') : '所选伙伴';
+    if (input.useForCompanionship !== true) {
+      return '仅自己可见，不会进入任何伙伴对话或选歌参考。';
+    }
+    const scope = input.shareScope === 'note' ? 'note' : (input.shareScope === 'summary' ? 'summary' : (input.noteUsesTitle ? 'summary' : 'note'));
+    if (scope === 'note') {
+      const noteText = cleanText(input.companionNote, 300);
+      return noteText
+        ? `${names} 在聊天与选歌时会看到选歌备注：「${noteText}」`
+        : `${names} 仅知道你有一个授权条目，尚未收到文字备注。`;
+    }
+    const rawTitle = cleanText(input.title, 120) || (input.type === 'note' ? deriveNoteTitleFromContent(input.content) : '');
+    const title = rawTitle || '未命名手帐';
+    const contentSnippet = cleanText(input.content, 160);
+    const summaryText = contentSnippet ? `${title}: ${contentSnippet}` : title;
+    const extra = cleanText(input.companionNote, 300);
+    const full = extra ? `${summaryText}（选歌备注：${extra}）` : summaryText;
+    return `${names} 在聊天与选歌时会看到：「${full}」`;
+  }
+
   buildLifeContextSnapshot({ personId, participants = null, targetDate, nowMs = null, listeningSessionId = null }) {
     const date = String(targetDate || '');
     const routine = this.getRoutine();
@@ -446,41 +756,73 @@ export class LifeContextService {
       ? participants.map(String) : [String(personId || '')];
     const scope = memberIds.length > 1 ? 'group' : 'single';
     const now = Number.isFinite(nowMs) ? nowMs : this.now();
+    const recentFloor = isValidLocalDate(date) ? shiftDateString(date, -3) : null;
+    const upcomingCeil = isValidLocalDate(date) ? shiftDateString(date, 7) : null;
 
     const candidates = [];
     for (const entry of this.listEntries()) {
-      if (!entry.useForCompanionship) continue;
-      if (!LifeContextService.entryOccursOn(entry, date)) continue;
-      const status = LifeContextService.entryStatusForDate(entry, date);
-      if (status === 'excluded-done') continue;
+      if (!entry.useForCompanionship || entry.archived) continue;
       if (scope === 'single') {
         if (!entry.allowedPersonIds.includes(memberIds[0])) continue;
       } else if (!memberIds.every(id => entry.allowedPersonIds.includes(id))) continue;
-      candidates.push({ entry, status });
+
+      if (LifeContextService.entryOccursOn(entry, date)) {
+        const status = LifeContextService.entryStatusForDate(entry, date);
+        if (status === 'excluded-done') continue;
+        candidates.push({ entry, status, windowRelation: 'today', daysUntil: 0 });
+        continue;
+      }
+
+      if (recentFloor && entry.type === 'note' && entry.localDate >= recentFloor && entry.localDate < date) {
+        candidates.push({ entry, status: 'recent-note', windowRelation: 'recent', daysUntil: daysBetweenDates(date, entry.localDate) });
+        continue;
+      }
+
+      if (upcomingCeil && entry.type === 'important_date' && !entry.done) {
+        // 查未来 1..7 天内命中的纪念日
+        for (let offset = 1; offset <= 7; offset += 1) {
+          const checkDate = shiftDateString(date, offset);
+          if (LifeContextService.entryOccursOn(entry, checkDate)) {
+            candidates.push({ entry, status: 'upcoming', windowRelation: 'upcoming', daysUntil: offset, occurrenceDate: checkDate });
+            break;
+          }
+        }
+      }
     }
 
-    // 确定性排序：重要日子 > 其余待办/安排（按开始时间，无时间靠后）；过期在后同组标记。
-    const rank = item => (item.entry.type === 'important_date' ? 0 : 1);
+    // 确定性排序：当日重要日子 > 当日待办/随笔（按开始时间）> 近期随笔与未来纪念日。
+    const rank = item => {
+      if (item.windowRelation === 'today') return item.entry.type === 'important_date' ? 0 : 1;
+      if (item.windowRelation === 'upcoming') return 2;
+      return 3;
+    };
     candidates.sort((a, b) => (rank(a) - rank(b))
+      || (a.daysUntil - b.daysUntil)
       || String(a.entry.startTime || '99:99').localeCompare(String(b.entry.startTime || '99:99'))
       || a.entry.id.localeCompare(b.entry.id));
 
     const items = [];
     let usedChars = 0;
-    for (const { entry, status } of candidates) {
+    for (const { entry, status, windowRelation, daysUntil, occurrenceDate } of candidates) {
       if (items.length >= LIFE_SNAPSHOT_MAX_ENTRIES) break;
-      let note = entry.companionNote || null;
-      if (!note && entry.noteUsesTitle) {
-        note = entry.content ? `${entry.title}: ${cleanText(entry.content, 120)}` : entry.title;
-      }
+      const note = LifeContextService.projectCompanionNote(entry);
+      const trackList = Array.isArray(entry.attachedTracks) && entry.attachedTracks.length
+        ? entry.attachedTracks
+        : (entry.attachedTrack?.title ? [entry.attachedTrack] : []);
+      const trackSummary = trackList.length
+        ? trackList.slice(0, 3).map(t => `${t.title}${t.artist ? ` - ${t.artist}` : ''}`).join('；')
+        : null;
       const item = {
         sourceId: entry.id,
         sourceRevision: entry.revision,
-        ...(isRecurringTask(entry) ? { occurrenceDate: date } : {}),
+        ...(isRecurringTask(entry) ? { occurrenceDate: occurrenceDate || date } : {}),
+        ...(windowRelation !== 'today' ? { windowRelation, localDate: occurrenceDate || entry.localDate, daysUntil } : {}),
         type: entry.type,
         status,
         time: entry.startTime || entry.endTime ? { start: entry.startTime, end: entry.endTime, endDate: entry.endDate } : null,
         sceneTag: entry.sceneTag,
+        ...(entry.mood ? { mood: entry.mood } : {}),
+        ...(trackSummary ? { track: trackSummary } : {}),
         note,
       };
       const cost = JSON.stringify(item).length;
@@ -492,7 +834,7 @@ export class LifeContextService {
     // plannedScene：计划里覆盖“现在”的场景标签，仅作线索；到点不确认任何现实活动。
     const wallMinutes = LifeContextService.wallMinutesNow(timeZone, now);
     let plannedScene = null;
-    for (const { entry } of candidates.filter(({ entry }) => items.some(item => item.sourceId === entry.id))) {
+    for (const { entry } of candidates.filter(({ entry, windowRelation }) => windowRelation === 'today' && items.some(item => item.sourceId === entry.id))) {
       if (!entry.sceneTag || !entry.startTime || !entry.endTime) continue;
       const start = parseTimeString(entry.startTime);
       const end = parseTimeString(entry.endTime);
@@ -537,6 +879,10 @@ export class LifeContextService {
       if (!entry || entry.revision !== ref.revision) return false;
     }
     return true;
+  }
+
+  listQuotedTurnIds() {
+    return this.store.listQuotedTurnIds();
   }
 
   static wallMinutesNow(timeZone, nowMs) {

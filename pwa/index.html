@@ -9,10 +9,7 @@
   <title>Lunara — Luna Radio</title>
   <!-- 首帧主题：先于样式表同步写入保存的主题，避免先画默认主题再跳。 -->
   <script src="/themes/boot.js?v=1"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400;9..144,500;9..144,600;9..144,700&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=theme-polish-2" />
+  <link rel="stylesheet" href="/styles.css?v=onboarding-card-2" />
   <!-- 主题插件：每个选择器都限定在自己的 data-theme 下，全部静态加载，切换只改 data-theme。 -->
   <link rel="stylesheet" href="/themes/moonlight/tokens.css?v=4" data-theme-tokens="moonlight" />
   <link rel="stylesheet" href="/themes/modernist/tokens.css?v=2" data-theme-tokens="modernist" />
@@ -21,24 +18,23 @@
   <link rel="stylesheet" href="/features/chat/webSources.css?v=1" />
   <link rel="stylesheet" href="/features/auth/sourceFailureWarning.css?v=1" />
   <link rel="stylesheet" href="/features/settings/llmFailoverSettings.css?v=1" />
-  <link rel="stylesheet" href="/features/today/today.css?v=12" />
+  <link rel="stylesheet" href="/features/today/today.css?v=13" />
   <link rel="stylesheet" href="/features/settings/routineSettings.css?v=1" />
   <link rel="stylesheet" href="/features/settings/llmProvidersSettings.css?v=3" />
   <link rel="stylesheet" href="/features/settings/usageSettings.css?v=1" />
   <link rel="stylesheet" href="/features/settings/songTagInspector.css?v=1" />
   <link rel="stylesheet" href="/features/library/recordingReview.css?v=1" />
-  <link rel="stylesheet" href="/assets/fonts/cike-fonts.css" />
   <link rel="stylesheet" href="/assets/fonts/noto-sc.css" />
   <link rel="stylesheet" href="/assets/fonts/nocturne-fonts.css" />
   <link rel="stylesheet" href="/features/shell/panelDoors.css?v=3" />
   <!-- 舞台版式（layout: stage）：在 feature 样式之后、主题覆盖样式之前。 -->
   <link rel="stylesheet" href="/features/shell/stage.css?v=11" />
-  <link rel="stylesheet" href="/features/shell/timeline.css?v=36" />
+  <link rel="stylesheet" href="/features/shell/timeline.css?v=37" />
   <link rel="stylesheet" href="/themes/moonlight/overrides.css?v=4" data-theme-overrides="moonlight" />
   <link rel="stylesheet" href="/themes/moonlight/partner.css?v=8" />
   <link rel="stylesheet" href="/themes/moonlight/sidebar.css?v=1" />
   <link rel="stylesheet" href="/themes/modernist/overrides.css?v=7" data-theme-overrides="modernist" />
-  <link rel="stylesheet" href="/themes/nocturne/overrides.css?v=15" data-theme-overrides="nocturne" />
+  <link rel="stylesheet" href="/themes/nocturne/overrides.css?v=16" data-theme-overrides="nocturne" />
   <!-- Interaction roles complement theme skins; no layout or behavior overrides. -->
   <link rel="stylesheet" href="/interactions.css?v=2" />
 </head>
@@ -185,10 +181,10 @@
           <span>删除…</span>
         </button>
       </div>
-      <!-- 参考稿：栏底第二个图标组（今日 / 创建），与账号入口一起沉底。 -->
+      <!-- 参考稿：栏底第二个图标组（手帐 / 创建），与账号入口一起沉底。 -->
       <div class="shell-nav-tail" aria-label="更多入口">
-        <button id="nav-today" class="shell-nav-item" type="button" title="帐本" aria-label="帐本">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/><path d="M9 13l2 2 4-4"/></svg><span>帐本</span>
+        <button id="nav-today" class="shell-nav-item" type="button" title="手帐" aria-label="手帐">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z"/><path d="M9 13l2 2 4-4"/></svg><span>手帐</span>
         </button>
         <button id="nav-create" class="shell-nav-item" type="button" title="创建" aria-label="创建聊天或认识新伙伴">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg><span>创建</span>
@@ -201,7 +197,7 @@
       <!-- 底部：当前配置 + 登录 -->
       <div class="sb-bottom sb-bottom-compact">
         <div class="sb-meta" id="sb-meta">
-          <span class="sb-meta-item" id="sb-meta-llm">未配置 LLM</span>
+          <span class="sb-meta-item" id="sb-meta-llm">还没接入模型</span>
           <span class="sb-meta-dot">&middot;</span>
           <span class="sb-meta-item" id="sb-meta-source">ncm</span>
           <span class="sb-meta-dot">&middot;</span>
@@ -223,7 +219,7 @@
               <span class="sb-acc-name" data-source="ncm">未登录</span>
               <span class="sb-acc-hint" data-source="ncm">网易云</span>
             </button>
-            <button class="sb-acc-logout" data-source="ncm" title="退出 NCM 登录" style="display:none">
+            <button class="sb-acc-logout" data-source="ncm" aria-label="退出网易云登录" title="退出 NCM 登录" style="display:none">
               <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M6 2v2H4v8h2v2H2V2h4Zm4.3 2.3 4 3.7-4 3.7-1-1.1L11.7 9H6V7h5.7L9.3 5.4l1-1.1Z"/></svg>
             </button>
           </div>
@@ -235,7 +231,7 @@
               <span class="sb-acc-name" data-source="qq">未登录</span>
               <span class="sb-acc-hint" data-source="qq">QQ 音乐</span>
             </button>
-            <button class="sb-acc-logout" data-source="qq" title="退出 QQ 登录" style="display:none">
+            <button class="sb-acc-logout" data-source="qq" aria-label="退出 QQ 音乐登录" title="退出 QQ 登录" style="display:none">
               <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M6 2v2H4v8h2v2H2V2h4Zm4.3 2.3 4 3.7-4 3.7-1-1.1L11.7 9H6V7h5.7L9.3 5.4l1-1.1Z"/></svg>
             </button>
           </div>
@@ -253,7 +249,7 @@
     <!-- B: user-opened non-modal side panel; no backdrop, focus trap or playback writes. -->
     <section id="recording-review-panel" class="recording-review" role="region" aria-labelledby="recording-review-title" hidden></section>
 
-    <main id="today-panel" class="today-panel" aria-label="帐本" tabindex="-1" hidden></main>
+    <main id="today-panel" class="today-panel" aria-label="手帐" tabindex="-1" hidden></main>
 
     <div class="panel-door listening-door" id="listening-door">
     <section class="listening-panel" id="listening-panel" aria-labelledby="listening-title">
@@ -288,6 +284,7 @@
         <!-- 浮动封面必须先于正文，文字才能从它左侧绕到下方；不复制封面或旁白。 -->
         <figure class="listening-artwork">
           <img data-player-cover id="listening-cover" src="/icon.png" alt="当前歌曲封面" />
+          <button type="button" class="listening-cover-open" id="listening-cover-open" aria-label="打开全屏聆听" title="点击进入全屏聆听"></button>
           <figcaption id="listening-artwork-caption"></figcaption>
         </figure>
         <!-- 时间线（只在 data-layout="timeline" 时由 timelineView 显示）：已放 / 待播 / 横线与播放头时刻。
@@ -301,7 +298,7 @@
           <div class="listening-state-row">
             <span class="listening-eyebrow">正在聆听</span>
           </div>
-          <h3 class="listening-song-title" data-np-title>—</h3>
+          <h3 class="listening-song-title" data-np-title>未在播放</h3>
           <p class="listening-song-meta" data-np-meta></p>
           <div class="listening-narration" id="listening-narration">
             <span class="listening-narration-label" id="listening-narration-label">Lunara 的旁白</span>
@@ -383,6 +380,15 @@
             <option value="conversational" selected>多聊一点</option>
           </select>
         </label>
+        <label class="interaction-mode-control" id="interaction-mode-control" for="interaction-mode-select" title="切换当前 1v1 聊天的相处模式：电台（伴听）或私语（角色互动）">
+          <span class="source-label">模式</span>
+          <select id="interaction-mode-select" aria-label="对话模式（电台或私语）">
+            <option value="radio">电台</option>
+            <option value="roleplay">私语</option>
+          </select>
+        </label>
+        <!-- 生效话量的原因：别处（全局开关 / 在场性格 / 「安静点」）把话量压低时才出现，点它去解决。 -->
+        <button id="companion-effect" class="companion-effect" type="button" hidden></button>
       </div>
 
       <!-- 专注页眉（参考稿 3 第一行）：字标 + 回到聊天；只在专注态出现。 -->
@@ -401,7 +407,7 @@
       <section class="focus-stage" id="focus-stage" aria-label="专注聆听">
         <div class="focus-stage-grid">
           <figure class="focus-artwork">
-            <button id="player-artwork" class="player-artwork" type="button" aria-label="当前歌曲封面">
+            <button id="player-artwork" class="player-artwork" type="button" aria-label="退出全屏聆听" title="点击回到聊天">
               <img id="player-cover" src="/icon.png" alt="当前歌曲封面" />
             </button>
             <figcaption class="focus-artwork-caption" id="focus-artwork-caption"></figcaption>
@@ -429,7 +435,7 @@
               <cite id="focus-player-recommendation-source"></cite>
             </blockquote>
             <div class="player-line" id="player-line" aria-label="当前歌词">
-              <span class="player-line-viewport"><span class="player-line-text" id="player-line-text">未在播放</span></span>
+              <span class="player-line-viewport"><span class="player-line-text" id="player-line-text">从一首歌开始</span></span>
               <span class="player-line-viewport next"><span class="player-line-text next" id="player-line-next"></span></span>
             </div>
             <p id="focus-interlude" class="cike-interlude" hidden></p>
@@ -473,7 +479,7 @@
 
       <!-- thinking -->
       <div class="thinking" id="thinking" style="display:none">
-        <span class="thinking-text">thinking</span>
+        <span class="thinking-text">正在想</span>
         <span class="thinking-dots"><span></span><span></span><span></span></span>
       </div>
 
@@ -486,6 +492,7 @@
       <div class="compose-hint" id="compose-hint">
         <span class="ch-dots"><span></span><span></span><span></span></span>
         <span id="compose-hint-text">正在回复…</span>
+        <button type="button" class="quiet-button compose-stop" id="compose-stop" hidden>停止回应</button>
       </div>
 
       <!-- 输入条 -->
@@ -516,7 +523,7 @@
           <button class="skip-btn previous-btn" id="player-previous" aria-label="上一首" title="上一首" disabled>
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 6h2v12H6zm3 6 9 6V6z"/></svg>
           </button>
-          <button class="play-btn" id="big-play" aria-label="play" aria-keyshortcuts="Space" title="播放（空格）">
+          <button class="play-btn" id="big-play" aria-label="播放" aria-keyshortcuts="Space" title="播放（空格）">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           </button>
           <button class="skip-btn" id="skip-btn" aria-label="下一首" title="下一首">
@@ -526,6 +533,11 @@
         <span class="np-time" id="np-time">0:00</span>
         <div class="progress" id="progress-bar" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00 / 0:00"><div class="waveform player-waveform" id="waveform" aria-hidden="true"></div><i id="progress-fill"></i></div>
         <span class="np-duration" id="np-duration">0:00</span>
+
+        <button class="player-volume" id="player-volume" type="button" aria-label="静音" title="静音" aria-pressed="false">
+          <svg class="volume-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM12 9.2c1.2.7 1.8 1.6 1.8 2.8s-.6 2.1-1.8 2.8M14.6 6.8c2.1 1.3 3.2 3 3.2 5.2s-1.1 3.9-3.2 5.2"/></svg>
+          <svg class="volume-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM13 9l5 6M18 9l-5 6"/></svg>
+        </button>
 
         <!-- 整集混音 / 伴听音量：人声是本地偏好，背景（整集）或音乐（伴听）随来源分派。
              上下顺序与波形一致：上音乐、下人声。 -->
@@ -577,11 +589,7 @@
           </div>
           <button id="player-switch-cancel" class="quiet-button" hidden>取消等待</button>
         </div>
-        <!-- 音乐音量：保留既有控件与偏好存储（合同 ID），本设计用混音区覆盖音量场景，常隐藏。 -->
-        <button class="player-volume shell-only-id" id="player-volume" type="button" aria-label="静音" title="静音" aria-pressed="false" tabindex="-1">
-          <svg class="volume-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM12 9.2c1.2.7 1.8 1.6 1.8 2.8s-.6 2.1-1.8 2.8M14.6 6.8c2.1 1.3 3.2 3 3.2 5.2s-1.1 3.9-3.2 5.2"/></svg>
-          <svg class="volume-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 10 4-3v10l-4-3zM13 9l5 6M18 9l-5 6"/></svg>
-        </button>
+        <!-- 保留既有滑杆合同 ID，主交互由混音区与静音键承担。 -->
         <input type="range" class="player-volume-slider shell-only-id" id="player-volume-slider" min="0" max="1" step="0.05" value="1" aria-label="音乐音量" tabindex="-1" />
       </footer>
     <dialog id="create-launcher" class="salon-dialog create-launcher" aria-labelledby="create-launcher-title">
@@ -595,16 +603,19 @@
         </button>
       </div>
     </dialog>
-    <dialog id="room-picker" class="salon-dialog">
+    <dialog id="room-picker" class="salon-dialog" aria-labelledby="room-picker-title">
       <form id="room-picker-form"><div class="dialog-head"><h2 id="room-picker-title">新建聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
         <label class="room-name-field">聊天名称<input id="room-name" maxlength="80" required placeholder="比如：夜里的 R&B" /></label>
+        <label class="room-name-field" id="room-mode-field">对话方式<select id="room-mode-select" class="boot-select"><option value="radio">电台（听歌闲聊 · 自动语音）</option><option value="roleplay">私语（第一人称互动 · 按需语音）</option></select></label>
         <fieldset class="person-choices"><legend>邀请谁来一起聊？</legend><div id="room-person-choices"></div></fieldset>
         <p id="room-picker-error" role="alert"></p><button class="listen-together" id="room-picker-submit">开始聊天</button>
       </form>
     </dialog>
-    <dialog id="room-options" class="salon-dialog">
-      <div class="dialog-head"><h2>聊天设置</h2><button class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+    <dialog id="room-options" class="salon-dialog" aria-labelledby="room-options-title">
+      <div class="dialog-head"><h2 id="room-options-title">聊天设置</h2><button class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
       <label class="room-name-field">聊天名称<input id="room-rename" maxlength="80" /></label><button id="room-rename-save" class="listen-together">保存名称</button>
+      <label class="room-name-field">对话方式（中途可随时切换）
+        <select id="room-options-mode" class="boot-select"><option value="radio">电台（听歌闲聊 · 自动语音）</option><option value="roleplay">私语（第一人称互动 · 按需语音）</option></select></label>
       <label class="room-name-field">本轮会话模型（中途可改，下一轮生效）
         <select id="room-model-select" class="boot-select"><option value="">跟随全局</option></select></label>
       <label class="room-name-field">思考强度（本会话，跟随模型默认）
@@ -613,8 +624,8 @@
       <div id="room-member-settings"></div><button id="room-archive" class="quiet-button">归档这个聊天</button><p>归档后仍保留每位伙伴与你的记忆。</p>
     </dialog>
     <!-- 行内菜单的重命名弹层：与创建表单共用同一条校验规则。 -->
-    <dialog id="room-rename-dialog" class="salon-dialog">
-      <div class="dialog-head"><h2>重命名聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
+    <dialog id="room-rename-dialog" class="salon-dialog" aria-labelledby="room-rename-title">
+      <div class="dialog-head"><h2 id="room-rename-title">重命名聊天</h2><button type="button" class="quiet-button" data-close-dialog aria-label="关闭">✕</button></div>
       <form id="room-rename-form">
         <label class="room-name-field">聊天名称<input id="room-rename-input" maxlength="80" required placeholder="比如：夜里的 R&amp;B" /></label>
         <p id="room-rename-error" role="alert"></p>
@@ -645,6 +656,7 @@
     </dialog>
     <dialog id="person-detail" class="salon-dialog person-sheet" aria-labelledby="person-detail-name">
       <div class="dialog-head">
+        <button id="person-detail-back" class="quiet-button person-back-button" type="button">‹ 返回聊天</button>
         <div class="person-sheet-title">
           <span id="person-detail-signal" aria-hidden="true"></span><h2 id="person-detail-name" tabindex="-1"></h2>
           <span id="person-detail-state"></span><span id="person-known-days" hidden></span>
@@ -658,6 +670,10 @@
       <div class="person-sheet-body">
         <!-- 左：profile，字段直接可编辑，不需要再点开一层 -->
         <section class="person-sheet-col person-sheet-profile" aria-label="伙伴设置">
+          <div class="person-sheet-col-head">
+            <div class="person-sheet-h">资料与人设</div>
+            <button type="button" class="person-edit-toggle" id="person-detail-edit" aria-pressed="false">编辑</button>
+          </div>
           <form id="person-profile-form" class="person-profile-form" novalidate>
             <!-- 字段区可滚动，操作条固定在下方：两者物理上不重叠，
                  不会出现文字滑到按钮底下透出来的情况。 -->
@@ -671,7 +687,7 @@
               <select class="cast-input" id="person-detail-voice-select" aria-describedby="person-detail-voice-hint"></select>
             </label>
             <label class="person-field" for="person-detail-presence-select">
-              <span class="person-field-h">在场性格<span class="person-field-hint" id="person-detail-presence-hint">一起听歌时多常主动说一句</span></span>
+              <span class="person-field-h">在场性格<span class="person-field-hint" id="person-detail-presence-hint">一起听歌时多常主动说一句；某一场想多聊或少聊，在聊天页头的「陪伴」里调</span></span>
               <select class="cast-input" id="person-detail-presence-select" aria-describedby="person-detail-presence-hint">
                 <option value="quiet">话少：有真想说的才开口</option>
                 <option value="balanced">自然：偶尔说一句</option>
@@ -683,7 +699,7 @@
               <input class="cast-input" id="person-detail-presence-style" maxlength="200" placeholder="例如：话少，偶尔冒一句冷幽默" aria-describedby="person-detail-presence-style-hint" />
             </label>
             <label class="person-field" for="person-detail-persona-input">
-              <span class="person-field-h">人格<span class="person-field-hint" id="person-detail-persona-hint">原文·直接改</span><button type="button" class="person-edit-toggle" id="person-detail-edit" aria-pressed="false">编辑</button></span>
+              <span class="person-field-h">人格<span class="person-field-hint" id="person-detail-persona-hint">原文·直接改</span></span>
               <textarea class="cast-textarea person-persona-source" id="person-detail-persona-input" rows="14" maxlength="4000" aria-describedby="person-detail-persona-hint"></textarea>
             </label>
             </div>
@@ -745,15 +761,21 @@
           <button class="settings-nav-item" type="button" data-settings-page="connection">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9.5 9.5h5v5h-5zM12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5"/></svg><span>模型与连接</span>
           </button>
-          <button class="settings-nav-item" type="button" data-settings-page="usage">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11M9.3 20V4M14.6 20v-6M19.9 20V8"/><path d="M2 20h20"/></svg><span>使用统计</span>
-          </button>
           <button class="settings-nav-item" type="button" data-settings-page="voice">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9.2" y="3" width="5.6" height="11" rx="2.8"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg><span>声音</span>
           </button>
-          <button class="settings-nav-item" type="button" data-settings-page="tags">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h6.8a2 2 0 0 1 1.4.6l6.3 6.3a2 2 0 0 1 0 2.8l-4.8 4.8a2 2 0 0 1-2.8 0l-6.3-6.3a2 2 0 0 1-.6-1.4V5.5z"/><circle cx="8.9" cy="9.9" r="1.4"/></svg><span>歌曲标签</span>
-          </button>
+          <div class="settings-nav-group" role="group" aria-label="高级">
+            <div class="settings-nav-label">高级</div>
+            <button class="settings-nav-item" type="button" data-settings-page="tags">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h6.8a2 2 0 0 1 1.4.6l6.3 6.3a2 2 0 0 1 0 2.8l-4.8 4.8a2 2 0 0 1-2.8 0l-6.3-6.3a2 2 0 0 1-.6-1.4V5.5z"/><circle cx="8.9" cy="9.9" r="1.4"/></svg><span>歌曲标签</span>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-page="usage">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11M9.3 20V4M14.6 20v-6M19.9 20V8"/><path d="M2 20h20"/></svg><span>使用统计</span>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-page="failover">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h8.2L13 4.8M17 17H8.8L11 19.2"/><path d="M15.2 4.8 17.2 7 15.2 9.2M8.8 14.8 6.8 17 8.8 19.2"/></svg><span>故障切换</span>
+            </button>
+          </div>
         </nav>
         <div class="settings-content" id="settings-content">
           <section class="settings-page" data-settings-page="general" hidden>
@@ -773,11 +795,6 @@
             <section class="settings-card" aria-label="作息">
               <div id="routine-settings"></div>
             </section>
-            <section class="settings-card" aria-label="音乐账号">
-              <div class="boot-h">音乐账号</div>
-              <div id="settings-source-accounts" class="source-accounts"></div>
-              <p class="weight-note" id="settings-source-account-status" role="status">正在读取登录状态…</p>
-            </section>
             <section class="settings-card" aria-label="播放来源">
               <div class="boot-h" data-tip="保存后用于之后的选歌；不打断当前歌曲，也不清空已有队列。">播放来源</div>
               <fieldset class="source-mode-options">
@@ -794,10 +811,14 @@
                 <div class="weight-list" id="recommendation-weights"></div>
               </div>
               <p class="weight-note" id="source-mode-note">保存后用于之后的选歌，不打断当前歌曲，也不清空已有队列。</p>
+              <div class="llm-active-foot">
+                <button type="button" class="quiet-button" data-settings-page-link="connection">去配置音乐账号 →</button>
+              </div>
             </section>
             <!-- 陪伴开关：写入成功才确认（add-companion-heartbeat / add-app-open-greeting）；保存是即时的，不走下方「保存设置」。 -->
             <section class="settings-card" aria-label="陪伴">
               <div class="boot-h" data-tip="只影响主动开口，不影响普通聊天与换歌串词。">陪伴</div>
+              <p class="weight-note">这里是全局开关；某一场想多聊或少聊，在聊天页头的「陪伴」里调。</p>
               <label class="artwork-theme-setting" data-tip="一起听歌时伙伴偶尔接一两句；关掉后只在你说话和换歌串词时开口。"><input type="checkbox" id="presence-ambient-toggle" aria-describedby="presence-ambient-note" disabled /> <span>一起听歌时伙伴会主动说话</span></label>
               <p class="weight-note" id="presence-ambient-note" role="status"></p>
               <label class="artwork-theme-setting" data-tip="离开一阵再打开 app 时最多说一句；你先开口或开始打字就不说。"><input type="checkbox" id="presence-greeting-toggle" aria-describedby="presence-greeting-note" disabled /> <span>打开 app 时伙伴可以打招呼</span></label>
@@ -885,19 +906,22 @@
 
           <section class="settings-page" data-settings-page="connection" hidden>
             <h3 class="settings-page-title">模型与连接</h3>
-            <p class="settings-page-sub">接入多家模型供应商（openai / anthropic / google 四种协议），全局选一个“使用中”，各聊天可单独覆盖且随时修改。</p>
+            <p class="settings-page-sub">接入模型服务（兼容 OpenAI、Anthropic、Google 的接口都可以），全局选一个“使用中”，各聊天可单独覆盖且随时修改。</p>
             <section class="settings-card" aria-label="使用中模型">
               <div class="boot-h" data-tip="对话、串词与打标都走它；各聊天可以单独覆盖。">使用中模型（全局）</div>
               <div id="llm-active-model-settings"></div>
             </section>
             <section class="settings-card" aria-label="模型接入">
-              <div class="boot-h">模型 Provider</div>
+              <div class="boot-h">模型服务</div>
               <div id="llm-providers-settings"></div>
             </section>
-            <section class="settings-card" aria-label="模型故障切换">
-              <div class="boot-h" data-tip="网络超时、限流、服务异常或认证/权限失败时，按顺序尝试已授权备用；总等待上限不增加，已展示正文不重放。">故障切换</div>
-              <p class="settings-page-sub">默认关闭。网络超时、限流、服务异常或认证/权限失败时，按顺序尝试所选备用；总等待上限不增加，已展示正文不重放。跨供应商须单独授权，会话模型覆盖也遵守此限制。</p>
-              <div id="llm-failover-settings"></div>
+            <section class="settings-card" aria-label="音乐账号">
+              <div class="boot-h">音乐账号</div>
+              <div id="settings-source-accounts" class="source-accounts"></div>
+              <p class="weight-note" id="settings-source-account-status" role="status">正在读取登录状态…</p>
+              <div class="llm-active-foot">
+                <button type="button" class="quiet-button" data-settings-page-link="general">去设置播放来源与比例 →</button>
+              </div>
             </section>
             <section class="settings-card" aria-label="歌曲打标">
               <div class="boot-h" data-tip="只给候选池的歌补标签，供推荐与播客背景过滤；不会偷偷扫全库。">歌曲打标</div>
@@ -928,9 +952,37 @@
             </section>
           </section>
 
+          <section class="settings-page" data-settings-page="failover" hidden>
+            <h3 class="settings-page-title">故障切换</h3>
+            <section class="settings-card" aria-label="模型故障切换">
+              <div class="boot-h" data-tip="网络超时、限流、服务异常或认证/权限失败时，按顺序尝试已授权备用；总等待上限不增加，已展示正文不重放。">故障切换</div>
+              <p class="settings-page-sub">默认关闭。网络超时、限流、服务异常或认证/权限失败时，按顺序尝试所选备用；总等待上限不增加，已展示正文不重放。跨供应商须单独授权，会话模型覆盖也遵守此限制。</p>
+              <div id="llm-failover-settings"></div>
+            </section>
+          </section>
+
           <section class="settings-page" data-settings-page="voice" hidden>
             <h3 class="settings-page-title">声音</h3>
             <p class="settings-page-sub">念白用的语音服务；每位伙伴的声音在创建伙伴面板单独挑选。</p>
+            <section class="settings-card" aria-label="免费声音">
+              <section class="tts-free-block" id="tts-free-block" aria-labelledby="tts-free-title" style="margin-top:0;padding-top:0;border-top:0">
+                <div class="boot-h" data-tip="不需要账号和 Key 的声音；默认关闭，开启前会说明它会把文字发给谁。"><span id="tts-free-title">免费声音</span> <span class="boot-h-sub">不需要账号和 Key。新安装默认预选「晓晓」；阅读说明并同意开启后即可使用，也可获取更多声音</span></div>
+                <div class="tts-free-row">
+                  <label class="tts-free-switch">
+                    <input type="checkbox" id="tts-free-toggle" aria-controls="tts-free-consent">
+                    <span>启用免费声音</span>
+                  </label>
+                </div>
+                <div class="tts-free-consent" id="tts-free-consent" role="region" aria-label="免费声音说明" hidden>
+                  <p id="tts-free-disclosure"></p>
+                  <div class="tts-custom-endpoint-actions">
+                    <button type="button" class="tts-secondary tts-accent" id="tts-free-agree">同意并开启</button>
+                    <button type="button" class="tts-text-button" id="tts-free-cancel">取消</button>
+                  </div>
+                </div>
+                <p class="boot-location-note" id="tts-free-status" role="status"></p>
+              </section>
+            </section>
             <section class="settings-card" aria-label="语音服务状态">
               <div class="boot-h" data-tip="这里只说明合成器是否就绪；实际声线在创建伙伴时按伙伴挑选。">语音服务状态</div>
               <div class="boot-providers" id="boot-tts-providers"></div>
@@ -1098,23 +1150,6 @@
                     <button type="button" class="tts-secondary" id="tts-custom-manual-add">加入声音池</button>
                   </div>
                 </div>
-                <section class="tts-free-block" id="tts-free-block" aria-labelledby="tts-free-title">
-                  <div class="boot-h" data-tip="不需要账号和 Key 的声音；默认关闭，开启前会说明它会把文字发给谁。"><span id="tts-free-title">免费声音</span> <span class="boot-h-sub">微软 Edge 朗读；不需要账号和 Key。开启后在上方「来源接口」里选它获取声音</span></div>
-                  <div class="tts-free-row">
-                    <label class="tts-free-switch">
-                      <input type="checkbox" id="tts-free-toggle" aria-controls="tts-free-consent">
-                      <span>启用免费声音</span>
-                    </label>
-                  </div>
-                  <div class="tts-free-consent" id="tts-free-consent" role="region" aria-label="免费声音说明" hidden>
-                    <p id="tts-free-disclosure"></p>
-                    <div class="tts-custom-endpoint-actions">
-                      <button type="button" class="tts-secondary tts-accent" id="tts-free-agree">同意并开启</button>
-                      <button type="button" class="tts-text-button" id="tts-free-cancel">取消</button>
-                    </div>
-                  </div>
-                  <p class="boot-location-note" id="tts-free-status" role="status"></p>
-                </section>
                 <section class="tts-custom-candidates" id="tts-custom-candidates" aria-labelledby="tts-custom-candidate-title" hidden>
                   <div class="tts-custom-candidates-head">
                     <div class="boot-h"><span id="tts-custom-candidate-title">发现结果</span> <span class="boot-h-sub">还没进声音池；试听、勾选后加入，再点保存生效</span></div>
@@ -1173,14 +1208,14 @@
       <div class="qr-card">
         <div class="qr-title" id="qr-title">登录</div>
         <div id="qr-section">
-          <img class="qr-img" id="qr-img" src="" alt="QR" />
+          <img class="qr-img" id="qr-img" alt="QR" hidden />
           <div class="qr-hint" id="qr-hint">正在生成二维码…</div>
           <button class="qr-refresh" id="qr-refresh" style="display:none">刷新二维码</button>
         </div>
         <details class="cookie-section" id="cookie-section">
           <summary>无法扫码？使用 Cookie 登录</summary>
           <div class="cookie-divider"><span>高级登录方式</span></div>
-          <input class="cookie-input" id="cookie-input" placeholder="MUSIC_U=xxx; __csrf=yyy" />
+          <input class="cookie-input" id="cookie-input" placeholder="MUSIC_U=xxx; __csrf=yyy" aria-label="粘贴登录 Cookie" />
           <button class="cookie-btn" id="cookie-btn">登录</button>
           <div class="cookie-hint" id="cookie-hint"></div>
         </details>
@@ -1190,23 +1225,23 @@
 
     <!-- ====== 召唤新伙伴 Modal ====== -->
     <div class="cast-overlay" id="cast-overlay" style="display:none" aria-hidden="true">
-      <div class="cast-card" role="dialog" aria-labelledby="cast-title">
+      <div class="cast-card" role="dialog" aria-modal="true" aria-labelledby="cast-title">
         <form id="cast-form" novalidate>
         <button type="button" class="cast-close surface-icon-button" id="cast-close" aria-label="关闭新伙伴创建窗口">
           <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
         </button>
         <div class="cast-head">
-          <h2 class="cast-title" id="cast-title">选一个性格，再挑一把声音</h2>
-          <p class="cast-lead">两部分互相独立：性格决定它是谁，声音只决定它怎么念。任意顺序都可以，不选全就不能保存。</p>
+          <h2 class="cast-title" id="cast-title">创建一位新伙伴</h2>
+          <p class="cast-lead">性格可直接手写，也可点上方模板填入后自由增删；再挑一把声音即可保存。</p>
         </div>
         <div class="cast-body">
           <div class="cast-col cast-col-personas">
             <div class="cast-col-h">
-              <span>性格</span>
+              <span>性格模板（可选）</span>
               <span class="cast-col-count" id="cast-persona-count">—</span>
             </div>
             <div class="cast-persona-grid" id="cast-persona-grid">
-              <div class="cast-voice-loading">读取人设…</div>
+              <div class="cast-voice-loading">读取模板…</div>
             </div>
           </div>
           <div class="cast-col cast-col-voices">
@@ -1222,9 +1257,15 @@
         <div class="cast-compose">
           <div class="cast-compose-fields">
             <label class="cast-field-label" for="cast-name"><span class="cast-col-h"><span>名字</span><span class="cast-col-hint" id="cast-name-hint">必填 · 最多 80 字</span></span></label>
-            <input class="cast-input" id="cast-name" maxlength="80" required aria-describedby="cast-msg" placeholder="选定性格后会给出名字候选" />
-            <label class="cast-field-label" for="cast-persona"><span class="cast-col-h"><span>补充说明</span><span class="cast-col-hint">可选 · 最多 1000 字</span></span></label>
-            <textarea class="cast-textarea" id="cast-persona" rows="3" maxlength="1000" aria-describedby="cast-msg" placeholder="想让它更像谁？可以在这里补充，会覆盖性格设定里冲突的部分。"></textarea>
+            <input class="cast-input" id="cast-name" maxlength="80" required aria-describedby="cast-msg" placeholder="直接输入名字，或点选模板获取候选" />
+            <div class="cast-persona-head">
+              <label class="cast-field-label" for="cast-persona"><span class="cast-col-h"><span>性格与设定</span><span class="cast-col-hint">必填 · 最多 4000 字</span></span></label>
+              <div class="cast-persona-tools">
+                <button type="button" class="quiet-button cast-tool-btn" id="cast-undo-expand" hidden>撤回扩写</button>
+                <button type="button" class="quiet-button cast-tool-btn" id="cast-expand-persona">AI 扩写完善</button>
+              </div>
+            </div>
+            <textarea class="cast-textarea" id="cast-persona" rows="5" maxlength="4000" aria-describedby="cast-msg" placeholder="直接写下它是谁、怎么说话、偏爱什么音乐、和你怎么相处；或点上方模板填入后随意修改。"></textarea>
           </div>
           <div class="cast-compose-actions">
             <span class="cast-msg" id="cast-msg" role="status" aria-live="polite"></span>
@@ -1253,6 +1294,6 @@
     <audio id="audioMusic" preload="auto"></audio>
   </div>
 
-  <script type="module" src="/app.js?v=44"></script>
+  <script type="module" src="/app.js?v=47"></script>
 </body>
 </html>

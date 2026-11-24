@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import { LifeContextStore } from './LifeContextStore.js';
 import { LifeContextService, LifeValidationError } from './LifeContextService.js';
+import { createLifeContextRuntime } from './createLifeContextRuntime.js';
 
 function fixture({ now = () => 1_700_000_000_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'life-context-'));
@@ -586,4 +587,297 @@ test('legacy create receipt hashes replay identical payloads after recurrence up
   assert.throws(()=>ctx.service.createEntry({...payload,repeatFrequency:'daily'}),/内容已变化/);
   assert.throws(()=>ctx.service.createEntry({...payload,title:'changed'}),/内容已变化/);
  }finally{cleanup(ctx);}
+});
+
+test('untitled note derives title from first content line and tracks extended liner-note fields', () => {
+  const ctx = fixture();
+  try {
+    const created = ctx.service.createEntry({
+      type: 'note',
+      title: '   ',
+      content: '\n- [ ] 深夜听爵士并记下第一句想法\n第二行正文',
+      localDate: '2026-11-20',
+      mood: '松弛',
+      tags: ['夜雨', '爵士'],
+      pinned: true,
+      attachedTrack: { provider: 'ncm', songId: '123', title: 'Waltz for Debby', artist: 'Bill Evans Trio', album: 'Village Vanguard' },
+      useForCompanionship: true,
+      allowedPersonIds: ['lunara'],
+      shareScope: 'summary',
+      companionNote: '偏爱夜间木吉他或钢琴',
+    });
+    assert.equal(created.title, '深夜听爵士并记下第一句想法');
+    assert.equal(created.mood, '松弛');
+    assert.deepEqual(created.tags, ['夜雨', '爵士']);
+    assert.equal(created.pinned, true);
+    assert.equal(created.shareScope, 'summary');
+    assert.equal(created.attachedTrack.title, 'Waltz for Debby');
+    assert.ok(created.createdAt > 0 && created.updatedAt > 0);
+
+    // summary 模式 + companionNote 共存不丢字
+    const snap = ctx.service.buildLifeContextSnapshot({ personId: 'lunara', targetDate: '2026-11-20' });
+    assert.equal(snap.entries.length, 1);
+    assert.match(snap.entries[0].note, /深夜听爵士并记下第一句想法/);
+    assert.match(snap.entries[0].note, /偏爱夜间木吉他或钢琴/);
+    assert.equal(snap.entries[0].mood, '松弛');
+    assert.equal(snap.entries[0].track, 'Waltz for Debby - Bill Evans Trio');
+
+    // 近3日随笔与未来7日纪念日纳入有界快照
+    ctx.service.createEntry({
+      type: 'important_date',
+      title: '唱片市集',
+      localDate: '2026-11-23',
+      useForCompanionship: true,
+      allowedPersonIds: ['lunara'],
+      shareScope: 'summary',
+    });
+    const windowed = ctx.service.buildLifeContextSnapshot({ personId: 'lunara', targetDate: '2026-11-21' });
+    assert.ok(windowed.entries.some(item => item.windowRelation === 'recent' && item.sourceId === created.id));
+    assert.ok(windowed.entries.some(item => item.windowRelation === 'upcoming' && item.daysUntil === 2));
+
+    // 所见即所得预览 & 超5000字拒截断
+    const preview = ctx.service.previewCompanionshipText(created, { partnerNames: ['Lunara'] });
+    assert.match(preview, /Lunara 在聊天与选歌时会看到/);
+    assert.match(preview, /偏爱夜间木吉他或钢琴/);
+    assert.throws(() => ctx.service.createEntry({ type: 'note', title: '太长', content: '字'.repeat(5001), localDate: '2026-11-20' }),
+      { code: 'entry-content-too-long' });
+  } finally { cleanup(ctx); }
+});
+
+test('scheme B v5 co-page fields: attachedTracks, attachedQuotes, checklist, annotations, layoutVariant and untitled fallbacks', () => {
+  const ctx = fixture();
+  try {
+    // 1. 双向兼容 attachedTrack <-> attachedTracks & 新字段持久化
+    const legacyTrackNote = ctx.service.createEntry({
+      type: 'note',
+      title: '旧版附图卡',
+      content: '今晚雨很大',
+      localDate: '2026-11-21',
+      attachedTrack: { provider: 'ncm', songId: 's1', title: 'Endless Story', artist: 'REIRA' },
+      clientRequestId: 'req-legacy-track',
+    });
+    assert.equal(legacyTrackNote.attachedTracks.length, 1);
+    assert.equal(legacyTrackNote.attachedTracks[0].songId, 's1');
+    assert.equal(legacyTrackNote.layoutVariant, 'blank');
+
+    // 同 clientRequestId 幂等重放
+    const replayLegacy = ctx.service.createEntry({
+      type: 'note',
+      title: '旧版附图卡',
+      content: '今晚雨很大',
+      localDate: '2026-11-21',
+      attachedTrack: { provider: 'ncm', songId: 's1', title: 'Endless Story', artist: 'REIRA' },
+      clientRequestId: 'req-legacy-track',
+    });
+    assert.equal(replayLegacy.id, legacyTrackNote.id);
+
+    // 2. 只有 checklist 时自动派生标题，且保留 multi-track / verbatim quotes / layoutVariant
+    const checklistNote = ctx.service.createEntry({
+      type: 'note',
+      content: '',
+      localDate: '2026-11-21',
+      layoutVariant: 'dotgrid',
+      checklist: [
+        { id: 'ck1', text: '把黑胶收进纸袋', done: false },
+        { id: 'ck2', text: '写两句给 Lunara 的信', done: true },
+      ],
+      attachedTracks: [
+        { provider: 'qq', songId: 'q1', title: '夜半歌声', artist: '张国荣', playedAt: '23:10', attachedAt: '23:15', liked: true },
+        { provider: 'ncm', songId: 'n2', title: 'Waltz for Debby', artist: 'Bill Evans Trio' },
+      ],
+      attachedQuotes: [
+        { turnId: 'turn-1', speaker: 'Lunara', personId: 'lunara', time: '22:48', text: '雨声停下来的时候再放下一首吧。' },
+      ],
+      useForCompanionship: true,
+      allowedPersonIds: ['lunara'],
+      shareScope: 'summary',
+    });
+    assert.equal(checklistNote.title, '把黑胶收进纸袋');
+    assert.equal(checklistNote.layoutVariant, 'dotgrid');
+    assert.equal(checklistNote.attachedTrack.songId, 'q1');
+    assert.equal(checklistNote.attachedTracks.length, 2);
+    assert.equal(checklistNote.attachedQuotes.length, 1);
+    assert.equal(checklistNote.attachedQuotes[0].turnId, 'turn-1');
+
+    // 仅传 attachedTrack 未传 content/title 时由第一首歌派生标题
+    const trackOnlyNote = ctx.service.createEntry({
+      type: 'note',
+      content: '',
+      localDate: '2026-11-21',
+      attachedTracks: [{ provider: 'ncm', songId: 'n9', title: 'Blue in Green', artist: 'Miles Davis' }],
+    });
+    assert.equal(trackOnlyNote.title, '听《Blue in Green》');
+
+    // 仅传 quote 时由第一句原话派生标题
+    const quoteOnlyNote = ctx.service.createEntry({
+      type: 'note',
+      content: '',
+      localDate: '2026-11-21',
+      attachedQuotes: [{ turnId: 't-q', speaker: '你', text: '今天路过梧桐树下风很软。' }],
+    });
+    assert.equal(quoteOnlyNote.title, '今天路过梧桐树下风很软。');
+
+    // 3. appendAnnotation 写入页边批注并保持同页授权与版本号推进
+    const withAnn = ctx.service.appendAnnotation(checklistNote.id, {
+      id: 'ann-1',
+      personId: 'lunara',
+      personName: 'Lunara',
+      time: '23:20',
+      anchor: '雨声停下来的时候',
+      text: '我也记得那段雨声，下一首就挑慢一点的钢琴。',
+    }, { expectedRevision: checklistNote.revision });
+    assert.equal(withAnn.annotation.personId, 'lunara');
+    assert.equal(withAnn.entry.annotations.length, 1);
+    assert.equal(withAnn.entry.revision, checklistNote.revision + 1);
+    assert.ok(withAnn.entry.useForCompanionship);
+    assert.ok(withAnn.entry.allowedPersonIds.includes('lunara'));
+
+    // 4. 更新回复与版式切换不丢原文/附卡
+    const updated = ctx.service.updateEntry(checklistNote.id, {
+      layoutVariant: 'playbill',
+      annotations: [{ ...withAnn.annotation, reply: '好，就这么办。' }],
+    }, { expectedRevision: withAnn.entry.revision });
+    assert.equal(updated.layoutVariant, 'playbill');
+    assert.equal(updated.annotations[0].reply, '好，就这么办。');
+    assert.equal(updated.attachedTracks.length, 2);
+
+    // 5. buildLifeContextSnapshot 投影多曲摘要与同页批注信息
+    const snap = ctx.service.buildLifeContextSnapshot({ personId: 'lunara', targetDate: '2026-11-21' });
+    const projected = snap.entries.find(item => item.sourceId === checklistNote.id);
+    assert.ok(projected);
+    assert.match(projected.track, /夜半歌声/);
+    assert.match(projected.track, /Waltz for Debby/);
+  } finally { cleanup(ctx); }
+});
+
+test('onRevisionChange reports companionshipAffected=false for purely private edits and true when shared or revoked', () => {
+  const events = [];
+  const dir = mkdtempSync(join(tmpdir(), 'life-meta-'));
+  const store = new LifeContextStore({ dbPath: join(dir, 'life.db') });
+  const service = new LifeContextService({
+    store,
+    onRevisionChange: (rev, meta) => events.push({ rev, ...meta }),
+  });
+  try {
+    const priv = service.createEntry({
+      type: 'note',
+      title: '私密手帐',
+      content: '仅自己可见的句子',
+      localDate: '2026-11-22',
+      useForCompanionship: false,
+    });
+    assert.equal(events.at(-1).companionshipAffected, false);
+
+    const updatedPriv = service.updateEntry(priv.id, { content: '改了私密正文' }, { expectedRevision: priv.revision });
+    assert.equal(events.at(-1).companionshipAffected, false);
+
+    const shared = service.updateEntry(updatedPriv.id, {
+      useForCompanionship: true,
+      allowedPersonIds: ['lunara'],
+    }, { expectedRevision: updatedPriv.revision });
+    assert.equal(events.at(-1).companionshipAffected, true);
+
+    service.revokeEntryCompanionship(shared.id);
+    assert.equal(events.at(-1).companionshipAffected, true);
+
+    const priv2 = service.createEntry({ type: 'todo', title: '私有待办', localDate: '2026-11-22' });
+    events.length = 0;
+    service.deleteEntry(priv2.id, { expectedRevision: priv2.revision });
+    assert.equal(events.at(-1).companionshipAffected, false);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createLifeContextRuntime delegates invalidation to invalidateAllPreparedNarrations, skips when companionshipAffected=false, and falls back per-session', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'life-runtime-'));
+  try {
+    const allCalls = [];
+    const singleCalls = [];
+    const lifeRuntime = createLifeContextRuntime({
+      resolveDatabasePath: () => join(dir, 'state.db'),
+      playbackRuntime: {
+        snapshot: () => ({ activeListeningSessionId: 'conversation:a', suspendedSessions: { 'conversation:b': {} } }),
+        invalidateAllPreparedNarrations: options => {
+          allCalls.push(options);
+          return Promise.resolve([]);
+        },
+        invalidatePreparedNarrations: (sessionId, options) => {
+          singleCalls.push({ sessionId, options });
+          return Promise.resolve({ accepted: true });
+        },
+      },
+    });
+    lifeRuntime.start();
+    try {
+      lifeRuntime.service.createEntry({
+        type: 'note',
+        title: '私密随笔',
+        content: '仅自己保存',
+        localDate: '2026-11-22',
+        useForCompanionship: false,
+      });
+      assert.equal(allCalls.length, 0);
+      assert.equal(singleCalls.length, 0);
+
+      lifeRuntime.service.createEntry({
+        type: 'note',
+        title: '公开随笔',
+        content: '可以和 Lunara 分享',
+        localDate: '2026-11-22',
+        useForCompanionship: true,
+        allowedPersonIds: ['lunara'],
+      });
+      assert.deepEqual(allCalls, [{ includeCurrent: true }]);
+      assert.equal(singleCalls.length, 0, '有 invalidateAllPreparedNarrations 时不再逐会话循环提交');
+    } finally {
+      await lifeRuntime.stop();
+    }
+
+    const fallbackCalls = [];
+    const fallbackDir = mkdtempSync(join(tmpdir(), 'life-runtime-fallback-'));
+    try {
+      const fallbackRuntime = createLifeContextRuntime({
+        resolveDatabasePath: () => join(fallbackDir, 'state.db'),
+        playbackRuntime: {
+          snapshot: () => ({ activeListeningSessionId: 'conversation:a', suspendedSessions: { 'conversation:b': {} } }),
+          invalidatePreparedNarrations: (sessionId, options) => {
+            fallbackCalls.push({ sessionId, options });
+            return Promise.resolve({ accepted: true });
+          },
+        },
+      });
+      fallbackRuntime.start();
+      try {
+        fallbackRuntime.service.createEntry({
+          type: 'note',
+          title: '私密备忘',
+          content: '不影响陪伴',
+          localDate: '2026-11-22',
+          useForCompanionship: false,
+        });
+        assert.equal(fallbackCalls.length, 0);
+
+        fallbackRuntime.service.createEntry({
+          type: 'note',
+          title: '分享备忘',
+          content: '影响陪伴',
+          localDate: '2026-11-22',
+          useForCompanionship: true,
+          allowedPersonIds: ['lunara'],
+        });
+        assert.deepEqual(fallbackCalls, [
+          { sessionId: 'conversation:a', options: { includeCurrent: true } },
+          { sessionId: 'conversation:b', options: { includeCurrent: true } },
+        ]);
+      } finally {
+        await fallbackRuntime.stop();
+      }
+    } finally {
+      rmSync(fallbackDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

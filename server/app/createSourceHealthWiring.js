@@ -33,6 +33,7 @@ export function createSourceHealthWiring({ providers = {}, registry = providerRe
   // 所以普通解析成功不能证明账号恢复；只有明确验证成功的登录才解除提醒。
   const pendingAuth = new Set();
   const issues = new Map();
+  const failureGenerations = new Map();
   const actionable = new Set(['requires-auth', 'requires-member', 'timeout', 'unavailable', 'rate-limited']);
   const authChecks = new Map();
   const listeners = new Set();
@@ -44,8 +45,9 @@ export function createSourceHealthWiring({ providers = {}, registry = providerRe
   const recordFailure = (id, code) => {
     const source = registry.get(id)?.id;
     if (!source) return null;
-    const result = health.recordFailure(source, code);
     const classified = classifySourceFailure(code);
+    if (actionable.has(classified)) failureGenerations.set(source, (failureGenerations.get(source) || 0) + 1);
+    const result = health.recordFailure(source, code);
     if (classified === SOURCE_FAILURE.REQUIRES_AUTH) pendingAuth.add(source);
     // 单曲版权/空音源不升级成整个音乐源故障。已确证的鉴权问题不会被网络噪声覆盖。
     if (actionable.has(classified) && (!pendingAuth.has(source) || classified === SOURCE_FAILURE.REQUIRES_AUTH)
@@ -76,16 +78,21 @@ export function createSourceHealthWiring({ providers = {}, registry = providerRe
       if (status?.loggedIn === false && status.code === SOURCE_FAILURE.REQUIRES_AUTH) recordFailure(source, status.code);
     }).catch(() => {}).finally(() => { clearTimeout(timer); });
   }
-  const recordSuccess = id => {
+  const recoveryBlocked = source => {
+    try { return providers[source]?.isStreamBackoffActive?.() === true; }
+    catch { return true; } // 无法核对退避时不凭空声称恢复。
+  };
+  const recordSuccess = (id, attempt) => {
     const source = registry.get(id)?.id;
-    if (!source) return;
+    if (!source || (attempt !== undefined && attempt !== (failureGenerations.get(source) || 0))
+      || recoveryBlocked(source)) return;
     health.recordSuccess(source);
     if (!pendingAuth.has(source) && issues.delete(source)) emit(source, null);
   };
-  setSourceHealthReporter((id, code) => {
+  setSourceHealthReporter((id, code, attempt) => {
     if (code) recordFailure(id, code);
-    else recordSuccess(id);
-  });
+    else recordSuccess(id, attempt);
+  }, id => failureGenerations.get(registry.get(id)?.id) || 0);
 
   return {
     read: id => health.read(id),
@@ -104,9 +111,12 @@ export function createSourceHealthWiring({ providers = {}, registry = providerRe
     recordAuthenticated: id => {
       const source = registry.get(id)?.id;
       if (!source) return;
-      health.recordSuccess(source);
       authChecks.delete(source);
       pendingAuth.delete(source);
+      // 账号验证不能清除取流风控/网络故障，仍须新的可播资源证据。
+      const issue = issues.get(source);
+      if ((issue && issue !== SOURCE_FAILURE.REQUIRES_AUTH) || recoveryBlocked(source)) return;
+      health.recordSuccess(source);
       issues.delete(source);
       emit(source, null);
     },

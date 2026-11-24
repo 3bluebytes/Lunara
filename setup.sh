@@ -21,10 +21,10 @@ if [ -z "$NODE_MAJ" ] || [ "$NODE_MAJ" -lt 20 ]; then
 fi
 green "✓ Node $(node -v)"
 
-# 2) .env（TTS / 音乐源；DJ LLM 在启动浮层单独配置）
+# 2) .env（可选；LLM、语音、音乐账号均可在应用内设置）
 if [ ! -f .env ]; then
   cp .env.example .env
-  yellow "⚠ 已生成 .env；如需云端音色，请填写 MINIMAX_API_KEY，并按需设置经纬度"
+  yellow "⚠ 已生成 .env（可保持默认；高级环境变量覆盖可按需编辑）"
 else
   green "✓ .env 已存在"
 fi
@@ -33,18 +33,14 @@ fi
 green "▶ npm install"
 npm install
 
-# 4) 音乐源均由 package.json 安装；QQ SDK 直接嵌入 Lunara。
-green "✓ NeteaseCloudMusicApi 已随 npm dependencies 安装"
-green "✓ QQ Music SDK 已随 npm dependencies 安装（无需单独启动）"
+# 4) 音乐源均随应用启动。
+green "✓ QQ 音乐 SDK 与网易云 API 已随依赖安装（无需单独启动）"
 
 # 5) 目录
 mkdir -p cache/tts data
 touch cache/tts/.gitkeep data/.gitkeep
 
 green ""
-green "✅ 安装完成。QQ 音乐已内置；按需启动网易云，再启动 Lunara："
-green "   1)  npm run ncm        # 网易云 API（默认 :3000，可选）"
-green "   2)  npm start          # Lunara 本体（默认 :8080，内置 QQ）"
-green "       首次启动在设置浮层填写 LLM Base URL / API Key / Model"
-green ""
-green "   浏览器开 http://localhost:8080"
+green "✅ 安装完成。直接启动 Lunara："
+green "   npm start"
+green "   首次启动在设置中填写 LLM Base URL / API Key / Model"

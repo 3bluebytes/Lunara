@@ -1,3 +1,5 @@
+import { isSummaryMessage, summaryBody, summaryMessage } from './contextBlocks.js';
+
 function byteSize(value) {
   return Buffer.byteLength(JSON.stringify(value ?? null), 'utf8');
 }
@@ -33,21 +35,6 @@ function groupsFrom(messages) {
   return groups;
 }
 
-function mustPreserve(message) {
-  const state = message?.contextState || message?.metadata?.contextState || {};
-  return message?.preserveInContext === true
-    || state.unresolvedQuestion === true
-    || state.commitment === true
-    || state.validReferent === true;
-}
-
-function groupMustPreserve(group, index, groups) {
-  if (group.some(mustPreserve)) return true;
-  // The active user request and its immediately preceding visible exchange are
-  // never candidates for eviction, even when no semantic marker was supplied.
-  return index >= Math.max(0, groups.length - 3);
-}
-
 function compactToolContent(message, maxToolResultBytes) {
   if (!isToolResult(message) || byteSize(message.content) <= maxToolResultBytes) return message;
   const text = String(message.content || '');
@@ -57,14 +44,45 @@ function compactToolContent(message, maxToolResultBytes) {
   };
 }
 
+// 超过上限后裁到上限的这个比例：一次裁掉一大段，之后很多轮都不用再裁，历史前缀在这期间逐字节不变。
+const LOW_WATER = 0.5;
+const MIN_KEPT_GROUPS = 3;
+
+function fallbackSummary(head, removed, maxChars) {
+  const lines = removed
+    .filter(message => message.role === 'user' || (message.role === 'assistant' && !message.tool_calls?.length))
+    .slice(-6)
+    .map(message => `${message.role}: ${String(message.content || '').slice(0, 300)}`);
+  const text = [summaryBody(head), ...lines].filter(Boolean).join('\n');
+  return summaryMessage(text.length > maxChars ? text.slice(-maxChars) : text)
+    || summaryMessage(`更早的 ${removed.length} 条消息已不在上下文里。`);
+}
+
+/**
+ * 模型历史的预算（参考 s08 的分层压缩：便宜的先做，贵的后做）。
+ * 1. 较早回合的工具结果截短（本回合的结果模型还要用，保持完整）；
+ * 2. 没超上限就原样返回——历史只追加，前缀不变；
+ * 3. 超了才裁：保留连续的一段结尾（不拆工具调用/结果，不留空洞，当前回合必留），裁到低水位；
+ *    被裁掉的部分由 onSummary 并入较早对话摘要，摘要是历史的第一条消息。
+ *
+ * Python 伪代码：
+ *   msgs = shrink_old_tool_results(msgs)
+ *   if fits(msgs): return msgs
+ *   kept = longest_suffix(groups(msgs), low_water)        # 至少含当前回合
+ *   head = on_summary(removed) or fallback(removed)
+ *   return [head] + kept
+ */
 export class ContextBudgeter {
-  constructor({ maxBytes = 48_000, maxMessages = 24, maxToolResultBytes = 4000, summarize = null } = {}) {
+  constructor({ maxBytes = 48_000, maxMessages = 24, maxToolResultBytes = 4000 } = {}) {
     this.maxBytes = Math.max(2000, Number(maxBytes) || 48_000);
     this.maxMessages = Math.max(4, Number(maxMessages) || 24);
     this.maxToolResultBytes = Math.max(256, Number(maxToolResultBytes) || 4000);
-    this.summarize = typeof summarize === 'function' ? summarize : null;
   }
 
+  /**
+   * onSummary({ removedCount, removedIndexes, keptFrom, method })：removedIndexes/keptFrom 是输入数组的下标。
+   * 返回新的摘要消息（contextBlocks.summaryMessage）就用它做头；不返回时用确定性的兜底摘要。
+   */
   async prepare(inputMessages, { aggressive = false, onSummary = null } = {}) {
     const effectiveMaxBytes = aggressive ? Math.max(2000, Math.floor(this.maxBytes * 0.55)) : this.maxBytes;
     const effectiveMaxMessages = aggressive ? Math.max(4, Math.floor(this.maxMessages * 0.6)) : this.maxMessages;
@@ -77,62 +95,40 @@ export class ContextBudgeter {
       ? message : compactToolContent(message, effectiveToolBytes)));
     if (messages.length <= effectiveMaxMessages && byteSize(messages) <= effectiveMaxBytes) return messages;
 
-    const groups = groupsFrom(messages);
-    const protectedIndices = new Set(groups
-      .map((group, index) => groupMustPreserve(group, index, groups) ? index : -1)
-      .filter(index => index >= 0));
-    const selected = new Set(protectedIndices);
+    const head = isSummaryMessage(messages[0]) ? messages[0] : null;
+    const offset = head ? 1 : 0;
+    const groups = groupsFrom(messages.slice(offset));
+    const targetBytes = Math.floor(effectiveMaxBytes * LOW_WATER);
+    const targetMessages = Math.max(MIN_KEPT_GROUPS, Math.floor(effectiveMaxMessages * LOW_WATER));
+    // 当前回合（最后一条 user 起）和末尾几组无论多大都留。
+    const lastUserGroup = groups.findLastIndex(group => group[0]?.role === 'user');
+    const mustFrom = Math.max(0, Math.min(groups.length - MIN_KEPT_GROUPS, lastUserGroup < 0 ? groups.length : lastUserGroup));
+    let start = groups.length;
+    let count = offset;
+    let bytes = head ? byteSize(head) : 0;
     for (let index = groups.length - 1; index >= 0; index--) {
-      if (selected.has(index)) continue;
-      const candidate = [...selected, index].sort((a, b) => a - b).flatMap(i => groups[i]);
-      if (candidate.length > effectiveMaxMessages || byteSize(candidate) > effectiveMaxBytes) continue;
-      selected.add(index);
+      const size = byteSize(groups[index]);
+      if (index < mustFrom && (count + groups[index].length > targetMessages || bytes + size > targetBytes)) break;
+      start = index;
+      count += groups[index].length;
+      bytes += size;
     }
-    let keptGroups = [...selected].sort((a, b) => a - b).map(index => ({ index, group: groups[index] }));
-    let kept = keptGroups.flatMap(entry => entry.group);
-    const removedGroups = groups.filter((_group, index) => !selected.has(index));
-    const removed = removedGroups.flat();
-    const removedCount = removed.length;
-    if (removedCount <= 0) return kept;
-    const summarySource = removed.filter(message => message.role === 'user'
-      || (message.role === 'assistant' && !message.tool_calls?.length));
-    let summary = '';
-    if (this.summarize) {
-      try { summary = String(await this.summarize(summarySource) || '').trim(); } catch { summary = ''; }
-    }
-    if (!summary) {
-      summary = summarySource
-        .slice(-6)
-        .map(message => `${message.role}: ${String(message.content || '').slice(0, 300)}`)
-        .join('\n');
-    }
-    let summaryMessage = summary
-      ? { role: 'system', content: `[较早对话摘要，来源 ${removedCount} 条已提交消息]\n${summary.slice(0, aggressive ? 1800 : 4000)}` }
-      : null;
-    let compacted = summaryMessage ? [summaryMessage, ...kept] : kept;
-    // Evict complete, non-protected groups only. Never splice individual tool
-    // messages, which could create an orphaned call/result pair.
-    while (keptGroups.length > 1 && byteSize(compacted) > effectiveMaxBytes) {
-      const removable = keptGroups.findIndex(entry => !protectedIndices.has(entry.index));
-      if (removable < 0) break;
-      keptGroups.splice(removable, 1);
-      kept = keptGroups.flatMap(entry => entry.group);
-      compacted = summaryMessage ? [summaryMessage, ...kept] : kept;
-    }
-    if (summaryMessage && byteSize(compacted) > effectiveMaxBytes) {
-      const allowance = Math.max(160, effectiveMaxBytes - byteSize(kept) - 100);
-      summaryMessage = { ...summaryMessage, content: summaryMessage.content.slice(0, allowance) };
-      compacted = [summaryMessage, ...kept];
-    }
-    if (summaryMessage && typeof onSummary === 'function') {
-      await onSummary({
-        content: summaryMessage.content,
-        removedCount,
-        removedIndexes: removed.map(message => messages.indexOf(message)).filter(index => index >= 0),
-        method: this.summarize ? 'provider-or-deterministic-fallback' : 'deterministic-fallback',
+    // 保留段尽量从一条 user 消息开始：不把一次请求切成两半。
+    while (start < mustFrom && groups[start][0]?.role !== 'user') start += 1;
+    if (start <= 0) return messages;
+    const removed = groups.slice(0, start).flat();
+    const kept = groups.slice(start).flat();
+    let nextHead = null;
+    if (typeof onSummary === 'function') {
+      nextHead = await onSummary({
+        removedCount: removed.length,
+        removedIndexes: removed.map((_message, index) => offset + index),
+        keptFrom: offset + removed.length,
+        method: 'budget-evicted-deterministic',
       });
     }
-    return compacted;
+    if (!isSummaryMessage(nextHead)) nextHead = fallbackSummary(head, removed, aggressive ? 1800 : 4000);
+    return [nextHead, ...kept];
   }
 }
 

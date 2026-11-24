@@ -9,6 +9,7 @@ import {
   cloneRuntimeValue,
   deepFreeze,
   isPlaybackRuntimeSnapshot,
+  normalizeLineNote,
   normalizeRuntimeTrack,
   validatePlaybackEvent,
 } from './playbackRuntimeTypes.js';
@@ -36,8 +37,30 @@ export { CONTINUATION_LOOKAHEAD };
 // Epoch 计数只需保证“同一 occurrence 只计一次”与顺序稳定；上限防止快照无限增长。
 const MAX_MODE_COUNTED_OCCURRENCES = 64;
 
+/** 已播队列历史最大保留条数：超过后从队头裁剪，防止长会话队列与持久化体积无限膨胀。 */
+export const MAX_PLAYED_QUEUE_HISTORY = 120;
+
+const VALID_RUNTIME_SNAPSHOTS = new WeakSet();
+
+function freezeRuntimeState(state) {
+  const frozen = deepFreeze(state);
+  VALID_RUNTIME_SNAPSHOTS.add(frozen);
+  return frozen;
+}
+
+export function prunePlayedQueueHistory(sessionState, maxPlayed = MAX_PLAYED_QUEUE_HISTORY) {
+  if (!sessionState || !Array.isArray(sessionState.queue)) return 0;
+  const limit = Math.max(0, Number.parseInt(maxPlayed, 10) || 0);
+  const currentIndex = Number.isInteger(sessionState.currentIndex) ? sessionState.currentIndex : -1;
+  if (currentIndex <= limit) return 0;
+  const dropCount = currentIndex - limit;
+  sessionState.queue = sessionState.queue.slice(dropCount);
+  sessionState.currentIndex -= dropCount;
+  return dropCount;
+}
+
 export function createPlaybackRuntimeState(options = {}) {
-  return deepFreeze({
+  return freezeRuntimeState({
     schemaVersion: PLAYBACK_RUNTIME_SCHEMA_VERSION,
     version: 0,
     queue: [],
@@ -74,13 +97,20 @@ export function createPlaybackRuntimeState(options = {}) {
     modeActivationCount: 0,
     modeCountedOccurrences: [],
     lastAutomaticNarrationAtMs: null,
+    // 本听歌会话最后一次确认在出声的时间：只用来判断恢复时停了多久，不是播放状态。
+    lastAudibleAtMs: null,
   });
 }
 
 const SESSION_FIELDS = ['queue', 'currentIndex', 'currentSongId', 'phase', 'txn', 'radioMode', 'radioModeOverride',
   'queueVersion', 'positionSeconds', 'hasStarted', 'listeningPlan', 'pendingContinuation', 'lastError',
   'companionModeId', 'modePolicyVersion', 'modeRevision', 'modeSource', 'modeEpoch', 'modeActivationCount',
-  'modeCountedOccurrences', 'lastAutomaticNarrationAtMs'];
+  'modeCountedOccurrences', 'lastAutomaticNarrationAtMs', 'lastAudibleAtMs'];
+
+// 恢复播放时的时间感：距最后一次确认出声满这么久，停下之前写好的串词说的“此刻”就过去了。
+// 与聊天的时间感（historyTime 的会话间隔）同一门槛。
+export const PLAYBACK_GAP_MS = 60 * 60 * 1000;
+const PLAYBACK_GAP_REWRITE_LIMIT = 5;
 
 // A requested narration may speak long after the automatic insertion window closed.
 const REQUESTED_NARRATION_MAX_OFFSET_MS = 24 * 60 * 60 * 1000;
@@ -91,20 +121,35 @@ function sessionValue(state) {
 
 /** A scoped view never includes another conversation's queue, preferences or history. */
 export function listeningSnapshot(state, listeningSessionId = state.activeListeningSessionId) {
-  const value = listeningSessionId === state.activeListeningSessionId ? sessionValue(state)
-    : state.suspendedSessions[listeningSessionId] || sessionValue(createPlaybackRuntimeState());
-  return deepFreeze({ ...cloneRuntimeValue(value), listeningSessionId, conversationId: listeningSessionId,
-    active: listeningSessionId === state.activeListeningSessionId, runtimeVersion: state.version, outputGeneration: state.outputGeneration });
+  const isActive = listeningSessionId === state.activeListeningSessionId;
+  const source = isActive
+    ? state
+    : state.suspendedSessions[listeningSessionId] || createPlaybackRuntimeState();
+  const frozen = Object.isFrozen(source);
+  const fields = {};
+  for (const key of SESSION_FIELDS) {
+    fields[key] = frozen ? source[key] : cloneRuntimeValue(source[key]);
+  }
+  return deepFreeze({
+    ...fields,
+    listeningSessionId,
+    conversationId: listeningSessionId,
+    active: isActive,
+    runtimeVersion: state.version,
+    outputGeneration: state.outputGeneration,
+  });
 }
 
 function switchListeningSession(state, id, commands, positionSeconds = null, { activate = true, effects = [], nowMs = Date.now() } = {}) {
   if (id === state.activeListeningSessionId) return;
+  if (state.phase === PlaybackPhase.PLAYING) markAudible(state, nowMs);
   if (state.hasStarted && currentTrack(state)) state.lastOutputTrack = { title: currentTrack(state).title, artist: currentTrack(state).artist, songId: state.currentSongId };
   if (Number.isFinite(positionSeconds)) state.positionSeconds = Math.max(0, positionSeconds);
   const saved = sessionValue(state);
   saved.phase = saved.currentIndex >= 0 ? PlaybackPhase.PAUSED : PlaybackPhase.IDLE;
   saved.txn = null;
   saved.pendingContinuation = null;
+  prunePlayedQueueHistory(saved);
   state.suspendedSessions[state.activeListeningSessionId] = saved;
   const incoming = state.suspendedSessions[id] || sessionValue(createPlaybackRuntimeState());
   Object.assign(state, incoming);
@@ -142,7 +187,7 @@ function resumeSavedTrack(state, commands, effects = [], nowMs = Date.now()) {
     startedPositionSeconds: state.positionSeconds };
   commands.push({ type: PlaybackCommandType.PLAY_TRACK, ...commandIdentity(state, track, correlationId),
     url: track.url, positionSeconds: state.positionSeconds, resume: true });
-  discardStalePredecessorNarration(state, track);
+  noticePlaybackGap(state, effects, nowMs);
   requestNarrationForActivation(state, track, correlationId, effects);
   prepareUpcomingNarration(state, state.currentIndex, effects);
   state.txn.narrationGenerationRevision = track.narration.generationRevision;
@@ -171,6 +216,62 @@ function commandIdentity(state, track, correlationId) {
     virtualPersonId: track.virtualPersonId,
     voiceProfileId: track.voiceProfileId,
   };
+}
+
+// 作废一条没说出口的串词：文字和声音都不留，这一首接下来安静播放。
+function dropUnspokenLine(narration) {
+  narration.status = 'absent';
+  narration.assetStatus = 'missing';
+  if (narration.spoken !== true) narration.text = '';
+  narration.ttsUrl = null;
+  narration.contentHash = null;
+  narration.spokenText = null;
+  narration.performance = null;
+  if (narration.spoken !== true) narration.about = null;
+  narration.previousSongId = null;
+  narration.writtenAt = null;
+  narration.membershipRevision = null;
+}
+
+function markAudible(state, nowMs) {
+  if (Number.isFinite(nowMs)) state.lastAudibleAtMs = nowMs;
+}
+
+/**
+ * 恢复入口调用（激活、接着放、暂停后继续、重启后的开播确认）。距最后出声满 PLAYBACK_GAP_MS，
+ * 停下之前写好、没说出口的串词作废：从中途接着放的当前这首只作废、不补说；排在前面的至多
+ * PLAYBACK_GAP_REWRITE_LIMIT 首开新代次，交给原 host 重写；更多的安静播放。处理完清空
+ * lastAudibleAtMs，同一次停顿不处理两次，下一次确认出声时再记。
+ */
+function noticePlaybackGap(state, effects, nowMs) {
+  const stoppedAtMs = state.lastAudibleAtMs;
+  if (!Number.isFinite(stoppedAtMs) || !Number.isFinite(nowMs) || nowMs - stoppedAtMs < PLAYBACK_GAP_MS) return;
+  state.lastAudibleAtMs = null;
+  if (state.currentIndex < 0) return;
+  const resumesMidway = Number(state.positionSeconds) > 0;
+  const rewritten = [];
+  const dropped = [];
+  for (let index = state.currentIndex; index < state.queue.length; index += 1) {
+    const track = state.queue[index];
+    const narration = track?.narration;
+    if (narration?.status !== 'ready' || narration.spoken === true) continue;
+    // 没有写作时间的早先串词照旧交给交付前核对；停下之后才写好的不算旧的。
+    if (!Number.isFinite(narration.writtenAt) || narration.writtenAt > stoppedAtMs) continue;
+    dropUnspokenLine(narration);
+    if ((index === state.currentIndex && resumesMidway) || rewritten.length >= PLAYBACK_GAP_REWRITE_LIMIT) {
+      dropped.push(track.queueItemId);
+      continue;
+    }
+    narration.status = 'preparing';
+    narration.generationRevision += 1;
+    rewritten.push(track.queueItemId);
+  }
+  if (!rewritten.length && !dropped.length) return;
+  state.diagnostics.push({ type: 'track-line-dropped', reason: 'playback-gap', queueItemIds: [...rewritten, ...dropped],
+    rewritten: rewritten.length, gapMs: nowMs - stoppedAtMs });
+  if (!rewritten.length) return;
+  effects.push({ type: PlaybackEffectType.REWRITE_TRACK_LINES, listeningSessionId: state.activeListeningSessionId,
+    outputGeneration: state.outputGeneration, queueItemIds: rewritten, stoppedAtMs, resumedAtMs: nowMs });
 }
 
 function currentTrack(state) {
@@ -242,6 +343,10 @@ function normalizeCompanionModeFields(sessionState) {
   sessionState.lastAutomaticNarrationAtMs = lastAutomaticNarrationAtMs != null
     && Number.isFinite(Number(lastAutomaticNarrationAtMs))
     ? Number(lastAutomaticNarrationAtMs) : null;
+  // 最后出声时间同样不把缺失当 0：那会让第一次恢复凭空算出一段停顿。
+  const lastAudibleAtMs = sessionState.lastAudibleAtMs;
+  sessionState.lastAudibleAtMs = lastAudibleAtMs != null && Number.isFinite(Number(lastAudibleAtMs))
+    ? Number(lastAudibleAtMs) : null;
 }
 
 /**
@@ -317,78 +422,37 @@ function automaticNarrationBlock(state, nowMs) {
 }
 
 /**
- * Prepare the narration of the following committed occurrence while the current
- * track plays, so its introduction is ready before that occurrence activates.
- * Never speaks, activates or advances anything, and stays bounded to one item.
- * Only a occurrence predicted eligible under the current companion mode is
- * prepared; music-only and cadence-ineligible occurrences start no work.
+ * Synthesise the following occurrence's already written line while the current track
+ * plays, so its voice is ready before that occurrence activates. Never speaks, activates
+ * or advances anything, and stays bounded to one item. Only an occurrence predicted
+ * eligible under the current companion mode starts this work.
  */
 function prepareUpcomingNarration(state, index, effects) {
   const upcoming = state.queue[index + 1];
   if (!upcoming) return;
   if (!occurrenceAutoEligible(state, upcoming.queueItemId)) return;
   const narration = upcoming.narration;
-  // A failed narration is not retried in the background, and an introduction that was
-  // already heard is not rewritten; its activation decides.
-  if (!narration?.context || narration.status === 'failed' || narration.status === 'preparing'
-    || narration.spoken === true) return;
-  const correlationId = `prepare:${upcoming.queueItemId}:${narration.generationRevision}`;
-  const predecessor = trackIdentity(state.queue[index]);
-  if (narration.status === 'ready') {
-    if (narration.assetStatus === 'ready' || narration.assetStatus === 'resolving') return;
-    narration.assetStatus = 'resolving';
-    effects.push(narrationEffect(PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, state, upcoming, correlationId, predecessor));
-    return;
-  }
-  narration.status = 'preparing';
-  narration.generationRevision += 1;
-  effects.push(narrationEffect(PlaybackEffectType.PREPARE_TRACK_NARRATION, state, upcoming,
-    `prepare:${upcoming.queueItemId}:${narration.generationRevision}`, predecessor));
+  // An introduction that was already heard owes nothing until its activation decides.
+  if (narration?.status !== 'ready' || narration.spoken === true) return;
+  if (narration.assetStatus === 'ready' || narration.assetStatus === 'resolving') return;
+  narration.assetStatus = 'resolving';
+  effects.push(narrationEffect(PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, state, upcoming,
+    `prepare:${upcoming.queueItemId}:${narration.generationRevision}`, trackIdentity(state.queue[index])));
 }
 
 /**
- * Narration prepared ahead of an activation predicted its predecessor. If the
- * track that actually played before this one differs, the prepared text must not
- * be delivered as-is: it is invalidated for a fresh preparation.
- */
-function discardStalePredecessorNarration(state, track) {
-  const narration = track?.narration;
-  const preparedFor = narration?.previousSongId || null;
-  if (!narration || !preparedFor || narration.status !== 'ready') return;
-  // An introduction that has already been heard is never automatically delivered
-  // again, so rewriting it would only burn a model call and a TTS render.
-  if (narration.spoken === true) return;
-  const actual = state.lastOutputTrack?.songId || null;
-  if (preparedFor === actual) return;
-  narration.status = 'absent';
-  narration.assetStatus = 'missing';
-  narration.ttsUrl = null;
-  narration.previousSongId = null;
-  state.diagnostics.push({ type: 'track-narration-predecessor-changed', queueItemId: track.queueItemId,
-    preparedFor, actual });
-}
-
-/**
- * The narration work a fresh activation needs. An introduction that has already been
- * heard owes nothing: it is neither rewritten nor re-resolved, because only an explicit
- * listener request re-opens it. A failed artifact is left failed for the same reason.
- * Automatic preparation additionally requires companion-mode eligibility; an explicit
- * listener request re-opens the artifact regardless of the automatic cadence.
+ * The narration work a fresh activation needs: only a written line has any. An
+ * introduction that has already been heard owes nothing, because only an explicit
+ * listener request re-opens it; automatic work additionally requires companion-mode
+ * eligibility. A track without a line plays silently; nothing here writes one.
  */
 function requestNarrationForActivation(state, track, correlationId, effects) {
   if (track.narration.spoken === true) return;
-  // 只听歌或节奏不合格的 occurrence 不启动任何自动模型/TTS 工作（含资产重解析）。
+  // 只听歌或节奏不合格的 occurrence 不启动任何自动 TTS 工作（含资产重解析）。
   if (!occurrenceAutoEligible(state, track.queueItemId)) return;
-  if (track.narration.status === 'ready') {
-    if (track.narration.assetStatus === 'resolving') return;
-    track.narration.assetStatus = 'resolving';
-    effects.push(narrationEffect(PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, state, track, correlationId));
-    return;
-  }
-  if (!track.narration.context || track.narration.status === 'preparing') return;
-  track.narration.status = 'preparing';
-  track.narration.generationRevision += 1;
-  effects.push(narrationEffect(PlaybackEffectType.PREPARE_TRACK_NARRATION, state, track, correlationId));
+  if (track.narration.status !== 'ready' || track.narration.assetStatus === 'resolving') return;
+  track.narration.assetStatus = 'resolving';
+  effects.push(narrationEffect(PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, state, track, correlationId));
 }
 
 /**
@@ -456,9 +520,7 @@ function createActivation(state, index, reason, commands, effects = [], nowMs = 
   const identity = commandIdentity(state, track, correlationId);
   commands.push({ type: PlaybackCommandType.PLAY_TRACK, ...identity, url: track.url,
     ...(positionSeconds > 0 ? { positionSeconds, resume: true } : {}) });
-  // The predecessor only changed when this activation actually moves to another
-  // occurrence; a re-attach of the same one keeps the introduction it was prepared for.
-  if (!reattachesCurrent) discardStalePredecessorNarration(state, track);
+  noticePlaybackGap(state, effects, nowMs);
   requestNarrationForActivation(state, track, correlationId, effects);
   prepareUpcomingNarration(state, index, effects);
   state.txn.narrationGenerationRevision = track.narration.generationRevision;
@@ -466,6 +528,7 @@ function createActivation(state, index, reason, commands, effects = [], nowMs = 
   // 换到这首歌时就评估提前续选（放在串词准备之后）：剩余曲目降到阈值内，
   // 不等最后一首播完才找歌。同曲 reattach 不重复评估。
   if (!reattachesCurrent) maybePrefetchContinuation(state, effects);
+  prunePlayedQueueHistory(state);
   return true;
 }
 
@@ -527,6 +590,7 @@ function commitProgram(state, event, commands, effects, nowMs) {
     || state.currentIndex < 0
     || state.phase === PlaybackPhase.EXHAUSTED;
   if (shouldActivate) createActivation(state, firstNewIndex, event.source === 'auto_continue' ? 'auto_continue' : 'program_committed', commands, effects, nowMs);
+  prunePlayedQueueHistory(state);
 }
 
 function exhaustOrContinue(state, event, effects) {
@@ -682,6 +746,9 @@ function openNarrationWindow(state, commands, nowMs, observation = {}, effects =
  * because this is the only evidence that the committed track actually started.
  */
 function concludeActivation(state, positionSeconds, commands, effects, nowMs) {
+  // 重启后重新接上的这首没有经过激活入口：在这里补一次停顿判断（已处理过的不会再处理）。
+  noticePlaybackGap(state, effects, nowMs);
+  markAudible(state, nowMs);
   state.phase = PlaybackPhase.PLAYING;
   state.hasStarted = true;
   state.txn.phase = PlaybackPhase.PLAYING;
@@ -775,13 +842,7 @@ function applyCompanionModeChange(state, event, commands, effects, { background 
     if (!narration || narration.spoken === true) continue;
     if (index === state.currentIndex && txn?.narrationUserRequested === true) continue;
     if (narration.status === 'ready' || narration.status === 'preparing') {
-      narration.status = 'absent';
-      narration.assetStatus = 'missing';
-      narration.ttsUrl = null;
-      narration.contentHash = null;
-      narration.spokenText = null;
-      narration.performance = null;
-      narration.previousSongId = null;
+      dropUnspokenLine(narration);
       invalidated.push(state.queue[index].queueItemId);
     }
   }
@@ -789,7 +850,7 @@ function applyCompanionModeChange(state, event, commands, effects, { background 
     state.diagnostics.push({ type: 'track-narration-invalidated-by-mode', queueItemIds: invalidated,
       previousModeId, nextModeId });
   }
-  // 后台编辑丢弃 effects：在这里置 preparing 会留下没有 worker 的串词；被挂起会话在激活时重新准备。
+  // 后台编辑丢弃 effects：被挂起会话的声音等它激活时再合成。
   if (!background) prepareUpcomingNarration(state, state.currentIndex, effects);
   state.diagnostics.push({ type: 'companion-mode-changed', previousModeId, nextModeId,
     modeRevision: state.modeRevision, modeSource: state.modeSource });
@@ -803,11 +864,12 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
     case PlaybackEventType.TRACK_ARTWORK_RESOLVED: {
       // 只补元数据：不重建队列、不切换当前项、不碰 phase/txn/outputGeneration。
       // 合法性（目标存在、是歌曲项、当前无封面）已在 reducePlayback 的准入阶段判定。
-      const index = state.queue.findIndex(item => item.queueItemId === event.queueItemId);
-      if (index < 0) return;
-      const next = state.queue.slice();
-      next[index] = { ...next[index], artwork: event.artwork.trim() };
-      state.queue = next;
+      const entries = Array.isArray(event.repairs)
+        ? event.repairs
+        : [{ queueItemId: event.queueItemId, artwork: event.artwork }];
+      const byId = new Map(entries.map(entry => [entry.queueItemId, entry.artwork.trim()]));
+      state.queue = state.queue.map(item => (byId.has(item.queueItemId)
+        ? { ...item, artwork: byId.get(item.queueItemId) } : item));
       return;
     }
     case PlaybackEventType.QUEUE_EDIT_REQUESTED: {
@@ -824,14 +886,18 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
       return;
     }
     case PlaybackEventType.NARRATION_CONTEXT_STALE_REQUESTED: {
-      // Life-context changes also revoke the current introduction, including an
-      // already queued or speaking overlay. The cancel command restores music gain.
+      // 没说出口的串词作废，不改写：没有串词的歌安静播放。默认只动待播；includeCurrent
+      // 时（生活资料撤销、交付前发现过期）连当前这首也撤下，已在说的由 cancel 恢复音量。
       const invalidated = [];
+      const only = Array.isArray(event.queueItemIds) ? new Set(event.queueItemIds) : null;
       const first = event.includeCurrent === true ? Math.max(0, state.currentIndex) : state.currentIndex + 1;
       for (let index = first; index < state.queue.length; index += 1) {
         const narration = state.queue[index]?.narration;
-        if (!narration || (narration.spoken === true && index !== state.currentIndex)
-          || (narration.status !== 'ready' && !(event.includeCurrent === true && narration.status === 'preparing'))) continue;
+        if (only && !only.has(state.queue[index].queueItemId)) continue;
+        const currentInFlight = index === state.currentIndex && !background
+          && ['queued', 'starting', 'speaking'].includes(state.txn?.narrationDelivery);
+        if (!narration || (narration.spoken === true && !currentInFlight)
+          || !['ready', 'preparing'].includes(narration.status)) continue;
         if (index === state.currentIndex && state.txn) {
           const delivery = state.txn.narrationDelivery;
           if (['queued', 'starting', 'speaking'].includes(delivery) && !background) {
@@ -839,24 +905,17 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
               ...commandIdentity(state, state.queue[index], state.txn.correlationId),
               reason: 'life-context-revoked', narrationContentHash: narration.contentHash || null });
           }
-          recordNarrationSkip(state, 'life-context-stale');
+          recordNarrationSkip(state, event.dropReason ? 'line-dropped' : 'life-context-stale');
         }
-        narration.status = 'absent';
-        narration.assetStatus = 'missing';
-        narration.ttsUrl = null;
-        narration.contentHash = null;
-        narration.spokenText = null;
-        narration.performance = null;
-        narration.previousSongId = null;
+        dropUnspokenLine(narration);
+        // 代次前移：还在写的那一轮交上来也会被拒绝。
         narration.generationRevision += 1;
         invalidated.push(state.queue[index].queueItemId);
       }
       if (invalidated.length) {
-        state.diagnostics.push({ type: 'track-narration-invalidated-by-memory', queueItemIds: invalidated });
-        // A background edit discards effects, so re-arming here would strand a
-        // 'preparing' artifact with no worker; a suspended session re-prepares on
-        // activation instead. The active session re-arms within this transition.
-        if (!background) prepareUpcomingNarration(state, state.currentIndex, effects);
+        state.diagnostics.push(event.dropReason
+          ? { type: 'track-narration-dropped', queueItemIds: invalidated, reason: String(event.dropReason).slice(0, 40) }
+          : { type: 'track-narration-invalidated-by-memory', queueItemIds: invalidated });
       }
       return;
     }
@@ -914,6 +973,7 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
     }
     case PlaybackEventType.TRACK_ENDED: {
       if (event.natural !== true || !eventMatchesCurrent(state, event, { correlation: false })) return;
+      if (state.phase === PlaybackPhase.PLAYING) markAudible(state, nowMs);
       if (state.pendingSwitch) {
         const target = state.pendingSwitch.listeningSessionId;
         const ended = currentTrack(state);
@@ -990,6 +1050,7 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
       // because the estimate cannot advance past a frozen confirmed position.
       if ([PlaybackPhase.PLAYING, PlaybackPhase.LOADING].includes(state.phase)
         && eventMatchesCurrent(state, event, { correlation: false })) {
+        if (state.phase === PlaybackPhase.PLAYING) markAudible(state, nowMs);
         state.positionSeconds = Number.isFinite(event.positionSeconds)
           ? Math.max(0, event.positionSeconds)
           : estimatedPositionSeconds(state, nowMs);
@@ -1015,6 +1076,7 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
       }
       if (state.phase === PlaybackPhase.PAUSED && eventMatchesCurrent(state, event, { correlation: false })) {
         if (!state.txn) { resumeCurrentOccurrence(state, commands, effects, nowMs); return; }
+        noticePlaybackGap(state, effects, nowMs);
         state.phase = PlaybackPhase.PLAYING;
         state.txn.startedPositionSeconds = state.positionSeconds;
         state.txn.startedAtMs = nowMs;
@@ -1042,6 +1104,7 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
         if (state.txn && state.phase === PlaybackPhase.PLAYING) {
           state.txn.startedPositionSeconds = event.positionSeconds;
           state.txn.startedAtMs = nowMs;
+          markAudible(state, nowMs);
         }
         if (state.phase === PlaybackPhase.PLAYING && state.txn?.narrationDelivery === 'queued'
           && narrationWindowExpired(assessNarrationWindow(state, nowMs,
@@ -1108,14 +1171,13 @@ function handleAcceptedEvent(state, event, commands, effects, nowMs, { backgroun
           state.txn.correlationId));
         return;
       }
-      if (!track.narration.context) return;
+      // 明确请求重新打开本激活的交付：即便此前自动路径已记为 skipped。
+      state.txn.narrationDelivery = 'waiting';
+      // 已经有一轮在写：等它交上来。否则开一个新代次，由发起请求的回合接一轮 line pass。
+      if (track.narration.status === 'preparing') return;
       track.narration.status = 'preparing';
       track.narration.generationRevision += 1;
       state.txn.narrationGenerationRevision = track.narration.generationRevision;
-      // 明确请求重新打开本激活的交付：即便此前自动路径已记为 skipped。
-      state.txn.narrationDelivery = 'waiting';
-      effects.push(narrationEffect(PlaybackEffectType.PREPARE_TRACK_NARRATION, state, track,
-        state.txn.correlationId));
       return;
     }
     case PlaybackEventType.NARRATION_WINDOW_OPENED:
@@ -1260,39 +1322,52 @@ function applyBackgroundNarrationEvent(previousState, event, nowMs, idempotencyW
     const text = toPlainText(rawText);
     const spokenCandidate = String(event.spokenText || (rawText !== text ? rawText : '')).trim().slice(0, 1000);
     const spokenText = spokenCandidate && toPlainText(spokenCandidate) === text ? spokenCandidate : null;
-    const ttsUrl = String(event.ttsUrl || '').trim();
     const voiceProfileId = String(event.voiceProfileId || track.narration.voiceProfileId || track.voiceProfileId || '').trim() || null;
-    track.narration.synthesisReason = ttsUrl ? null : synthesisReason(event.synthesisReason) || 'failed';
-    track.narration.synthesisElapsedMs = synthesisElapsed(event.synthesisElapsedMs);
     if (!text) {
       eventFailed = true;
-      track.narration.status = 'failed';
-      track.narration.assetStatus = 'failed';
+      track.narration.status = 'absent';
+      track.narration.assetStatus = 'missing';
       track.narration.ttsUrl = null;
-      state.diagnostics.push({ type: 'track-narration-failed', queueItemId: track.queueItemId,
+      state.diagnostics.push({ type: 'track-line-not-written', queueItemId: track.queueItemId,
         generationRevision: event.generationRevision, reason: 'empty narration' });
     } else {
-      // 已接受的文字与资产分别保存：合成失败不丢掉正文，也不伪造声音交付。
+      // 只存文字：出声要等 TTS，它在这首快开始时才做。
       track.narration.status = 'ready';
-      track.narration.assetStatus = ttsUrl ? 'ready' : 'failed';
+      track.narration.assetStatus = 'missing';
       track.narration.text = text;
       track.narration.spokenText = spokenText;
       track.narration.performance = event.spokenText && !spokenText ? null : normalizePerformance(event.performance);
+      track.narration.about = normalizeLineNote(event.about);
       track.narration.voiceProfileId = voiceProfileId;
-      track.narration.ttsUrl = ttsUrl || null;
-      track.narration.contentHash = String(event.contentHash || '').trim() || null;
-      track.narration.previousSongId = String(event.previousSongId || track.narration.previousSongId || '').trim() || null;
-      eventFailed = !ttsUrl;
-      state.diagnostics.push({ type: ttsUrl ? 'track-narration-prepared' : 'track-narration-asset-failed',
-        queueItemId: track.queueItemId, generationRevision: event.generationRevision,
-        ...(!ttsUrl ? { reason: track.narration.synthesisReason, elapsedMs: track.narration.synthesisElapsedMs } : {}) });
+      track.narration.ttsUrl = null;
+      track.narration.contentHash = null;
+      track.narration.synthesisReason = null;
+      track.narration.synthesisElapsedMs = null;
+      track.narration.writtenAt = Number.isFinite(event.writtenAt) ? event.writtenAt : nowMs;
+      track.narration.membershipRevision = Number.isFinite(event.membershipRevision) ? event.membershipRevision : null;
+      state.diagnostics.push({ type: 'track-line-written', queueItemId: track.queueItemId,
+        generationRevision: event.generationRevision });
+      // 写好时已经轮到（或马上轮到）这首：这时补上 TTS；更远的等它进入窗口。
+      if (targetId === state.activeListeningSessionId) {
+        const index = state.queue.indexOf(track);
+        const isCurrent = index === state.currentIndex;
+        const requested = isCurrent && state.txn?.queueItemId === track.queueItemId && state.txn.narrationUserRequested === true;
+        if (track.narration.spoken !== true
+          && (requested || ((isCurrent || index === state.currentIndex + 1) && occurrenceAutoEligible(state, track.queueItemId)))) {
+          track.narration.assetStatus = 'resolving';
+          effects.push(narrationEffect(PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, state, track,
+            isCurrent ? state.txn?.correlationId || `asset:${track.queueItemId}:${event.generationRevision}`
+              : `prepare:${track.queueItemId}:${event.generationRevision}`,
+            isCurrent ? state.lastOutputTrack : trackIdentity(state.queue[state.currentIndex])));
+        }
+      }
     }
   } else if (event.type === PlaybackEventType.TRACK_NARRATION_FAILED) {
-    track.narration.status = 'failed';
-    track.narration.assetStatus = 'failed';
-    state.diagnostics.push({ type: 'track-narration-failed', queueItemId: track.queueItemId,
-      generationRevision: event.generationRevision, reason: synthesisReason(event.synthesisReason) || 'failed',
-      elapsedMs: synthesisElapsed(event.synthesisElapsedMs) });
+    // 没写成就是没有串词：这首安静播放，不算错误状态。
+    track.narration.status = 'absent';
+    track.narration.assetStatus = 'missing';
+    state.diagnostics.push({ type: 'track-line-not-written', queueItemId: track.queueItemId,
+      generationRevision: event.generationRevision, reason: String(event.reason || 'not-written').slice(0, 40) });
   } else if (event.type === PlaybackEventType.TRACK_NARRATION_ASSET_READY) {
     const ttsUrl = String(event.ttsUrl || '').trim();
     if (!ttsUrl) {
@@ -1339,7 +1414,7 @@ function applyBackgroundNarrationEvent(previousState, event, nowMs, idempotencyW
     Math.max(16, Number(idempotencyWindow) || DEFAULT_IDEMPOTENCY_WINDOW));
   state.diagnostics = cap(state.diagnostics, 100);
   state.version += 1;
-  const frozenState = deepFreeze(state);
+  const frozenState = freezeRuntimeState(state);
   const versionedCommands = commands.map(command => deepFreeze({ ...command, runtimeVersion: frozenState.version,
     listeningSessionId: state.activeListeningSessionId, conversationId: state.activeListeningSessionId,
     outputGeneration: state.outputGeneration }));
@@ -1349,7 +1424,7 @@ function applyBackgroundNarrationEvent(previousState, event, nowMs, idempotencyW
 export function reducePlayback(previousState, event, options = {}) {
   const validation = validatePlaybackEvent(event);
   if (!validation.ok) return deepFreeze({ state: previousState, commands: [], effects: [], accepted: false, reason: validation.error });
-  if (!isPlaybackRuntimeSnapshot(previousState)) {
+  if (!VALID_RUNTIME_SNAPSHOTS.has(previousState) && !isPlaybackRuntimeSnapshot(previousState)) {
     return deepFreeze({ state: previousState, commands: [], effects: [], accepted: false, reason: 'invalid runtime state' });
   }
   if (previousState.processedEventIds.includes(event.eventId)) {
@@ -1364,7 +1439,9 @@ export function reducePlayback(previousState, event, options = {}) {
   }
   const reject = reason => deepFreeze({ state: previousState, commands: [], effects: [], accepted: false, reason });
   const targetId = event.listeningSessionId || previousState.activeListeningSessionId;
-  const target = listeningSnapshot(previousState, targetId);
+  const target = targetId === previousState.activeListeningSessionId
+    ? previousState
+    : (previousState.suspendedSessions[targetId] || createPlaybackRuntimeState());
   if (event.expectedQueueVersion != null && event.expectedQueueVersion !== target.queueVersion) return reject('stale listening queue version');
   if (event.type === PlaybackEventType.COMPANION_MODE_CHANGED && event.expectedRevision != null
     && event.expectedRevision !== (target.modeRevision || 0)) {
@@ -1430,9 +1507,14 @@ export function reducePlayback(previousState, event, options = {}) {
     // metadata-only 修复只作用于活动会话里真实存在的歌曲项，且只补「当前没有封面」的项：
     // 已释放的 occurrence、已有封面都拒收，避免它变成第二个封面真相源。
     if (targetId !== previousState.activeListeningSessionId) return reject('artwork repair targets an inactive listening session');
-    const repairTarget = previousState.queue.find(track => track.queueItemId === event.queueItemId) || null;
-    if (!repairTarget) return reject('artwork repair target is not in the queue');
-    if (String(repairTarget.artwork || '').trim()) return reject('artwork already present');
+    const entries = Array.isArray(event.repairs)
+      ? event.repairs
+      : [{ queueItemId: event.queueItemId, artwork: event.artwork }];
+    for (const entry of entries) {
+      const repairTarget = previousState.queue.find(track => track.queueItemId === entry.queueItemId) || null;
+      if (!repairTarget) return reject('artwork repair target is not in the queue');
+      if (String(repairTarget.artwork || '').trim()) return reject('artwork already present');
+    }
   }
   if (event.type === PlaybackEventType.NARRATION_REQUESTED) {
     // Only the occurrence that is actually playing may be spoken for.
@@ -1443,6 +1525,31 @@ export function reducePlayback(previousState, event, options = {}) {
   if (event.type === PlaybackEventType.CARD_SELECTED && !event.queueItemId
     && previousState.queue.filter(track => track.songId === String(event.songId || '')).length > 1) {
     return reject('ambiguous song id; queueItemId required');
+  }
+  if (event.type === PlaybackEventType.POSITION_REPORTED) {
+    const next = { ...previousState };
+    if ([PlaybackPhase.PLAYING, PlaybackPhase.PAUSED, PlaybackPhase.LOADING].includes(previousState.phase)) {
+      next.positionSeconds = event.positionSeconds;
+      if (previousState.txn && previousState.phase === PlaybackPhase.PLAYING) {
+        next.txn = { ...previousState.txn, startedPositionSeconds: event.positionSeconds, startedAtMs: nowMs };
+        markAudible(next, nowMs);
+      }
+      if (previousState.phase === PlaybackPhase.PLAYING && next.txn?.narrationDelivery === 'queued'
+        && narrationWindowExpired(assessNarrationWindow(next, nowMs,
+          { observedPositionSeconds: event.positionSeconds, durationSeconds: currentTrack(next)?.duration }))) {
+        next.diagnostics = [...previousState.diagnostics];
+        recordNarrationSkip(next, 'delivery-window-expired-before-start');
+        next.diagnostics = cap(next.diagnostics, 100);
+      }
+    }
+    const limit = Math.max(16, Number(options.idempotencyWindow) || DEFAULT_IDEMPOTENCY_WINDOW);
+    next.processedEventIds = cap([...previousState.processedEventIds, event.eventId], limit);
+    if (previousState.completedCorrelationIds.length > limit) {
+      next.completedCorrelationIds = cap([...new Set(previousState.completedCorrelationIds)], limit);
+    }
+    next.version = previousState.version + 1;
+    const frozenState = freezeRuntimeState(next);
+    return deepFreeze({ state: frozenState, commands: [], effects: [], accepted: true, reason: null });
   }
   const state = mutableCopy(previousState);
   const commands = [];
@@ -1478,7 +1585,7 @@ export function reducePlayback(previousState, event, options = {}) {
   state.completedCorrelationIds = cap([...new Set(state.completedCorrelationIds)], limit);
   state.diagnostics = cap(state.diagnostics, 100);
   state.version += 1;
-  const frozenState = deepFreeze(state);
+  const frozenState = freezeRuntimeState(state);
   const versionedCommands = commands.map(command => deepFreeze({ ...command, runtimeVersion: frozenState.version,
     listeningSessionId: state.activeListeningSessionId, conversationId: state.activeListeningSessionId, outputGeneration: state.outputGeneration }));
   const versionedEffects = effects.map(effect => deepFreeze({ ...effect, runtimeVersion: frozenState.version }));
@@ -1486,7 +1593,7 @@ export function reducePlayback(previousState, event, options = {}) {
 }
 
 export function resumeCommandsForState(state) {
-  if (!isPlaybackRuntimeSnapshot(state) || !state.txn) return [];
+  if ((!VALID_RUNTIME_SNAPSHOTS.has(state) && !isPlaybackRuntimeSnapshot(state)) || !state.txn) return [];
   const track = currentTrack(state);
   if (!track) return [];
   const identity = {
@@ -1530,22 +1637,7 @@ export function resumeEffectsForState(state) {
   for (const [listeningSessionId, session] of sessions) {
     for (const track of session.queue || []) {
       const artifact = track.narration;
-      if (artifact?.status === 'preparing') effects.push({
-        type: PlaybackEffectType.PREPARE_TRACK_NARRATION,
-        queueItemId: track.queueItemId,
-        generationRevision: artifact.generationRevision,
-        listeningSessionId,
-        requestId: track.requestId,
-        programId: track.programId,
-        songId: track.songId,
-        correlationId: session.txn?.queueItemId === track.queueItemId
-          ? session.txn.correlationId : `prepare:${track.queueItemId}:${artifact.generationRevision}`,
-        voiceProfileId: artifact.voiceProfileId || track.voiceProfileId,
-        track,
-        previousTrack: state.lastOutputTrack,
-        transitionReason: session.txn?.reason || 'recovered-preparation',
-      });
-      else if (artifact?.status === 'ready' && artifact.assetStatus === 'resolving') effects.push({
+      if (artifact?.status === 'ready' && artifact.assetStatus === 'resolving') effects.push({
         type: PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET,
         queueItemId: track.queueItemId,
         generationRevision: artifact.generationRevision,
@@ -1561,6 +1653,18 @@ export function resumeEffectsForState(state) {
     }
   }
   return effects;
+}
+
+/** 进程重启后没有人还在写：写到一半的归为没有串词，这些歌安静播放。 */
+function settleInterruptedLines(state) {
+  const queues = [state.queue || [], ...Object.values(state.suspendedSessions || {}).map(session => session?.queue || [])];
+  const settled = [];
+  for (const track of queues.flat()) {
+    if (track?.narration?.status !== 'preparing') continue;
+    track.narration = { ...track.narration, status: 'absent', assetStatus: 'missing' };
+    settled.push(track.queueItemId);
+  }
+  if (settled.length) state.diagnostics?.push({ type: 'track-line-not-written', reason: 'interrupted', queueItemIds: settled });
 }
 
 export function hydratePlaybackRuntimeState(snapshot) {
@@ -1619,9 +1723,11 @@ export function hydratePlaybackRuntimeState(snapshot) {
       message: 'invalid runtime snapshot recovered to safe idle',
     };
     recovered.diagnostics.push({ type: 'snapshot-recovery', preservedTracks: recovered.queue.length });
-    return deepFreeze(recovered);
+    settleInterruptedLines(recovered);
+    return freezeRuntimeState(recovered);
   }
   const state = cloneRuntimeValue(snapshot);
+  settleInterruptedLines(state);
   state.narrationPolicy = { ...DEFAULT_NARRATION_POLICY, ...(state.narrationPolicy || {}) };
   state.radioModeOverride ??= null;
   normalizeCompanionModeFields(state);
@@ -1631,10 +1737,12 @@ export function hydratePlaybackRuntimeState(snapshot) {
     backfillTxnModeRevision(session);
   }
   state.queue = state.queue.map((track, index) => normalizeRuntimeTrack(track, index));
+  prunePlayedQueueHistory(state);
   for (const [sessionId, session] of Object.entries(state.suspendedSessions || {})) {
     session.queue = (session.queue || []).map((track, index) => normalizeRuntimeTrack({
       ...track, conversationId: track.conversationId || sessionId,
     }, index));
+    prunePlayedQueueHistory(session);
     if (session.txn && session.currentIndex >= 0) session.txn.queueItemId ||= session.queue[session.currentIndex]?.queueItemId;
   }
   if (state.txn && state.currentIndex >= 0) state.txn.queueItemId ||= state.queue[state.currentIndex]?.queueItemId;
@@ -1658,5 +1766,5 @@ export function hydratePlaybackRuntimeState(snapshot) {
     state.pendingContinuation = { ...state.pendingContinuation, status: 'requested', recovered: true,
       attempts: Number(state.pendingContinuation.attempts || 0) + 1 };
   }
-  return deepFreeze(state);
+  return freezeRuntimeState(state);
 }

@@ -6,14 +6,18 @@ import { createChatInputView } from './chatInputView.js';
 function element() {
   const listeners = new Map();
   const classes = new Set();
+  const attributes = new Map();
   return {
     value: '',
     disabled: false,
+    hidden: false,
     textContent: '',
     classList: {
       toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); },
       contains: name => classes.has(name),
     },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    getAttribute(name) { return attributes.get(name) ?? null; },
     addEventListener(type, listener) {
       const bucket = listeners.get(type) || new Set();
       bucket.add(listener);
@@ -142,4 +146,53 @@ test('quoting a message writes the quote block above the draft and leaves the ca
   view.setLocked(true);
   assert.equal(view.insertQuote('引用 我：又来一句'), false);
   assert.equal(input.value, '> 引用 我：刚才那句\n\n我这两天有点累');
+});
+
+test('pending state keeps click-to-interject when draft has text and routes stop to dedicated button', () => {
+  const input = element();
+  const button = element();
+  const stopButton = element();
+  const submissions = [];
+  let cancels = 0;
+  let editRequests = 0;
+  const view = createChatInputView({
+    compose: element(),
+    input,
+    sendButton: button,
+    stopButton,
+    hint: element(),
+    hintText: element(),
+    onSubmit: value => submissions.push(value),
+    onCancel: () => { cancels += 1; },
+    onEditLastUserMessage: () => { editRequests += 1; return true; },
+  }).init();
+
+  view.setPending(true, '正在回复…');
+  assert.equal(button.classList.contains('stop'), true);
+  assert.equal(stopButton.hidden, true);
+  button.emit('click');
+  assert.equal(cancels, 1);
+
+  input.value = '换首轻快一点的';
+  input.emit('input');
+  assert.equal(button.classList.contains('stop'), false);
+  assert.equal(button.getAttribute('aria-label'), '插话发送');
+  assert.equal(stopButton.hidden, false);
+
+  button.emit('click');
+  assert.deepEqual(submissions, ['换首轻快一点的']);
+  assert.equal(cancels, 1);
+  assert.equal(button.classList.contains('stop'), true);
+  assert.equal(stopButton.hidden, true);
+
+  input.value = '再插一句';
+  input.emit('input');
+  stopButton.emit('click');
+  assert.equal(cancels, 2);
+
+  view.setPending(false);
+  input.value = '';
+  input.emit('input');
+  input.emit('keydown', { key: 'ArrowUp' });
+  assert.equal(editRequests, 1);
 });

@@ -13,7 +13,7 @@ import { isSongTagAutoEnabled } from './songtags/songTagConfig.js';
 import { readSourcePolicy, sourceAllowed } from './music/sourcePolicy.js';
 import { providerRegistry } from './music/providerRegistry.js';
 import { SOURCE_FAILURE, classifySourceFailure, dominantSourceFailure, publicFailures } from './music/sourceFailure.js';
-import { reportSourceHealth } from './music/sourceHealthSignal.js';
+import { beginSourceHealthAttempt, reportSourceHealth } from './music/sourceHealthSignal.js';
 import { getTrackArtworkStore } from './media/sharedTrackArtwork.js';
 import { remoteAudioUrl } from './media/remoteAudioProxy.js';
 
@@ -82,17 +82,19 @@ export function createMusicResolver(dependencies = {}) {
       song_id: track.song_id, code, error: 'canonical-resource-unavailable' });
     // 能力门：锁定身份要直取音源，这个源必须声明过 url 能力。
     if (!source || !providerRegistry.supports(provider, 'url')) return failure();
+    const reportSuccess = beginSourceHealthAttempt(provider);
     try {
       signal?.throwIfAborted();
       const [url, lyric] = await Promise.all([source.songUrl(track.song_id), source.lyric(track.song_id)]);
       signal?.throwIfAborted();
       if (!url) { reportSourceHealth(provider, SOURCE_FAILURE.NOT_PLAYABLE); return failure(); }
-      const cached = await source.cacheAudio(track.song_id, url, { expectedDurationSeconds: Number(track.duration) || 0 });
+      const [cached, artwork] = await Promise.all([
+        source.cacheAudio(track.song_id, url, { expectedDurationSeconds: Number(track.duration) || 0 }),
+        artworkFor(track, provider, signal),
+      ]);
       signal?.throwIfAborted();
-      const artwork = await artworkFor(track, provider, signal);
-      signal?.throwIfAborted();
-      // 直取成功是该源「刚才能给出可播资源」的真实证据。
-      reportSourceHealth(provider, null);
+      // 只有未跨过更新故障的成功观察才能恢复来源；缓存/封面等待不会更新证据代次。
+      reportSuccess();
       // 缓存没成也不回落供应商直链：跨源媒体元素在 Web Audio 图里会被静音播放，
       // 而播放器仍会把它记成正常播完。同源中继见 server/media/remoteAudioProxy.js。
       return { ...track, ok: true, query, source: provider,
@@ -190,13 +192,14 @@ export function createMusicResolver(dependencies = {}) {
         emit(`resolveTrack: provider=${name} reason=${SOURCE_FAILURE.INTERNAL} detail=unwired`);
         continue;
       }
+      const reportSuccess = beginSourceHealthAttempt(name);
       try {
         const result = await providers[name].resolveQuery(query);
         opts.signal?.throwIfAborted();
         if (result.ok && result.url) {
           const track = { ...result, source: name };
-          // 搜索命中即该源此刻可用：设置页的「最近观察」应当立刻恢复 ready。
-          reportSourceHealth(name, null);
+          // 普通搜索也必须校验开始时的故障代次，迟到结果不能覆盖新故障。
+          reportSuccess();
           remember([track], name);
           autoTag(track);
           return track;

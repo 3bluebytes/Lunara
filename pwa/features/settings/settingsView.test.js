@@ -65,7 +65,7 @@ function createSettingsHarness({ customConfig, failures, discoveredVoices, previ
   const nodes = new Map(selectors.map(selector => [selector, element()]));
   nodes.get('#settings-panel').hidden = true;
   // 分类导航与页面列表：真实 DOM 里是静态节点，测试里用注入的子元素断言切换。
-  const pageIds = ['general', 'appearance', 'memory', 'connection', 'usage', 'voice'];
+  const pageIds = ['general', 'appearance', 'memory', 'connection', 'usage', 'voice', 'tags', 'failover'];
   const navItems = Object.fromEntries(pageIds.map(id => {
     const item = element();
     item.dataset.settingsPage = id;
@@ -326,6 +326,20 @@ test('打开面板默认落在「模型与连接」，点导航可切页且互�
   // 未知页回落到 connection，不留空屏
   harness.view.setPage('nope');
   assert.equal(harness.pages.connection.hidden, false);
+  harness.view.destroy();
+});
+
+test('故障切换是独立分类，未知页仍回到模型与连接', async () => {
+  const harness = createSettingsHarness();
+  await harness.view.start();
+  harness.view.open();
+  harness.view.setPage('failover');
+  assert.equal(harness.pages.failover.hidden, false, '故障切换页可打开');
+  assert.equal(harness.pages.connection.hidden, true);
+  assert.equal(harness.navItems.failover.classList.contains('active'), true);
+  harness.view.setPage('nope');
+  assert.equal(harness.pages.connection.hidden, false, '未知页仍回落 connection');
+  assert.equal(harness.pages.failover.hidden, true);
   harness.view.destroy();
 });
 
@@ -1099,4 +1113,43 @@ test('语音接口：没有失败记录时如实说明；读取失败显示原�
   await flushAsync();
   assert.match(broken.nodes.get('#tts-endpoint-failures-summary').textContent, /读取失败记录失败：服务不可用/);
   broken.view.destroy();
+});
+
+test('存在未保存改动时首次关闭先拦截提醒，二次确认才关闭；常规页二次保存停留在当前子页', async () => {
+  const sections = [];
+  const harness = createSettingsHarness({ onSectionChange: id => sections.push(id) });
+  harness.storage.setItem('lunara.bootDone', '1');
+  await harness.view.start();
+  harness.view.open();
+  await flushAsync();
+
+  // [data-settings-page-link] 支持音乐账号与播放来源双向互跳
+  const toGeneral = element();
+  toGeneral.dataset.settingsPageLink = 'general';
+  await harness.nodes.get('#settings-content').trigger('click', {
+    target: childTarget({ '[data-settings-page-link]': toGeneral }),
+  });
+  assert.equal(harness.pages.general.hidden, false);
+  assert.equal(sections.at(-1), 'general');
+
+  // 修改播放来源产生脏状态：首次点击关闭仅提示不关闭
+  const single = harness.modes[0];
+  single.checked = true;
+  await single.trigger('change');
+  await harness.nodes.get('#boot-close').trigger('click');
+  assert.equal(harness.view.isOpen(), true, '首次关闭存在未存草稿时需拦截');
+  assert.match(harness.nodes.get('#boot-warn').textContent, /未保存/);
+
+  // 保存成功后消除脏状态，且停留在当前 general 子页不踢出
+  await harness.nodes.get('#boot-go').trigger('click');
+  assert.equal(harness.view.isOpen(), true, '常规页保存设置后不强制关闭面板');
+  assert.equal(harness.pages.general.hidden, false, '仍停留在正在配置的常规子页');
+
+  // 再次产生未保存改动后，连续两次关闭可确认放弃并退出
+  harness.modes[1].checked = true;
+  await harness.modes[1].trigger('change');
+  assert.equal(harness.view.close(), false);
+  assert.equal(harness.view.close(), true);
+  assert.equal(harness.view.isOpen(), false);
+  harness.view.destroy();
 });

@@ -116,6 +116,11 @@ test('撤销后蒸馏不再重建', async () => {
   const next = await distiller.distill('host-t1', { manual: true });
   assert.equal(next.code, 'SCHEMA_REVOKED');
   assert.equal(distiller.schemaRow(svc, svc.namespace), null, '无未撤销图式行');
+  // 定时清理把过期的被撤回行删掉后，墓碑仍在，图式照样不重建。
+  svc.store.deleteExpired(svc.namespace);
+  assert.equal(svc.store.getById(row.id), null);
+  assert.equal((await distiller.distill('host-t1', { manual: true })).code, 'SCHEMA_REVOKED');
+  assert.equal(distiller.schemaRow(svc, svc.namespace), null);
 });
 
 test('stationMemoryTarget 与 collectStationTasteSchemas 装配', async () => {
@@ -172,4 +177,23 @@ test('会话限定与私密记忆不进入图式，且 evidence 记录贡献来�
   assert.ok(!evidence.contributorIds.includes(scoped.id), '被排除的来源不记为贡献者');
   assert.ok(!evidence.contributorIds.includes(secret.id));
   assert.equal(evidence.scope, 'widest-audience', '显式记录图式的适用面');
+});
+
+test('上一版的来源被忘掉后，重新蒸馏不把上一版交给模型', async () => {
+  const svc = await makeService();
+  const add = (content, key) => svc.addMemory({ namespace: svc.namespace, type: 'semantic', source: 'user_explicit_feedback', content,
+    tags: ['person-relationship'], evidence: JSON.stringify({ writeKey: key, sourceTurnId: `T-${key}`, policy: { disclosure: 'normal' } }) });
+  const secret = add('用户失眠吃药时只听周杰伦', 'k1');
+  add('用户喜欢 R&B', 'k2');
+  const prompts = [];
+  const distiller = makeService2(svc, { llm: {
+    askText: async prompt => { prompts.push(prompt); return JSON.stringify({ content: '- 用户失眠吃药时只听周杰伦\n- 用户喜欢 R&B' }); },
+    extractJson: text => JSON.parse(text),
+  } });
+  assert.ok((await distiller.distill('host-t1')).ok);
+  assert.ok((await distiller.distill('host-t1', { manual: true })).ok);
+  assert.match(prompts[1], /失眠吃药/, '来源都有效时上一版照常交给模型');
+  revokeMemory(svc.store, secret.id);
+  assert.ok((await distiller.distill('host-t1', { manual: true })).ok);
+  assert.doesNotMatch(prompts[2], /失眠吃药/, '上一版与被忘的事实都不进提示');
 });

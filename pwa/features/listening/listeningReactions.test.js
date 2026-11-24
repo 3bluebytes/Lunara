@@ -45,8 +45,10 @@ function fixture({
   const buttons = [button('like'), button('dislike')];
   const slots = [statusSlot()];
   const retries = [retryButton()];
+  const groups = [{ hidden: false }];
   const documentLike = {
     querySelectorAll: selector => {
+      if (selector === '[data-reactions]') return groups;
       if (selector.includes('[data-reaction-status]')) return slots;
       if (selector.includes('[data-reaction-retry]')) return retries;
       return buttons;
@@ -70,7 +72,7 @@ function fixture({
   const track = { queueItemId: 'q-a', songId: '186016', source: 'ncm', listeningSessionId: 'room' };
   reaction.setTrack(track);
   return {
-    reaction, track, buttons, slots, retries, values, errors, confirms, notices,
+    reaction, track, buttons, slots, retries, groups, values, errors, confirms, notices,
     click: async kind => {
       const target = buttons.find(b => b.dataset.reaction === kind);
       await handlers.get('click')({ target });
@@ -242,11 +244,31 @@ test('a failed dismissal preserves local state and reports an error', async () =
   } finally { f.reaction.destroy(); }
 });
 
-test('browsing another source cannot like or dismiss on the active song', async () => {
+test('browsing another source cannot like or dismiss on the active song in listening-panel, with clear title, while focus-stage stays enabled', async () => {
+  const focusLike = {
+    dataset: { reaction: 'like' },
+    disabled: false,
+    attrs: {},
+    setAttribute(name, value) { this.attrs[name] = value; },
+    closest(selector) {
+      const name = String(selector);
+      if (name.includes('reaction-retry') || name.includes('listening-panel')) return null;
+      return this;
+    },
+    focus() {},
+  };
   const f = fixture();
+  f.buttons.push(focusLike);
   try {
     f.reaction.setTrack({ ...f.track, browsingSessionId: 'other' });
     assert.equal(f.buttons[0].disabled, true);
+    assert.equal(f.buttons[1].disabled, true);
+    assert.equal(f.buttons[0].attrs['aria-label'], '喜欢（正在浏览别的聊天）');
+    assert.equal(f.buttons[1].attrs['aria-label'], '不喜欢（正在浏览别的聊天）');
+    assert.match(f.buttons[0].attrs.title, /正在浏览别的聊天，暂不可在此页评价/);
+    assert.match(f.buttons[1].attrs.title, /正在浏览别的聊天，暂不可在此页评价/);
+    assert.equal(focusLike.disabled, false, '全屏专注舞台不归属单个浏览会话，仍可评价');
+    assert.equal(focusLike.attrs['aria-label'], '喜欢');
   } finally { f.reaction.destroy(); }
 });
 
@@ -351,5 +373,16 @@ test('unliking a local-only like needs no confirmation because nothing is in the
     await f.click('like');
     assert.equal(f.confirms.length, 0, '只在本机记过的喜欢，取消时不打扰');
     assert.equal(f.likePressed(), 'false');
+  } finally { f.reaction.destroy(); }
+});
+
+test('没有歌在放时整组收起，有歌时再出现', () => {
+  const f = fixture();
+  try {
+    assert.equal(f.groups[0].hidden, false);
+    f.reaction.setTrack(null);
+    assert.equal(f.groups[0].hidden, true);
+    f.reaction.setTrack(f.track);
+    assert.equal(f.groups[0].hidden, false);
   } finally { f.reaction.destroy(); }
 });

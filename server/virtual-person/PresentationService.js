@@ -6,7 +6,8 @@ export class PresentationService {
     this.publish = typeof publish === 'function' ? publish : null;
   }
 
-  create({ text, spokenText = null, entity, sourceTurnId, correlationId = '', conversationId = '', mood = '', speak = true } = {}) {
+  create({ text, spokenText = null, entity, sourceTurnId, correlationId = '', conversationId = '', mood = '', speak = true,
+    beats = null, performance = null } = {}) {
     const displayText = String(text || '').trim();
     const approvedSpoken = spokenText == null ? displayText : String(spokenText).trim();
     const shouldSpeak = speak && Boolean(approvedSpoken);
@@ -14,6 +15,8 @@ export class PresentationService {
       displayText,
       spokenText: shouldSpeak ? approvedSpoken : '',
       speak: shouldSpeak,
+      ...(Array.isArray(beats) && beats.length ? { beats } : {}),
+      ...(performance && typeof performance === 'object' && !Array.isArray(performance) ? { performance } : {}),
       virtualPersonId: entity.id,
       voiceProfileId: entity.voiceProfileId,
       mood,
@@ -35,6 +38,7 @@ export class PresentationService {
         text: approved.spokenText,
         voiceProfileId: approved.voiceProfileId,
         correlationId: approved.correlationId,
+        ...(approved.performance ? { performance: approved.performance } : {}),
       });
       return { envelope: approved, audio: approved.expiresAt > Date.now() ? audio || null : null };
     } catch {

@@ -49,7 +49,7 @@ export class QueueService {
       duration: track.duration || 0,
       url: track.url,
       pic_url: track.artwork || null,
-      lyric: track.lyric || null,
+      lyric: index === runtimeSnapshot.currentIndex ? (track.lyric || null) : null,
       source: track.source || '',
       programId: track.programId,
       program_id: track.programId,

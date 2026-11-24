@@ -1,7 +1,7 @@
 // electron/main.js — Lunara 桌面壳
 // 启动 Express 服务端，再开一个干净的 BrowserWindow。
 
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, nativeTheme, session } from 'electron';
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, session } from 'electron';
 import { resolve, dirname } from 'path';
 // Windows 下动态 import() 必须用 file:// URL：
 // `D:\\...` 会被 ESM loader 当成 `d:` 协议报 ERR_UNSUPPORTED_ESM_URL_SCHEME（macOS 的 /posix 路径无此问题）。
@@ -68,6 +68,73 @@ if (!hasSingleInstance) {
 let trayController = null;
 // 菜单栏两色歌词的离屏渲染器（懒创建：只在真的用到歌词模式时才建窗口）。
 let lyricCanvas = null;
+// 系统休眠或锁屏期间暂停托盘高频扫色截图与跑马灯，保留静态曲名与菜单状态；唤醒且解锁后恢复。
+let systemSuspended = false;
+let screenLocked = false;
+let lastTrayState = null;
+let lastTrayStateAt = 0;
+let cleanupPowerMonitor = null;
+
+function isTrayPowerSaving() {
+  return systemSuspended || screenLocked;
+}
+
+function toPowerSaveTrayState(rawState) {
+  if (!rawState || typeof rawState !== 'object') return rawState;
+  return { ...rawState, textMode: 'title', subtitle: '' };
+}
+
+function toResumedTrayState(rawState, capturedAt, nowMs = Date.now()) {
+  if (!rawState || typeof rawState !== 'object') return rawState;
+  if (
+    rawState.playing === true
+    && rawState.textMode === 'lyrics'
+    && rawState.subtitle
+    && rawState.subtitleProgress != null
+    && Number.isFinite(Number(rawState.subtitleProgress))
+    && Number.isFinite(Number(rawState.subtitleSpanMs))
+    && Number(rawState.subtitleSpanMs) > 0
+    && capturedAt > 0
+  ) {
+    const elapsed = Math.max(0, nowMs - capturedAt);
+    const subtitleProgress = Math.min(1, Number(rawState.subtitleProgress) + elapsed / Number(rawState.subtitleSpanMs));
+    return { ...rawState, subtitleProgress };
+  }
+  return { ...rawState };
+}
+
+function syncTrayPowerState() {
+  if (!trayController || !lastTrayState) return;
+  if (isTrayPowerSaving()) {
+    trayController.setState(toPowerSaveTrayState(lastTrayState));
+  } else {
+    trayController.setState(toResumedTrayState(lastTrayState, lastTrayStateAt));
+  }
+}
+
+function installPowerMonitor(monitor = powerMonitor) {
+  cleanupPowerMonitor?.();
+  cleanupPowerMonitor = null;
+  if (typeof monitor?.on !== 'function') return;
+  const onSuspend = () => { systemSuspended = true; syncTrayPowerState(); };
+  const onLockScreen = () => { screenLocked = true; syncTrayPowerState(); };
+  const onResume = () => { systemSuspended = false; syncTrayPowerState(); };
+  const onUnlockScreen = () => { screenLocked = false; syncTrayPowerState(); };
+  monitor.on('suspend', onSuspend);
+  monitor.on('lock-screen', onLockScreen);
+  monitor.on('resume', onResume);
+  monitor.on('unlock-screen', onUnlockScreen);
+  const detach = (event, listener) => {
+    if (typeof monitor.removeListener === 'function') monitor.removeListener(event, listener);
+    else if (typeof monitor.off === 'function') monitor.off(event, listener);
+  };
+  cleanupPowerMonitor = () => {
+    detach('suspend', onSuspend);
+    detach('lock-screen', onLockScreen);
+    detach('resume', onResume);
+    detach('unlock-screen', onUnlockScreen);
+  };
+}
 
 function ensureLyricCanvas() {
   if (lyricCanvas) return lyricCanvas;
@@ -144,10 +211,14 @@ ipcMain.on(WINDOW_CONTROL_CHANNEL, (event, command) => {
 });
 
 ipcMain.on(TRAY_STATE_CHANNEL, (event, state) => {
-  if (!trayController || !isAppWindow(event)) return;
-  trayController.setState(state);
+  if (!isAppWindow(event)) return;
+  lastTrayState = state && typeof state === 'object' ? { ...state } : state;
+  lastTrayStateAt = Date.now();
+  if (!trayController) return;
+  const effectiveState = isTrayPowerSaving() ? toPowerSaveTrayState(state) : state;
+  trayController.setState(effectiveState);
   // macOS Tray 有 getTitle()：调试时把真正写进菜单栏的文字也打出来。
-  trayLog('state', JSON.stringify(state), '→ 菜单栏文字:', JSON.stringify(trayController.tray?.getTitle?.() ?? null),
+  trayLog('state', JSON.stringify(effectiveState), '→ 菜单栏文字:', JSON.stringify(trayController.tray?.getTitle?.() ?? null),
     '图像:', trayController.hasImage?.() === true);
 });
 
@@ -256,10 +327,13 @@ app.whenReady().then(() => {
   lastBootStage = 'whenReady (dock done)';
   // 托盘先于窗口：窗口创建慢或失败时，用户仍能看到应用在跑并能从托盘点开窗口。
   try { ensureTray(); } catch (error) { console.warn('[tray] init failed (non-fatal):', error?.message); }
+  installPowerMonitor();
   return boot();
 }).catch(reportBootFailure);
 
 app.on('will-quit', () => {
+  cleanupPowerMonitor?.();
+  cleanupPowerMonitor = null;
   trayController?.destroy();
   trayController = null;
   lyricCanvas?.destroy();

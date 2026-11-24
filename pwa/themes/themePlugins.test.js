@@ -511,6 +511,23 @@ test('the shell links timeline.css after stage.css and keeps a single player and
   assert.doesNotMatch(view, /createElement\(['"](audio|video)|cloneNode|persistent-player/, 'the top bar never creates media or clones the player');
 });
 
+test('时间线人物页为只读门控提供可达编辑入口，不显示假保存操作', async () => {
+  const css = await readFile(new URL('../features/shell/timeline.css', import.meta.url), 'utf8');
+  const prefix = ':root[data-layout="timeline"] #person-detail';
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '').match(/[^{}]+\{[^{}]*\}/g) || [];
+  const ruleFor = selector => rules.find(rule => {
+    const [head] = rule.split('{');
+    return splitTopLevel(head.trim()).includes(selector);
+  }) || '';
+  assert.match(ruleFor(prefix + ' .person-edit-toggle'), /display:\s*inline-(?:block|flex)/, 'the edit toggle must override its shared display:none');
+  for (const selector of [
+    ' .person-profile-form:not(.is-editing) .person-field:has(#person-detail-name-input)',
+    ' .person-profile-form:not(.is-editing) .person-profile-actions',
+    ' .person-profile-form:not(.is-editing) #person-detail-persona-hint',
+  ]) assert.match(ruleFor(prefix + selector), /display:\s*none/, selector);
+  assert.match(await read('nocturne', 'tokens.css'), /--person-edit:\s*toggle;/);
+});
+
 test('moonlight partner.css 只作用于月色舞台版式，排在月色覆盖样式之后，且不藏共享控件', async () => {
   const css = await read('moonlight', 'partner.css');
   const prefix = ':root[data-theme="moonlight"][data-layout="stage"]';

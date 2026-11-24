@@ -27,7 +27,7 @@
 
 export const DEFAULT_REASONING_ALLOWANCE_TOKENS = 1024;
 // 串词的整个受限任务共享 generation 截止；上下文与 TTS 单独有界。
-export const NARRATION_EXECUTION_LIMITS = Object.freeze({ maxRounds: 3, contextTimeoutMs: 1_000, synthesisBudgetMs: 30_000 });
+export const NARRATION_EXECUTION_LIMITS = Object.freeze({ synthesisBudgetMs: 30_000 });
 const MODEL_DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 const REASONING_KINDS = new Set(['helpful', 'light', 'neutral', 'wasteful']);
 const STRUCTURED_FORMS = new Set(['json', 'text', 'tool']);
@@ -69,23 +69,28 @@ export const LLM_TASKS = Object.freeze({
   // 单次请求 60s 封顶：当前模型峰值约 22s，回合 120s 内还够同端点再试一次。
   chat_dialogue: task('chat_dialogue', { answerTokens: 2048, reasoning: 'helpful', structured: 'tool', attempts: [1, 2], attemptTimeoutMs: 60_000 }),
   // 群聊回应对象：只读一次提交，短输出、有界等待，不继承聊天的多轮重试。
-  response_routing: task('response_routing', { answerTokens: 256, reasoning: 'light', structured: 'tool', attempts: [1], timeoutMs: 15_000 }),
-  // 自动续播/手动下一首的受限选歌任务（同一 AgentLoop、白名单工具）。候选与约束已确定，
+  response_routing: task('response_routing', { answerTokens: 256, reasoning: 'light', structured: 'tool', attempts: [1], timeoutMs: 15_000, attemptTimeoutMs: 7_000 }),
+  // 续播、手动下一首和预热的 host 选歌回合（完整上下文、只开放选歌工具）。候选与约束已确定，
   // 只挑序号：保留思考、降低档位（延迟优先）。
   music_selection: task('music_selection', { answerTokens: 1024, reasoning: 'light', structured: 'tool', attempts: [1, 2], attemptTimeoutMs: 30_000 }),
-  // 串词任务（受限 Agent 运行器，模型写正文、工具机械校验）。要赶在开播窗口内：保留思考、降低档位。
-  narration: task('narration', { answerTokens: 1024, reasoning: 'light', structured: 'tool', attempts: [1, 2], timeoutMs: 60_000 }),
+  // 选歌之后写串词的 line pass：host 在同一段上下文里写，人物性格都在上下文里，不靠思维链。
+  // 预算覆盖两轮模型调用（写一次、纠正一次）；单次尝试 25s 封顶以便尽快重试或切换；超时就安静播放。
+  track_lines: task('track_lines', { answerTokens: 1536, reasoning: 'wasteful', structured: 'tool', attempts: [1], timeoutMs: 60_000, attemptTimeoutMs: 25_000, onExhausted: 'skip' }),
   // 一起听时的主动一句话（presence_line）。短、可沉默；超时就沉默，不重试、不兜底。
   presence_utterance: task('presence_utterance', { answerTokens: 512, reasoning: 'light', structured: 'tool', attempts: [1], timeoutMs: 12_000, onExhausted: 'skip' }),
   // 一起听歌时心跳叫醒她的一轮（ambient turn）：完整上下文、她自己决定说不说。
   // 不升级重试：超时或失败就当这次安静，等下一次唤醒（add-companion-heartbeat D2）。
-  ambient_turn: task('ambient_turn', { answerTokens: 1024, reasoning: 'light', structured: 'tool', attempts: [1], timeoutMs: 20_000, onExhausted: 'skip' }),
+  // 截止按模型数均分：上下文涨到一万六千 token 后成功一次要 4–6 秒，20 秒分给三个模型
+  // 每个只剩 6.7 秒，主模型几乎次次差一点被掐断。每个模型给足 12 秒，最坏 36 秒后安静。
+  ambient_turn: task('ambient_turn', { answerTokens: 1024, reasoning: 'light', structured: 'tool', attempts: [1], timeoutMs: 36_000, attemptTimeoutMs: 12_000, onExhausted: 'skip' }),
   // 批量机械打标（L2/L3/评论兜底）：思考不帮助判别，属成本选择。
   song_tag: task('song_tag', { answerTokens: 1500, reasoning: 'wasteful', structured: 'json', attempts: [1, 2], timeoutMs: 30_000 }),
   // 后台反思（读账本写观察 JSON）。
   reflection: task('reflection', { answerTokens: 1500, reasoning: 'wasteful', structured: 'json', attempts: [1, 2], timeoutMs: 15_000 }),
   // 口味图式（按周期归纳的机械 JSON）。
   taste_schema: task('taste_schema', { answerTokens: 1500, reasoning: 'wasteful', structured: 'json', attempts: [1, 2], timeoutMs: 20_000 }),
+  // 关系记忆目录（把超出预算的旧事实整理成主题条目，机械 JSON）：后台、低频，只在出现未整理事实时调用。
+  relationship_digest: task('relationship_digest', { answerTokens: 4000, reasoning: 'wasteful', structured: 'json', attempts: [1, 2], timeoutMs: 60_000 }),
   // 口味整合（consolidator，低频重写 user/*.md）。
   taste_consolidation: task('taste_consolidation', { answerTokens: 1500, reasoning: 'neutral', structured: 'json', attempts: [1, 2] }),
   // 人格生成（兜底路径；Agent 已生成 personaDraft 时不调用）。
@@ -94,6 +99,8 @@ export const LLM_TASKS = Object.freeze({
   voice_design_prompt: task('voice_design_prompt', { answerTokens: 600, reasoning: 'light', structured: 'text', attempts: [1], timeoutMs: 30_000 }),
   // 设置页「其他（让助手接入）」：按用户给的 TTS 文档起草请求配方（JSON 文本），每轮都经校验和真实试合成。
   tts_recipe_draft: task('tts_recipe_draft', { answerTokens: 1500, reasoning: 'light', structured: 'text', attempts: [1], timeoutMs: 45_000 }),
+  // 手帐页「请 Ta 留一句批注」：用户显式触发、单次短 JSON，不重试不写乐库。
+  journal_annotation: task('journal_annotation', { answerTokens: 400, reasoning: 'light', structured: 'json', attempts: [1], timeoutMs: 25_000 }),
   capability_probe: task('capability_probe', { answerTokens: 1024, reasoning: 'helpful', structured: 'text', attempts: [1, 2], hardCapTokens: 8192, timeoutMs: 20_000 }),
   // 连通性探针：只回答两个字；失败本身就是测量结果，不做升级重试。
   connectivity_probe: task('connectivity_probe', { answerTokens: 1024, reasoning: 'wasteful', structured: 'text', attempts: [1], hardCapTokens: 4096, timeoutMs: 20_000 }),

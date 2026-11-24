@@ -1,4 +1,6 @@
 import { parseEvidence, policyFromUserText } from '../memory/memoryPolicy.js';
+import { isMemoryRevoked } from '../memory/memoryProvenance.js';
+import { LIFE_NOTE_TAG } from '../memory/reflectionInsights.js';
 // Background learning observes committed dialogue; it never owns the dialogue FIFO.
 import { createHash } from 'node:crypto';
 import * as llm from '../llm.js';
@@ -7,10 +9,15 @@ import { charBigramSimilarity } from '../memory/textSimilarity.js';
 import { writeMemoryWithEncoding } from '../memory/writeMemoryWithEncoding.js';
 import { EventType, createEvent, StationAgentId } from './communication/messages.js';
 import { ReflectionObservationStore, reflectionText } from './ReflectionObservationStore.js';
+import { canReportToStation } from './StationDreamingService.js';
 import { localDateMs } from '../virtual-person/companionNotes.js';
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
+// 近况（add-person-life-notes）：open loop 的伙伴级副本，跨这位伙伴的聊天可见；没有日期时保留 14 天，
+// 有日期时到那天之后 2 天。
+const LIFE_NOTE_DAYS = 14;
+const LIFE_NOTE_GRACE_DAYS = 2;
 const positiveInt = (value, fallback, max = 120_000) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
 // Keyless insights only merge on near-verbatim repeats (calibrated on real panels:
 // independent LLM paraphrases of one event score 0.2-0.5 char-bigram Dice, so the
@@ -18,6 +25,28 @@ const positiveInt = (value, fallback, max = 120_000) => Math.min(max, Math.max(1
 const MERGE_SIMILARITY_THRESHOLD = 0.9;
 const MERGE_EVENT_KEY_LIMIT = 200;
 const OPEN_LOOP_KINDS = new Set(['upcoming', 'unfinished', 'promise']);
+
+/** 洞察引用的原话证据：Station 晋升与来源撤回都按它找到用户说过的哪一句。 */
+function originalEvidenceOf(rows, insight, personId, namespace) {
+  return rows.filter(row => insight.evidence.includes(row.eventKey)).map(row => ({
+    eventKey: row.eventKey, originalKey: row.data.userTurnId || row.eventKey,
+    personId, namespace, sessionId: row.sessionId, createdAt: row.createdAt, kind: row.kind,
+    claimScope: insight.claim?.scope || null,
+    ...(insight.claim?.explicitSharedQuote ? { explicitSharedQuote: insight.claim.explicitSharedQuote } : {}),
+    data: row.data, policy: row.data.policy || policyFromUserText(row.data.userText, row.sessionId, row.createdAt),
+  })).map(slimOriginal);
+}
+
+// 洞察合并后最多带 200 条原话证据、每轮注入都要解析：data 只留有读者的字段
+// （userTurnId 供来源撤回，userText 供 Station 晋升），回应正文等不随洞察复制。
+function slimOriginal(item) {
+  if (!item || typeof item !== 'object') return item;
+  const data = item.data && typeof item.data === 'object'
+    ? { ...(item.data.userTurnId ? { userTurnId: item.data.userTurnId } : {}),
+      ...(item.data.userText ? { userText: String(item.data.userText).slice(0, 1200) } : {}) }
+    : item.data;
+  return { ...item, data };
+}
 
 export class ReflectionAgent {
   constructor(opts = {}) {
@@ -102,7 +131,8 @@ export class ReflectionAgent {
     if (!observation || observation.personId !== event.payload?.virtualPersonId
       || observation.sessionId !== event.payload?.sessionId) return;
     this.store.append(observation);
-    this.store.recoverEncounterTurns();
+    // 只补这一回合的旁听者；全量补录留给 30 秒一次的 sweep 与启动。
+    this.store.recoverEncounterTurns({ userTurnId: observation.data.userTurnId });
     this._kick(observation.personId);
   }
 
@@ -210,16 +240,30 @@ export class ReflectionAgent {
       if (!existing) {
         insight = await this._callLLM(id, window, rows, controller);
         if (this._stopped) return null;
+        // 模型调用期间来源被删、被编辑或被忘记：这份结果可能带着已遗忘的内容，整批作废，
+        // 与重试时发现批次残缺同样处理（剩下的观察确认掉，不换批次身份重学）。
+        const live = this.store.liveBatchRows(id, rows);
+        if (live.length !== rows.length) {
+          this.store.expireBatch(id, window, live);
+          return null;
+        }
         // 先交给心里话，再写 insight：确定性 id 让崩溃重放不重复；sink 失败不挡 insight 与批次确认。
         this._emitOpenLoops(id, batchTag, insight.openLoops);
+        this._writeLifeNotes(service, namespace, batchTag, insight.openLoops);
+        if (insight.sensitive) {
+          const cited = insight.evidence?.length ? rows.filter(row => insight.evidence.includes(row.eventKey)) : rows;
+          const turnIds = [...new Set(cited.filter(row => row.kind === 'turn' && row.data?.userTurnId).map(row => row.data.userTurnId))];
+          if (turnIds.length) this.store.markSensitiveTurns?.(turnIds);
+        }
         if (insight.no_signal) {
           this.store.acknowledge(rows, window);
           this.store.markAttempt(id, window, { success: true, status: 'no_signal', nextAt: this.now() + this.rateLimitMs });
           return null;
         }
-        const mergeTarget = this._findMergeTarget(service, namespace, insight);
+        const batchPolicy = this._batchPolicy(rows, insight.openLoops, insight.sensitive);
+        const mergeTarget = this._findMergeTarget(service, namespace, insight, batchPolicy);
         if (mergeTarget) {
-          memoryId = this._mergeIntoInsight(service, mergeTarget, insight, rows);
+          memoryId = this._mergeIntoInsight(service, mergeTarget, insight, rows, id);
         } else {
           const evidence = {
             eventKeys: rows.map(row => row.eventKey),
@@ -228,18 +272,8 @@ export class ReflectionAgent {
             from: rows[0].createdAt, to: rows.at(-1).createdAt,
             notes: insight.evidence,
             claim: insight.claim,
-            originalEvidence: rows.filter(row => insight.evidence.includes(row.eventKey)).map(row => ({
-              eventKey: row.eventKey, originalKey: row.data.userTurnId || row.eventKey,
-              personId: id, namespace, sessionId: row.sessionId, createdAt: row.createdAt, kind: row.kind,
-              data: row.data, policy: row.data.policy || policyFromUserText(row.data.userText, row.sessionId, row.createdAt),
-            })),
-            policy: (() => {
-              const policies = rows.map(row => row.data.policy || policyFromUserText(row.data.userText, row.sessionId, row.createdAt));
-              const limited = policies.filter(policy => policy.onlyConversationId);
-              return { disclosure: policies.some(policy => policy.disclosure === 'private') ? 'private' : 'normal',
-                ...(limited.length ? { onlyConversationId: new Set(limited.map(policy => policy.onlyConversationId)).size === 1 ? limited[0].onlyConversationId : 'restricted:mixed',
-                  until: Math.min(...limited.map(policy => policy.until || this.now())) } : {}) };
-            })(),
+            originalEvidence: originalEvidenceOf(rows, insight, id, namespace),
+            policy: batchPolicy,
             scope: window === 'short' ? 'recent-listening-context' : 'observed-last-24h',
           };
           const result = writeMemoryWithEncoding(service, {
@@ -256,7 +290,9 @@ export class ReflectionAgent {
       }
       if (this._stopped) return null;
       const storedEvidence = parseEvidence(service.store.getById(memoryId));
-      this.store.publishInsight(memoryId, id, storedEvidence);
+      if (canReportToStation(storedEvidence)) {
+        this.store.publishInsight(memoryId, id, storedEvidence);
+      }
       this.store.acknowledge(rows, window);
       this.store.markAttempt(id, window, { success: true, status: 'succeeded', nextAt: this.now() + this.rateLimitMs });
       (window === 'short' ? this.lastShortAt : this.lastLongAt).set(id, this.now());
@@ -296,10 +332,36 @@ export class ReflectionAgent {
    * Claim-tagged insights merge by stable claim key + polarity; keyless ones merge by
    * CJK-aware content similarity against the namespace's recent insights.
    */
-  _findMergeTarget(service, namespace, insight) {
+  /**
+   * 一批观察合起来的披露范围：有一条私密就私密；限定聊天的取交集式收窄，期限取最早。
+   * 同一批里有 open loop 被判为敏感（健康、感情、家庭、财务）时，洞察带 sensitive 标签：
+   * 她在哪个聊天里都记得，提示词里标着「比较私人」，提不提看她的分寸；不进 Station 与口味图式（那会丢掉标签、让别人知道）。
+   */
+  _batchPolicy(rows, openLoops = [], insightSensitive = false) {
+    const policies = rows.map(row => row.data.policy || policyFromUserText(row.data.userText, row.sessionId, row.createdAt));
+    const limited = policies.filter(policy => policy.onlyConversationId);
+    const policy = { disclosure: policies.some(policy => policy.disclosure === 'private') ? 'private' : 'normal',
+      ...(limited.length ? { onlyConversationId: new Set(limited.map(policy => policy.onlyConversationId)).size === 1 ? limited[0].onlyConversationId : 'restricted:mixed',
+        until: Math.min(...limited.map(policy => policy.until || this.now())) } : {}) };
+    return (insightSensitive || (openLoops || []).some(loop => loop.sensitive)) ? { ...policy, sensitive: true } : policy;
+  }
+
+  _findMergeTarget(service, namespace, insight, policy = {}) {
     const now = this.now();
+    // 只并进披露标签相同的旧洞察：私密证据并进普通洞察会丢掉「私下」标签、还会被发到 Station，反过来会把普通观察也标成私下的。
+    const samePolicy = row => {
+      const prior = parseEvidence(row).policy || {};
+      // 披露期限已过的旧洞察注入时会被滤掉，并进去的新证据也就跟着看不见。
+      return (prior.disclosure || 'normal') === (policy.disclosure || 'normal')
+        && (prior.onlyConversationId || null) === (policy.onlyConversationId || null)
+        && Boolean(prior.sensitive) === Boolean(policy.sensitive)
+        && (!prior.until || prior.until > now);
+    };
     const candidates = service.searchMemory(undefined, { namespace, type: MemoryType.SEMANTIC, tags: 'reflection-insight', limit: 100 })
-      .filter(row => !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '') && (!row.expiresAt || row.expiresAt > now));
+      .filter(row => !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '') && (!row.expiresAt || row.expiresAt > now)
+        && samePolicy(row)
+        // 被墓碑遮住的旧洞察（同一句里别的事实被忘掉、共享事实被忘掉）不再接收新证据：并进去的新观察会跟着一起看不见。
+        && !isMemoryRevoked(service.store, row));
     if (!candidates.length) return null;
     if (insight.claim) {
       const claimTag = 'claim:' + insight.claim.key;
@@ -316,7 +378,7 @@ export class ReflectionAgent {
     return best;
   }
 
-  _mergeIntoInsight(service, target, insight, rows) {
+  _mergeIntoInsight(service, target, insight, rows, personId) {
     let evidence;
     try { evidence = JSON.parse(target.evidence || '{}'); } catch { evidence = {}; }
     if (!evidence || typeof evidence !== 'object') evidence = {};
@@ -326,11 +388,26 @@ export class ReflectionAgent {
     const cap = String(target.tags || '').includes('reflection-long') ? 0.7 : 0.4;
     const tags = parseTags(target.tags);
     if (insight.claim) {
-      evidence.claim = evidence.claim || insight.claim;
+      const prior = evidence.claim;
+      evidence.claim = !prior ? insight.claim : {
+        ...prior,
+        text: insight.claim.scope === 'shared_candidate' ? (insight.claim.text || prior.text) : (prior.text || insight.claim.text),
+        scope: prior.scope === 'shared_candidate' || insight.claim.scope === 'shared_candidate'
+          ? 'shared_candidate' : (insight.claim.scope || prior.scope),
+        explicitSharedQuote: insight.claim.explicitSharedQuote || prior.explicitSharedQuote || '',
+      };
       const claimTag = 'claim:' + insight.claim.key;
       if (!tags.includes(claimTag)) tags.push(claimTag);
     }
     evidence.eventKeys = [...priorKeys, ...fresh].slice(-MERGE_EVENT_KEY_LIMIT);
+    // 新批次的原话证据也并进来：Station 晋升按原话计数，删除/编辑来源时也要能找到它们。
+    const priorOriginals = Array.isArray(evidence.originalEvidence) ? evidence.originalEvidence : [];
+    const freshOriginals = originalEvidenceOf(rows.filter(row => fresh.includes(row.eventKey)), insight, personId, target.namespace)
+      .filter(item => !priorOriginals.some(prior => prior.originalKey === item.originalKey));
+    evidence.originalEvidence = [...priorOriginals, ...freshOriginals].slice(-MERGE_EVENT_KEY_LIMIT).map(slimOriginal);
+    evidence.sourceTurnIds = [...new Set([...(evidence.sourceTurnIds || []),
+      ...rows.map(row => row.data.userTurnId).filter(Boolean)])].slice(-MERGE_EVENT_KEY_LIMIT);
+    evidence.sessions = [...new Set([...(evidence.sessions || []), ...rows.map(row => row.sessionId).filter(Boolean)])];
     evidence.occurrences = (Number(evidence.occurrences) || 1) + 1;
     evidence.lastMergedAt = this.now();
     service.store.update(target.id, {
@@ -355,9 +432,10 @@ export class ReflectionAgent {
       '“今天/现在”只限定当前情境，不能推广成永久偏好。明确纠正优先于旧推测，保留冲突和不确定性。',
       '没有足够证据时只描述事实，不发明偏好、歌曲属性或生活经历。不可输出工具诊断或秘密。',
       '如果整批证据不足以形成任何有价值的观察，输出 {"no_signal": true}——这是合法结果；不要为了输出而复述播放流水账或寒暄。',
-      '同一次反思可附带一个待审核 claim；没有用户偏好证据时为 null。key 用稳定的英文主题键（如 music.genre.rnb、recommendation.routine、expression.narration.closing），polarity 用 positive/negative。只要观察表达了偏好、习惯或行为模式（含纠正与不满），就必须给出 claim key——同一主题重复出现时会合并累积而不是新增一条；scope 为 relationship/temporary/shared_candidate。和特定角色一起听的限定必须保留为 relationship。explicitSharedQuote 只有用户原话明确要求所有伙伴共享时才填写，否则为空。',
+      '如果本批内容涉及健康、感情、家庭、财务、亲昵称呼、肢体亲近、性幻想或私人秘密，顶层 sensitive 设为 true（否则 false）。',
+      '同一次反思可附带一个 claim，用来累积同一伙伴对同一主题的反复观察（没有偏好/习惯/行为模式证据时为 null）。key 用稳定的英文主题键（如 music.genre.rnb、recommendation.routine、expression.narration.closing），polarity 用 positive/negative。scope 为 relationship/temporary/shared_candidate，决定是否把这条偏好上报给其他伙伴共用：只有适合全体伙伴共用的通用音乐、听歌、播报偏好（key 以 music.、taste.、listening.、recommendation.、expression.、narration.、radio. 开头）才可设为 shared_candidate；特定关系的习惯、称呼、情感倾诉、亲密互动场景（包括亲密后要求放歌但无具体曲风偏好）或与特定角色一起听的限定必须保留为 relationship，一次性情境用 temporary。explicitSharedQuote 只有用户原话明确要求所有伙伴共享时才填写，否则为空。',
       '另外可以附带 open_loops（最多 3 条，没有就省略或给空数组，可以和 no_signal 同时出现）：用户自己提到的、之后可能愿意被问起的事——upcoming 是即将发生的安排（如明天面试），unfinished 是还没做完的事，promise 是用户请伙伴之后回来问/提的事。text 用伙伴视角的一句短话；能确定日期才写 dueDate（YYYY-MM-DD，按用户本地日期）；evidence 只能引用含用户原话的观察证据 ID，且全部来自同一个聊天；健康、感情、家庭、财务等私密事项 sensitive 为 true。助手自己说过的话、寒暄、播放流水不是 open loop。',
-      '严格输出 JSON：{"no_signal":true,"open_loops":[]} 或 {"observation":"中文一两句话，最多200字","evidence":["引用观察证据ID"],"tags":["signal:xxx"],"confidence":0.3,"claim":{"key":"music.genre.rnb","polarity":"positive","text":"候选观察","scope":"relationship","explicitSharedQuote":""},"open_loops":[{"kind":"upcoming","text":"对方明天下午有个面试","dueDate":"2026-10-20","evidence":["引用观察证据ID"],"sensitive":false,"confidence":0.4}]}',
+      '严格输出 JSON：{"no_signal":true,"open_loops":[]} 或 {"observation":"中文一两句话，最多200字","evidence":["引用观察证据ID"],"tags":["signal:xxx"],"confidence":0.3,"sensitive":false,"claim":{"key":"music.genre.rnb","polarity":"positive","text":"候选观察","scope":"relationship","explicitSharedQuote":""},"open_loops":[{"kind":"upcoming","text":"对方明天下午有个面试","dueDate":"2026-10-20","evidence":["引用观察证据ID"],"sensitive":false,"confidence":0.4}]}',
     ].join('\n');
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -383,6 +461,7 @@ export class ReflectionAgent {
     if (typeof parsed.observation !== 'string' || !parsed.observation.trim()) return { no_signal: true, openLoops };
     return {
       openLoops,
+      sensitive: parsed.sensitive === true,
       observation: reflectionText(parsed.observation, 500),
       evidence: (Array.isArray(parsed.evidence) ? parsed.evidence : []).filter(key => rows.some(row => row.eventKey === key)).slice(0, 10),
       tags: (Array.isArray(parsed.tags) ? parsed.tags : []).map(tag => reflectionText(tag, 40).replace(/,/g, '')).slice(0, 8),
@@ -408,10 +487,47 @@ export class ReflectionAgent {
   }
 
   /**
+   * 近况：open loop 只在提到它的那个聊天里出现，换个聊天伙伴就"忘了"对方下周要出差。
+   * 这里把不敏感的 open loop 另存一条伙伴级记忆（tag reflection-life），这位伙伴的其他聊天也能看到。
+   * - 披露策略沿用证据行（"只在这里说"等限定由 memoryApplies 执行）；私下说的、敏感（健康、感情、家庭、财务）的
+   *   照样写，带标签进提示词，在群聊里提不提是她的分寸；
+   * - 不发布给 Station、不参与洞察合并与口味图式，只属于这位伙伴；
+   * - 证据带来源 turn 与聊天：撤回、删除聊天、编辑消息时随来源一起遗忘，撤回后不会被重新学回。
+   * 写失败只记一行日志，不挡洞察与批次确认。
+   */
+  _writeLifeNotes(service, namespace, batchTag, openLoops = []) {
+    for (const [index, loop] of (openLoops || []).entries()) {
+      try {
+        const writeKey = `${batchTag}:life:${index}`;
+        const evidence = { schema: 2, writeKey, sourceTurnIds: loop.sourceTurnIds, eventKeys: loop.eventKeys,
+          sessions: [loop.sessionId], originSessionId: loop.sessionId, kind: loop.kind, dueDate: loop.dueDate,
+          mentionedAt: loop.mentionedAt, policy: loop.sensitive ? { ...loop.policy, sensitive: true } : loop.policy };
+        if (isMemoryRevoked(service.store, { namespace, evidence })) continue;
+        const alreadyWritten = service.store?.db
+          ? service.store.db.prepare("SELECT evidence FROM memories WHERE namespace = ? AND tags LIKE ?")
+            .all(namespace, `%${LIFE_NOTE_TAG}%`).some(row => parseEvidence(row).writeKey === writeKey)
+          : service.searchMemory(undefined, { namespace, tags: LIFE_NOTE_TAG, limit: 200 })
+            .some(row => parseEvidence(row).writeKey === writeKey);
+        if (alreadyWritten) continue;
+        const due = loop.dueDate ? localDateMs(loop.dueDate) : null;
+        const result = writeMemoryWithEncoding(service, {
+          namespace, type: MemoryType.SEMANTIC, source: MemorySource.AGENT_REFLECTION,
+          content: loop.text, summary: '近况', tags: [LIFE_NOTE_TAG, 'life-' + loop.kind].join(','),
+          confidence: loop.confidence, importance: 5, evidence: JSON.stringify(evidence),
+          expiresAt: due != null ? Math.max(this.now(), due) + LIFE_NOTE_GRACE_DAYS * DAY : this.now() + LIFE_NOTE_DAYS * DAY,
+        });
+        if (!result.ok) this.logger.warn('[reflection] life note write failed');
+      } catch {
+        this.logger.warn('[reflection] life note write failed');
+      }
+    }
+  }
+
+  /**
    * 可选的 open_loops：对方提过、之后可能想被问起的事（最多 3 条）。逐条校验，不合格只丢那一条：
    * - kind ∈ upcoming/unfinished/promise；dueDate 只收真实存在的 YYYY-MM-DD；
    * - 证据必须引用本批里带用户原话的 turn 行（只引用她自己回复的条目不算），且全部来自同一个聊天；
-   * - 披露策略按 insight 的方式从证据行计算，private 视为敏感；置信度上限与 insight 相同（短窗 0.4、长窗 0.7）。
+   * - 披露策略按 insight 的方式从证据行计算；sensitive 只看模型的判断（私下说的是另一个标签）；置信度上限与 insight 相同（短窗 0.4、长窗 0.7）。
    */
   _parseOpenLoops(parsed, rows, cap) {
     const list = Array.isArray(parsed?.open_loops) ? parsed.open_loops.slice(0, 3) : [];
@@ -432,7 +548,8 @@ export class ReflectionAgent {
           ? limited[0].onlyConversationId : 'restricted:mixed', until: Math.min(...limited.map(policy => policy.until || this.now())) } : {}) };
       loops.push({ kind: item.kind, text, dueDate, sessionId: evidenceRows[0].sessionId,
         sourceTurnIds: [...new Set(userRows.map(row => row.data.userTurnId))],
-        sensitive: item.sensitive === true || policy.disclosure === 'private', policy,
+        eventKeys: evidenceRows.map(row => row.eventKey), mentionedAt: Math.min(...userRows.map(row => row.createdAt)),
+        sensitive: item.sensitive === true, policy,
         confidence: Math.min(cap, Math.max(0, Number(item.confidence) || 0.3)) });
     }
     return loops;

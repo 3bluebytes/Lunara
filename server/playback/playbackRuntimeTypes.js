@@ -94,9 +94,10 @@ export const PlaybackCommandType = Object.freeze({
 export const PlaybackEffectType = Object.freeze({
   REQUEST_CONTINUATION: 'REQUEST_CONTINUATION',
   PREPARE_TRACK_INTRO: 'PREPARE_TRACK_INTRO',
-  PREPARE_TRACK_NARRATION: 'PREPARE_TRACK_NARRATION',
   RESOLVE_TRACK_NARRATION_ASSET: 'RESOLVE_TRACK_NARRATION_ASSET',
   SCHEDULE_NARRATION_WINDOW: 'SCHEDULE_NARRATION_WINDOW',
+  // 停得够久再接着放：停下之前写好的串词已作废，交给原 host 重写这几首。
+  REWRITE_TRACK_LINES: 'REWRITE_TRACK_LINES',
 });
 
 // 封面 repair 事件的字符串上界：与封面缓存保持一致，避免把任意长度串塞进快照。
@@ -167,6 +168,76 @@ function restoredPerformance(source, text) {
   };
 }
 
+/** 串词的要点备忘：host 自己记下的一句意思。单行、有界；没有就是 null。 */
+export const LINE_NOTE_MAX_CHARS = 80;
+export function normalizeLineNote(value) {
+  return String(value ?? '').replace(/\s+/gu, ' ').trim().slice(0, LINE_NOTE_MAX_CHARS) || null;
+}
+
+// 备忘只给 host 自己回忆用，任何时候都不对外；没说出口的串词连文字也不带。
+const withoutUnspokenLine = track => {
+  if (!track?.narration) return track;
+  const { about: _about, ...kept } = track.narration;
+  if (kept.spoken === true) return { ...track, narration: kept };
+  const { text: _text, spokenText: _spokenText, performance: _performance, ...narration } = kept;
+  return { ...track, narration };
+};
+
+/**
+ * 给 PWA 和模型看的 runtime 状态：去掉还没说出口的串词和所有串词的要点备忘。文字只在
+ * PLAY_TRACK_NARRATION 命令里、到点才交给前端；说出口之后已入账，留着也没关系。
+ */
+export function publicRuntimeState(state) {
+  if (!state) return state;
+  const suspended = state.suspendedSessions;
+  return { ...state,
+    ...(Array.isArray(state.queue) ? { queue: state.queue.map(withoutUnspokenLine) } : {}),
+    ...(suspended ? { suspendedSessions: Object.fromEntries(Object.entries(suspended).map(([id, session]) =>
+      [id, Array.isArray(session?.queue) ? { ...session, queue: session.queue.map(withoutUnspokenLine) } : session])) } : {}) };
+}
+
+const stripTrackForWire = (track, { keepLyric = false } = {}) => {
+  const cleaned = withoutUnspokenLine(track);
+  if (!keepLyric && cleaned && typeof cleaned === 'object'
+    && Object.hasOwn(cleaned, 'lyric') && cleaned.lyric != null) {
+    return { ...cleaned, lyric: null };
+  }
+  return cleaned;
+};
+
+/**
+ * 通过 WebSocket / 兼容投影发给前端的精简状态：保留 publicRuntimeState 的串词脱敏语义，
+ * 并仅保留当前曲和下一首（未开播时为首曲）的歌词，避免大队列或挂起会话重复序列化歌词。
+ */
+export function wireRuntimeState(state) {
+  if (!state) return state;
+  const suspended = state.suspendedSessions;
+  const currentIndex = Number.isInteger(state.currentIndex) ? state.currentIndex : -1;
+  return {
+    ...state,
+    ...(Array.isArray(state.queue)
+      ? {
+        queue: state.queue.map((track, index) => {
+          const keepLyric = currentIndex >= 0
+            ? (index === currentIndex || index === currentIndex + 1)
+            : index === 0;
+          return stripTrackForWire(track, { keepLyric });
+        }),
+      }
+      : {}),
+    ...(suspended
+      ? {
+        suspendedSessions: Object.fromEntries(Object.entries(suspended).map(([id, session]) => [
+          id,
+          Array.isArray(session?.queue)
+            ? { ...session, queue: session.queue.map(track => stripTrackForWire(track, { keepLyric: false })) }
+            : session,
+        ])),
+      }
+      : {}),
+  };
+}
+
 export function normalizeRuntimeTrack(track, index = 0) {
   if (!isRecord(track)) throw new TypeError(`runtime track ${index} must be an object`);
   const songId = String(track.songId ?? track.song_id ?? '').trim();
@@ -209,6 +280,8 @@ export function normalizeRuntimeTrack(track, index = 0) {
     synthesisElapsedMs: synthesisElapsed(narrationSource.synthesisElapsedMs),
     // 带表演标记的发声文本与中立表演意图，只为重合成保留；必须与 text 对应，否则丢弃。
     ...restoredPerformance(narrationSource, text.slice(0, 800)),
+    // host 写这段话时自己记下的一句意思：之后写别的歌时拿它回忆，不拿原话。
+    about: text ? normalizeLineNote(narrationSource.about) : null,
     voiceProfileId: String(narrationSource.voiceProfileId || track.voiceProfileId || '').trim() || null,
     ttsUrl: status === 'ready' ? ttsUrl : null,
     // Whether this introduction has already been heard. It outlives the transaction that
@@ -218,6 +291,9 @@ export function normalizeRuntimeTrack(track, index = 0) {
     // The predecessor this text was written for. Narration prepared ahead of an
     // activation predicts it, so it must be verifiable before delivery.
     previousSongId: String(narrationSource.previousSongId || '').trim().slice(0, 128) || null,
+    // 什么时候写的、当时的成员修订：交付前用来判断这段话还算不算数。
+    writtenAt: Number.isFinite(narrationSource.writtenAt) ? narrationSource.writtenAt : null,
+    membershipRevision: Number.isFinite(narrationSource.membershipRevision) ? narrationSource.membershipRevision : null,
     contentHash: String(narrationSource.contentHash || narrationSource.assetHash || legacyHash || '').trim() || null,
     generationRevision: Math.max(0, Number.parseInt(narrationSource.generationRevision, 10) || (ttsUrl ? 1 : 0)),
     ...(narrationSource.context || legacyIntro.context
@@ -315,10 +391,26 @@ export function validatePlaybackEvent(event) {
   }
   if (event.type === PlaybackEventType.TRACK_ARTWORK_RESOLVED) {
     if (!nonEmpty(event.listeningSessionId)) return { ok: false, error: 'artwork repair requires listeningSessionId' };
-    if (!nonEmpty(event.queueItemId)) return { ok: false, error: 'artwork repair requires queueItemId' };
-    if (typeof event.artwork !== 'string' || !event.artwork.trim()
-      || event.artwork.trim().length > MAX_ARTWORK_URL_LENGTH) {
-      return { ok: false, error: 'artwork repair requires a bounded artwork URL' };
+    if (Array.isArray(event.repairs)) {
+      if (!event.repairs.length || event.repairs.length > 200) {
+        return { ok: false, error: 'artwork repair batch requires bounded repairs' };
+      }
+      const seenIds = new Set();
+      for (const entry of event.repairs) {
+        if (!entry || !nonEmpty(entry.queueItemId)) return { ok: false, error: 'artwork repair requires queueItemId' };
+        if (seenIds.has(entry.queueItemId)) return { ok: false, error: 'duplicate artwork repair target' };
+        seenIds.add(entry.queueItemId);
+        if (typeof entry.artwork !== 'string' || !entry.artwork.trim()
+          || entry.artwork.trim().length > MAX_ARTWORK_URL_LENGTH) {
+          return { ok: false, error: 'artwork repair requires a bounded artwork URL' };
+        }
+      }
+    } else {
+      if (!nonEmpty(event.queueItemId)) return { ok: false, error: 'artwork repair requires queueItemId' };
+      if (typeof event.artwork !== 'string' || !event.artwork.trim()
+        || event.artwork.trim().length > MAX_ARTWORK_URL_LENGTH) {
+        return { ok: false, error: 'artwork repair requires a bounded artwork URL' };
+      }
     }
   }
   if ([PlaybackEventType.TRACK_NARRATION_READY, PlaybackEventType.TRACK_NARRATION_FAILED,

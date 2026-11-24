@@ -22,10 +22,8 @@
 // 撤销保留凭据：`equivalence_decision.revoked_at` + 一条 `unlink` 审计行，
 // 这样「谁在什么时候说它们是同一首、谁又撤回了」永远查得到。
 
-import Database from 'better-sqlite3';
+import { openSqliteDatabase } from '../sqlite.js';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 /** 唯一能建立等价关系的两种证据。指纹与相似度不在此列，它们是提议。 */
@@ -69,9 +67,7 @@ export class RecordingStore {
 
   initialize() {
     const dbPath = this.dbPath || resolveDatabasePath();
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db = openSqliteDatabase(dbPath);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS recording (
         recording_id             TEXT PRIMARY KEY,

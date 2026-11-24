@@ -208,3 +208,96 @@ test('an early-committed group response is published before the round ends and n
   assert.equal(response.replayed, undefined);
   assert.deepEqual(response.floor, { fromPersonId: 'lunara', toPersonId: 'mio', status: 'answered' });
 });
+
+test('multi-beat radio reply seals duck lease when trailing beat is silent or fails synthesis', async () => {
+  // 1) Trailing beat has no speakable content (e.g. spoken="{叹气}", say="……"):
+  //    beat 0 immediately emits isLastBeat=true, holdDuckLease=false, and final snapshot has beatProgress.done=true.
+  const silentTailPublished = [];
+  const silentTailService = new VirtualPersonChatService({
+    runtime: {
+      isPresentationCurrent: () => true,
+      async handleTurn() {
+        return {
+          ok: true,
+          requestId: 'req-silent-tail',
+          sessionId: 'room-beats',
+          roundId: 'round-silent-tail',
+          virtualPersonId: 'lunara',
+          presentation: {
+            displayText: '第一句能开口。\n\n……',
+            spokenText: '第一句能开口。',
+            speak: true,
+            virtualPersonId: 'lunara',
+            voiceProfileId: 'v1',
+            sourceTurnId: 'turn-silent-tail',
+            correlationId: 'req-silent-tail',
+            expiresAt: Date.now() + 60_000,
+            beats: [
+              { index: 0, say: '第一句能开口。', pauseAfterMs: 500 },
+              { index: 1, say: '……', spoken: '{叹气}', pauseAfterMs: 0 },
+            ],
+          },
+        };
+      },
+    },
+    presentationService: {
+      async synthesize() { return { url: '/tts/b0.mp3', hash: 'b0', durationMs: 500 }; },
+      async deliver(envelope) { return { envelope, audio: null }; },
+    },
+    queueService: { publishSnapshot: payload => silentTailPublished.push(payload) },
+  });
+
+  await silentTailService.handleChat({ sessionId: 'room-beats', requestId: 'req-silent-tail', message: '继续' });
+  assert.equal(silentTailPublished.length, 2);
+  assert.equal(silentTailPublished[0].overlayNarrations[0].isLastBeat, true);
+  assert.equal(silentTailPublished[0].overlayNarrations[0].holdDuckLease, false);
+  assert.deepEqual(silentTailPublished[1].message.beatProgress, { deliveredCount: 2, totalCount: 2, done: true });
+  assert.equal(silentTailPublished[1].overlayNarrations, undefined);
+
+  // 2) Trailing speakable beat fails synthesis at runtime (returns null):
+  //    beat 0 had holdDuckLease=true, and final snapshot still emits beatProgress.done=true so client seals turn duck lease.
+  const failedTailPublished = [];
+  let callIndex = 0;
+  const failedTailService = new VirtualPersonChatService({
+    runtime: {
+      isPresentationCurrent: () => true,
+      async handleTurn() {
+        return {
+          ok: true,
+          requestId: 'req-fail-tail',
+          sessionId: 'room-beats',
+          roundId: 'round-fail-tail',
+          virtualPersonId: 'lunara',
+          presentation: {
+            displayText: '第一句正常。\n\n第二句失败。',
+            spokenText: '第一句正常。 第二句失败。',
+            speak: true,
+            virtualPersonId: 'lunara',
+            voiceProfileId: 'v1',
+            sourceTurnId: 'turn-fail-tail',
+            correlationId: 'req-fail-tail',
+            expiresAt: Date.now() + 60_000,
+            beats: [
+              { index: 0, say: '第一句正常。', pauseAfterMs: 500 },
+              { index: 1, say: '第二句失败。', pauseAfterMs: 0 },
+            ],
+          },
+        };
+      },
+    },
+    presentationService: {
+      async synthesize() {
+        callIndex += 1;
+        return callIndex === 1 ? { url: '/tts/f0.mp3', hash: 'f0', durationMs: 500 } : null;
+      },
+      async deliver(envelope) { return { envelope, audio: null }; },
+    },
+    queueService: { publishSnapshot: payload => failedTailPublished.push(payload) },
+  });
+
+  await failedTailService.handleChat({ sessionId: 'room-beats', requestId: 'req-fail-tail', message: '继续' });
+  assert.equal(failedTailPublished.length, 2);
+  assert.equal(failedTailPublished[0].overlayNarrations[0].holdDuckLease, true);
+  assert.equal(failedTailPublished[1].overlayNarrations, undefined);
+  assert.deepEqual(failedTailPublished[1].message.beatProgress, { deliveredCount: 2, totalCount: 2, done: true });
+});

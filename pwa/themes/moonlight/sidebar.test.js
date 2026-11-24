@@ -4,7 +4,7 @@ import { parseHTML } from 'linkedom';
 import { createMoonlightSidebar } from './sidebar.js';
 
 function harness(theme = 'moonlight') {
-  const { document } = parseHTML(`<html data-theme="${theme}" data-layout="stage"><body><aside class="conversation-sidebar expanded"><button id="nav-conversations" class="shell-nav-item">聊天</button><button id="nav-today" class="shell-nav-item">帐本</button><button id="recording-review-open" class="shell-nav-item" aria-controls="recording-review-panel" aria-expanded="false">整理</button><button id="sidebar-close">收起</button><input id="room-search"></aside></body></html>`);
+  const { document } = parseHTML(`<html data-theme="${theme}" data-layout="stage"><body><aside class="conversation-sidebar expanded"><button id="nav-conversations" class="shell-nav-item">聊天</button><button id="nav-today" class="shell-nav-item">手帐</button><button id="recording-review-open" class="shell-nav-item" aria-controls="recording-review-panel" aria-expanded="false">整理</button><button id="sidebar-close">收起</button><input id="room-search"></aside></body></html>`);
   let desktop = true, change;
   const viewport = { get matches() { return desktop; }, addEventListener(_, fn) { change = fn; }, removeEventListener(_, fn) { if (change === fn) change = null; } };
   const sidebar = createMoonlightSidebar({ documentLike: document, windowLike: { matchMedia: () => viewport } }).init();

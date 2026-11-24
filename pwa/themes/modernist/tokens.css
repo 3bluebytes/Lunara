@@ -112,10 +112,10 @@
   --partner-1-rgb: 122 63 116; --partner-2-rgb: 63 107 47; --partner-3-rgb: 138 79 42;
   --partner-4-rgb: 47 95 122; --partner-5-rgb: 110 92 20; --partner-6-rgb: 79 69 144;
   --partner-lunara: #111111;
-  --font-display: 'Helvetica Neue', 'Neue Haas Grotesk Text', Arial, 'PingFang SC', sans-serif;
-  --font-reading: 'Helvetica Neue', Arial, 'PingFang SC', sans-serif;
-  --font-ui: 'Helvetica Neue', Arial, 'PingFang SC', sans-serif;
-  --font-mono: 'Geist Mono', monospace;
+  --font-display: 'Noto CJK Punct', 'Helvetica Neue', 'Neue Haas Grotesk Text', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-reading: 'Noto CJK Punct', 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-ui: 'Noto CJK Punct', 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   --size-clock-hero: 96px; --size-clock: 64px; --size-title: 60px; --size-song: 60px;
   --size-lyric-current: 30px; --size-lyric: 15px; --size-reading: 16px; --size-body: 15px;
   --size-meta: 12px; --size-label: 11px;

@@ -1,4 +1,7 @@
+import { countUsableVoices } from '../../core/usableVoice.js';
+
 const ROOT_VIRTUAL_PERSON_ID = 'lunara';
+export const NO_USABLE_VOICE = 'NO_USABLE_VOICE';
 
 function styleTags(value) {
   if (Array.isArray(value)) return value.filter(Boolean).map(String);
@@ -14,6 +17,9 @@ export function normalizeVoiceProfiles(voices) {
     description: String(voice?.description || voice?.desc || '').trim(),
     styleTags: styleTags(voice?.styleTags ?? voice?.tags),
     source: String(voice?.source || voice?.provider || 'unknown'),
+    sourceProvider: String(voice?.sourceProvider || ''),
+    resolvedProviderId: voice?.resolvedProviderId ?? null,
+    endpointId: String(voice?.endpointId || ''),
     // 原生 provider 不可用时，这个名字实际对应本地回落声音——界面必须如实标注，
     // 否则用户以为选的是原生声线（tts-provider spec 的回落告知要求）。
     sourceLabel: String(voice?.sourceLabel || '').trim(),
@@ -46,6 +52,7 @@ export function createRadiohostController({
   const currentSessionId = () => store.getState().sessionId || sessionId;
   let persons = [];
   let voices = [];
+  let voiceFallback = null;
   let activatingId = null;
 
   function activePerson() {
@@ -118,32 +125,59 @@ export function createRadiohostController({
     }
   }
 
+  async function readVoiceFallback() {
+    try {
+      const custom = await apiClient.get('/api/tts/custom');
+      return custom?.config?.fallback ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async function loadVoices() {
     const result = await apiClient.get('/api/station/voices');
     if (result?.ok === false) throw new Error(result.error || '声音模型加载失败');
     voices = normalizeVoiceProfiles(result?.voices);
-    if (!voices.length) throw new Error('还没有可选声音：先到「设置 → 声音」配置自定义 TTS 接口，试听并保留至少一把声音。');
+    voiceFallback = await readVoiceFallback();
+    if (countUsableVoices(voices, voiceFallback) === 0) {
+      emit();
+      const error = new Error('还没有可选声音：先到「设置 → 声音」配置自定义 TTS 接口，试听并保留至少一把声音。');
+      error.code = NO_USABLE_VOICE;
+      throw error;
+    }
     emit();
     return [...voices];
   }
 
   /**
-   * 加载预设人设。
+   * 加载可选性格模板。
    *
-   * 与声音**分开加载**：两者是正交维度，任一个不可用不应让另一个也不可用。
+   * 模板只是起草灵感：列表为空或请求失败都不阻塞手写自定义性格。
    */
   async function loadPersonaPresets() {
     const result = await apiClient.get('/api/persona-presets');
-    if (result?.ok === false) throw new Error(result.error || '人设加载失败');
+    if (result?.ok === false) throw new Error(result.error || '性格模板加载失败');
     const list = Array.isArray(result?.presets) ? result.presets : [];
-    if (!list.length) throw new Error('没有可用的预设人设。');
     return list.map(preset => Object.freeze({
       id: String(preset.id),
       displayName: String(preset.displayName || preset.id),
       summary: String(preset.summary || ''),
       character: String(preset.character || ''),
+      templateText: String(preset.templateText || preset.character || preset.summary || ''),
+      defaultTemperament: String(preset.defaultTemperament || 'balanced'),
       nameCandidates: Array.isArray(preset.nameCandidates) ? preset.nameCandidates.map(String) : [],
     }));
+  }
+
+  /** 单次请求全局默认模型扩写当前性格草稿；失败原样抛出，由视图保留用户草稿。 */
+  async function expandPersonaDraft({ draft = '', displayName = '', presetId = null } = {}) {
+    const result = await apiClient.post('/api/persona-presets/expand', {
+      draft: String(draft ?? ''),
+      displayName: String(displayName ?? '').trim(),
+      ...(presetId ? { presetId: String(presetId).trim() } : {}),
+    });
+    if (result?.ok === false) throw new Error(result.error || '扩写失败');
+    return result;
   }
 
   /** 试听：后端走真实合成路径，因此与实际串词一致。 */
@@ -177,7 +211,9 @@ export function createRadiohostController({
     load,
     activate,
     loadVoices,
+    getVoiceFallback: () => voiceFallback,
     loadPersonaPresets,
+    expandPersonaDraft,
     previewVoice,
     createRadiohost,
     archivePerson,

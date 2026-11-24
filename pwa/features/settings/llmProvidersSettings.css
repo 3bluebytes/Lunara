@@ -72,7 +72,7 @@
 .llm-model-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
 .llm-model-name {
   min-width: 0; max-width: 100%;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px; line-height: 1.5; color: var(--t-hi);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -82,7 +82,7 @@
 .llm-badge {
   font-size: 10.5px; line-height: 1; padding: 3px 6px; border-radius: 999px;
   border: 1px solid var(--studio-line); color: var(--t-mid); white-space: nowrap;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .llm-badge-muted { border-style: dashed; }
 .llm-model-meta {
@@ -91,7 +91,7 @@
 }
 .llm-model-test {
   margin: 0; font-size: 11.5px; line-height: 1.5;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   overflow-wrap: anywhere;
 }
 .llm-model-test.is-ok { color: var(--t-mid); }
@@ -151,7 +151,7 @@
   border: 1px solid var(--studio-line); border-radius: 9px;
   background: color-mix(in srgb, var(--ink-0) 22%, transparent);
   color: var(--t-hi); font: inherit; font-size: 12.5px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .llm-model-field input:focus-visible { outline: 2px solid var(--studio-accent-ink); outline-offset: 1px; }
 .llm-model-field select {
@@ -187,7 +187,7 @@
 .llm-prov-empty { color: var(--t-mid); font-size: 12.5px; line-height: 1.65; margin: 6px 0; }
 
 /* 字阶统一（add-usage-dashboard）：卡内说明与「使用统计」页同一档 12.5px/1.65，
-   标签沿用 .boot-field 的 11.5px，数字用 Geist Mono；不再让说明文字继承正文大字号。 */
+   标签沿用 .boot-field 的 11.5px，数字用 --font-mono；不再让说明文字继承正文大字号。 */
 .llm-note { margin: 8px 0 0; font-size: 12.5px; line-height: 1.65; color: var(--t-mid); }
 .llm-active-foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .llm-active-foot .quiet-button { min-height: 32px; padding: 5px 10px; font-size: 12px; }

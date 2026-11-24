@@ -89,3 +89,20 @@ test('asked quiet holds for that listening source only; restore, a source change
   assert.deepEqual(changes.filter(x => x.type === 'quiet').map(x => x.quiet), [true, false, true, false, true, false]);
   assert.equal(rs.cadenceFactor('a'), 1, '安静点不改节奏系数');
 });
+
+test('asking for quiet in the same round reverts that round replied bonus while preserving earlier genuine replies', () => {
+  const c = clock();
+  const rs = createReceptionSignals({ now: c.now });
+  rs.noteLine('room', { voiced: true });
+  assert.equal(rs.noteUserTurn('room', { roundId: 'r1' }), 'replied');
+  c.advance(MIN);
+  rs.noteLine('room', { voiced: true });
+  assert.equal(rs.noteUserTurn('room', { roundId: 'r2' }), 'replied');
+  assert.equal(rs.signals().length, 2);
+
+  rs.askQuiet('room', { sessionId: 'room', roundId: 'r2' });
+  assert.equal(rs.isQuiet('room'), true);
+  assert.equal(rs.signals().length, 1, '同轮 r2 触发 quiet 后撤销该轮 replied，不误加分');
+  assert.ok(rs.cadenceFactor('room') < 1, '早先 r1 的真实互动仍保留');
+  assert.equal(rs.noteUserTurn('room', { roundId: 'r3' }), null, '撤销后不再把同一句重新记成 replied');
+});

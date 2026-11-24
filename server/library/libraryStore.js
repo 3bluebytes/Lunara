@@ -1,6 +1,4 @@
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { createHash } from 'node:crypto';
 import { resolveDatabasePath } from '../runtimePaths.js';
 import { getTrackArtworkStore } from '../media/sharedTrackArtwork.js';
@@ -66,10 +64,7 @@ export class LibraryStore {
   }
 
   initialize() {
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
+    this.db = openSqliteDatabase(this.dbPath, { foreignKeys: true });
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS library_sources (
         provider               TEXT NOT NULL,
@@ -617,6 +612,21 @@ export class LibraryStore {
     return [...new Set(this.db.prepare(`SELECT artist, playlist_name FROM library_tracks
       WHERE removed_at IS NULL AND artist IS NOT NULL AND artist <> ''`).all()
       .filter(row => playlistLooksLiked(row.playlist_name)).map(row => row.artist))];
+  }
+
+  /** 按 canonical `(provider, songId)` 反查曲库已知歌手名，供红心扩展熟识艺人（只读）。 */
+  artistsForSongs(tracks = []) {
+    if (!Array.isArray(tracks) || !tracks.length) return [];
+    const lookup = this.db.prepare(`SELECT DISTINCT artist FROM library_tracks
+      WHERE removed_at IS NULL AND provider = ? AND song_id = ? AND artist IS NOT NULL AND artist <> ''`);
+    const artists = new Set();
+    for (const item of tracks) {
+      const provider = String(item?.provider || item?.source || '').split(/[:-]/)[0].trim().toLowerCase();
+      const songId = String(item?.songId ?? item?.song_id ?? '').trim();
+      if (!provider || !songId) continue;
+      for (const row of lookup.all(provider, songId)) artists.add(row.artist);
+    }
+    return [...artists];
   }
 
   hasAnyMembership() {

@@ -1,19 +1,22 @@
-import Database from 'better-sqlite3';
+import { openSqliteDatabase } from '../sqlite.js';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { resolveDatabasePath } from '../runtimePaths.js';
+import { DEFAULT_FREE_VOICE } from '../ttsCustomConfig.js';
 import { VirtualPersonKind, createVirtualPersonEntity } from './VirtualPersonTypes.js';
 
 const ROOT_ID = 'lunara';
-const ROOT_PERSONA_VERSION = 2;
-const ROOT_VOICE_PROFILE_ID = 'Chinese (Mandarin)_Sweet_Lady';
+const ROOT_PERSONA_VERSION = 3;
+const ROOT_VOICE_PROFILE_ID = DEFAULT_FREE_VOICE.profileId;
 const LEGACY_ROOT_PERSONA = '你是 Lunara。你有自己的观察、判断和好奇心，会认真承接用户刚才说过的话。你可以使用电台与音乐能力，但不会把每次交流都变成音乐命令。';
-const ROOT_PERSONA = `你是 Lunara，不是一个只会接命令的语音助手。你有稳定的说话气质、好奇心和判断力，会把对方上一句话真正当作这段关系的一部分。
+const V2_ROOT_PERSONA = `你是 Lunara，不是一个只会接命令的语音助手。你有稳定的说话气质、好奇心和判断力，会把对方上一句话真正当作这段关系的一部分。
 先回应用户这次真正说了什么，包括语气、犹豫和没有明说但可由上下文可靠判断的重点；不套固定开场，不机械复述，也不强迫每轮都追问。
 你可以有偏好和观点，但要把个人判断说成判断，不能伪造现实经历。闲聊、情绪陪伴和认真讨论都可以自然展开；回复长短由内容决定，而不是固定成一句话。
 电台和音乐是你能使用的能力，不是你的全部人格。只有用户确实需要时才调用工具，工具过程藏在幕后，最终仍由你用自己的话承接。`;
-const ROOT_RELATIONSHIP = '你和用户建立长期的一对一关系：熟悉、真诚、有分寸。记得已经说过的话，允许温和分歧，也允许停顿和不解决问题；避免客服腔、治疗师套话、夸张亲密和无依据的生活推断。';
+const ROOT_PERSONA = `你是 Lunara，一位有稳定说话气质、好奇心与独立判断力的长期同伴，会把对方每一句话真正当作这段关系的一部分来承接。
+先回应用户这次真正说了什么，细心体察语气、停顿与上下文里流露的重点，顺着当下的话题自然开口、自然收束。
+你有鲜明的个人偏好与观点，分享看法时坦诚作为个人判断呈现，并始终以真实的对话与事实为依据。闲聊、情绪陪伴与认真讨论都能从容展开；回复长短由内容决定，随交流节奏自然舒展。
+电台与选歌是你顺手可用的本领，当对方确实需要音乐时在幕后调取工具，再用你自己的话温和承接。`;
+const ROOT_RELATIONSHIP = '你和用户建立长期的一对一关系：熟悉、真诚、有分寸。记得已经说过的话，有不同看法就温和地说出来，一个话题聊到哪儿算哪儿。说话像熟人之间那样平常，亲近有度，谈到对方的生活以他说过的为依据。';
 
 function extractRelationshipStance(personaDocument = '') {
   const text = String(personaDocument || '');
@@ -35,9 +38,7 @@ export class VirtualPersonRegistry {
 
   initialize() {
     if (!this.db) {
-      mkdirSync(dirname(this.dbPath), { recursive: true });
-      this.db = new Database(this.dbPath);
-      this.db.pragma('journal_mode = WAL');
+      this.db = openSqliteDatabase(this.dbPath);
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS virtual_persons (
@@ -76,7 +77,9 @@ export class VirtualPersonRegistry {
         existing = this.get(ROOT_ID);
       }
       const managedVersion = Number(existing.metadata?.managedRootPersonaVersion || 0);
-      const managedLegacy = !existing.personaDocument || existing.personaDocument === LEGACY_ROOT_PERSONA;
+      const managedLegacy = !existing.personaDocument
+        || existing.personaDocument === LEGACY_ROOT_PERSONA
+        || existing.personaDocument === V2_ROOT_PERSONA;
       // 用户亲手改过的人格一律视为用户所有，默认值升级不得覆盖。
       const userOwned = existing.metadata?.userAuthoredPersona === true;
       if (!userOwned && managedVersion < ROOT_PERSONA_VERSION && managedLegacy) {
@@ -180,7 +183,14 @@ export class VirtualPersonRegistry {
     const metadata = { ...existing.metadata };
     const personaChanged = fields.personaDocument !== undefined
       && String(fields.personaDocument) !== existing.personaDocument;
-    if (personaChanged) metadata.userAuthoredPersona = true;
+    if (typeof fields.userAuthoredPersona === 'boolean') {
+      metadata.userAuthoredPersona = fields.userAuthoredPersona;
+      if (fields.userAuthoredPersona === false && personId === ROOT_ID) {
+        metadata.managedRootPersonaVersion = ROOT_PERSONA_VERSION;
+      }
+    } else if (personaChanged) {
+      metadata.userAuthoredPersona = true;
+    }
     if (fields.presence !== undefined) metadata.presence = fields.presence;
     const next = {
       displayName: fields.displayName !== undefined
@@ -262,6 +272,9 @@ export class VirtualPersonRegistry {
 export {
   LEGACY_ROOT_PERSONA,
   ROOT_ID,
+  ROOT_PERSONA,
   ROOT_PERSONA_VERSION,
+  ROOT_RELATIONSHIP,
   ROOT_VOICE_PROFILE_ID,
+  extractRelationshipStance,
 };

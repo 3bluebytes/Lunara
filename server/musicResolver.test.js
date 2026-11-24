@@ -230,3 +230,42 @@ test('a failed media cache hands the player a same-origin relay, never the vendo
   assert.doesNotMatch(result.url, /vkey|uin=|aqqmusic|https?:/);
   assert.equal(result.cached, false);
 });
+
+test('cacheAudio and artwork lookup run concurrently in direct resolution', async () => {
+  const events = [];
+  let finishCache;
+  let finishArtwork;
+  const providers = {
+    qq: {
+      songUrl: async () => '/stream.mp3',
+      lyric: async () => ({ lrc: '' }),
+      cacheAudio: () => {
+        events.push('cache-start');
+        return new Promise(resolve => { finishCache = () => resolve({ url: '/audio/abc.mp3', cached: true }); });
+      },
+      resolveQuery: async () => ({ ok: false }),
+    },
+    ncm: { songUrl: async () => null, lyric: async () => ({}), cacheAudio: async () => null, resolveQuery: async () => ({ ok: false }) },
+  };
+  const resolve = resolver.createMusicResolver({
+    providers,
+    findRememberedIdentity: () => null,
+    findRememberedTrack: () => null,
+    rememberTracks: () => {},
+    maybeAutoTag: () => {},
+    trace: () => {},
+    resolveArtwork: () => {
+      events.push('artwork-start');
+      return new Promise(resolve => { finishArtwork = () => resolve(COVER); });
+    },
+  });
+  const pending = resolve('歌手 — 原版', { candidate });
+  for (let i = 0; i < 5 && events.length < 2; i += 1) await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.sort(), ['artwork-start', 'cache-start'], 'cacheAudio 未结束前封面查询已并发启动');
+  finishCache();
+  finishArtwork();
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(result.url, '/audio/abc.mp3');
+  assert.equal(result.artwork, COVER);
+});

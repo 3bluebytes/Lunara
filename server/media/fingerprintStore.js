@@ -6,9 +6,7 @@
 // 与曲目封面同样属于**展示/提议用的派生数据**：计算失败、表为空、身份层未知都不
 // 影响解析与播放。
 
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 export const FINGERPRINT_STATE = Object.freeze({ READY: 'ready', FAILED: 'failed' });
@@ -70,9 +68,7 @@ export function getFingerprintStore() {
   if (singleton) return singleton;
   try {
     const dbPath = resolveDatabasePath();
-    mkdirSync(dirname(dbPath), { recursive: true });
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
+    const db = openSqliteDatabase(dbPath);
     singleton = createFingerprintStore({ db });
     return singleton;
   } catch {

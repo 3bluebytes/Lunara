@@ -78,11 +78,15 @@ export function createToolOutcome(input = {}) {
   const ok = kind === ToolOutcomeKind.SUCCESS;
   const presentation = input.presentation && typeof input.presentation === 'object'
     ? {
-        displayText: optionalString(input.presentation.displayText, 2000),
-        spokenText: optionalString(input.presentation.spokenText, 1000),
+        displayText: optionalString(input.presentation.displayText, 8000),
+        spokenText: optionalString(input.presentation.spokenText, 4000),
         speak: input.presentation.speak === true,
         severity: optionalString(input.presentation.severity || (ok ? 'info' : 'warning'), 32),
         retryable: input.presentation.retryable === true,
+        ...(ok && input.terminal === true && Array.isArray(input.presentation.beats) && input.presentation.beats.length > 0
+          ? { beats: structuredClone(input.presentation.beats) } : {}),
+        ...(ok && input.terminal === true && input.code === 'MUSIC_COMMITTED' && input.presentation.independentDialogue
+          ? { independentDialogue: optionalString(input.presentation.independentDialogue, 3600) } : {}),
         // 终止性提交可以放行模型在同一条消息里写好的话（committedLine.js 机械校验）；只放已提交的歌名。
         ...(Array.isArray(input.presentation.modelLine?.allowedTitles)
           ? { modelLine: {
@@ -115,12 +119,15 @@ export function createToolOutcome(input = {}) {
 export function createPresentationEnvelope(input = {}) {
   const displayText = requiredString(input.displayText, 'presentation.displayText', 8000);
   const speak = input.speak === true;
-  const spokenText = optionalString(input.spokenText, 2000);
+  const spokenText = optionalString(input.spokenText, 4000);
   if (speak && !spokenText) throw new TypeError('spokenText is required when speak=true');
   return deepFreeze({
     displayText,
     spokenText,
     speak,
+    ...(Array.isArray(input.beats) && input.beats.length ? { beats: structuredClone(input.beats) } : {}),
+    ...(input.performance && typeof input.performance === 'object' && !Array.isArray(input.performance)
+      ? { performance: structuredClone(input.performance) } : {}),
     virtualPersonId: requiredString(input.virtualPersonId, 'presentation.virtualPersonId', 128),
     voiceProfileId: optionalString(input.voiceProfileId, 128),
     mood: optionalString(input.mood, 64),

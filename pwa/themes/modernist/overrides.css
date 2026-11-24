@@ -3,8 +3,9 @@
    当前歌词、已播进度、选中项，以及专注模式里的歌词海报。
    每个选择器都限定在 :root[data-theme="modernist"] 之下（测试检查）。 */
 :root[data-theme="modernist"] :is(*,*::before,*::after) { border-radius: 0 !important; box-shadow: none !important; text-shadow: none !important; }
+:root[data-theme="modernist"] :is(.conversation-sidebar, .persistent-player, .compose, .compose-suggest, .salon-dialog, .salon-dialog::backdrop, .queue-pop, .cast-card, .cast-overlay, .qr-card, .qr-overlay, .toast, .sb-source-pop, .sb-taste-popover) { -webkit-backdrop-filter: none; backdrop-filter: none; }
 :root[data-theme="modernist"] :is(button,a,input,textarea,select,summary,[tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-:root[data-theme="modernist"] :is(.room-row-playing,.chat-date-divider,.today-now em,.listening-wordmark h2,.focus-wordmark-title,#app.focus-mode .np-title) { font-style: normal; }
+:root[data-theme="modernist"] :is(.room-row-playing,.chat-date-divider,.listening-wordmark h2,.focus-wordmark-title,#app.focus-mode .np-title) { font-style: normal; }
 
 /* 结构线：侧栏、聆听列之后各一条 2px 实线，播放条上缘 2px 实线。 */
 :root[data-theme="modernist"] .conversation-sidebar { border-right: 2px solid var(--line-strong); }
@@ -27,7 +28,7 @@
 
 /* 聆听列：标签式小标题、60px 超粗歌名、封面保持真实色彩、红色超粗当前歌词。 */
 :root[data-theme="modernist"] .listening-wordmark h2 { font: 800 12px var(--font-display); letter-spacing: .08em; color: var(--text); }
-:root[data-theme="modernist"] .listening-song-title { font: 800 clamp(36px,4.2vw,60px)/.95 var(--font-display); letter-spacing: -.035em; }
+:root[data-theme="modernist"] .listening-song-title { font: 800 clamp(36px,4.2vw,60px)/1.08 var(--font-display); letter-spacing: -.025em; }
 :root[data-theme="modernist"] .cike-lyrics { border-top: 2px solid var(--line-strong); border-bottom: 2px solid var(--line-strong); margin-top: 24px; padding-block: 20px; }
 :root[data-theme="modernist"] .listening-lyric { border-left: 0; padding-left: 0; color: var(--accent); font: 800 var(--size-lyric-current)/1.2 var(--font-display); letter-spacing: -.01em; }
 :root[data-theme="modernist"] .cike-lyric-near { margin-left: 0; font: 400 var(--size-lyric)/1.5 var(--font-reading); color: var(--text-2); }
@@ -44,7 +45,7 @@
 :root[data-theme="modernist"] .chat-heading { font: 800 22px/1.2 var(--font-display); letter-spacing: -.02em; }
 :root[data-theme="modernist"] .listen-together { background: var(--text); color: var(--bg-page); }
 :root[data-theme="modernist"] .listen-together:hover { background: var(--accent); color: var(--text-on-accent); }
-:root[data-theme="modernist"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial) { font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); }
+:root[data-theme="modernist"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial,.chat-beat-group) { font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); }
 :root[data-theme="modernist"] .chat-msg.user .chat-bubble { background: none; border: 0; border-left: 2px solid var(--line-strong); font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-ui); }
 :root[data-theme="modernist"] .chat-date-divider { font: 400 11px var(--font-ui); letter-spacing: .08em; }
 :root[data-theme="modernist"] .compose { margin: 0; padding: 16px 24px; border: 0; border-top: 2px solid var(--line-strong); background: var(--bg-page); }
@@ -58,6 +59,7 @@
 }
 :root[data-theme="modernist"] .persistent-player::before { display: none; }
 :root[data-theme="modernist"] .cike-player-meta strong { font: 800 14px var(--font-display); }
+:root[data-theme="modernist"] :is(.listening-artwork, .player-artwork, .cike-player-meta) img:is([src$="/icon.png"], [src$="/cover-fallback.jpg"]) { background: transparent; border-color: transparent; }
 
 /* 专注聆听：当前歌词成为整块红色海报——这是稿里唯一一处大面积红色。 */
 :root[data-theme="modernist"] #app.focus-mode .player-line-viewport:has(.lyric):not(.next) { border-left: 0; padding: 32px 36px; background: var(--accent); }
@@ -67,10 +69,11 @@
 :root[data-theme="modernist"] #app.focus-mode .focus-player-recommendation:not([hidden]) { padding: 20px 0 0; background: none; border: 0; border-top: 2px solid var(--line-strong); }
 :root[data-theme="modernist"] #app.focus-mode .focus-player-recommendation::before { content: none; }
 
-/* 今日 / 人物：标题超粗，主按钮墨色。 */
-:root[data-theme="modernist"] :is(.shell-page-title,#person-detail-name,.today-panel .today-input-seamless-title) { font-weight: 800; letter-spacing: -.03em; }
-:root[data-theme="modernist"] .today-panel .today-btn-primary { background: var(--text); color: var(--bg-page); }
-:root[data-theme="modernist"] .today-panel .today-btn-primary:hover { background: var(--accent); color: var(--text-on-accent); }
+/* 人物：标题超粗；手帐样式由 today.css 独占维护。 */
+:root[data-theme="modernist"] :is(.shell-page-title,#person-detail-name) { font-weight: 800; letter-spacing: -.03em; }
+
+/* 续播失败的重试：琥珀色在纸白底上对比不够，改用警示墨色。 */
+:root[data-theme="modernist"] #continuation-retry { color: var(--warn-ink); text-decoration: underline; text-underline-offset: 3px; }
 
 /* 同一素色主题的夜间纸墨；原纸白块保持不变。两属性共同限定，其他主题不继承。 */
 :root[data-theme="modernist"][data-modernist-base="indigo"] {
@@ -102,7 +105,7 @@
   --bg-selected: #3b4a64; --bg-hover: rgba(233,236,237,.07);
   --text: #e9eced; --text-2: #c4cdd9; --text-3: #b0bdcf; --text-4: #9faec2;
   --text-on-accent: #26344b;
-  --line: rgba(233,236,237,.24); --line-strong: #e9eced; --line-control: #b0bdcf;
+  --line: rgba(233,236,237,.18); --line-strong: rgba(233,236,237,.44); --line-control: #b0bdcf;
   --accent: #f0d889; --accent-hover: #f7e6b1; --danger: #f2a397; --ok: #b2dbc4;
   --partner-1: #d9b8d6; --partner-2: #b9d3a6; --partner-3: #d9b79b;
   --partner-4: #a8c8d8; --partner-5: #d6c891; --partner-6: #c1b9e2;
@@ -110,6 +113,9 @@
   --partner-4-rgb: 168 200 216; --partner-5-rgb: 214 200 145; --partner-6-rgb: 193 185 226;
   --partner-lunara: #e9eced;
 }
+
+/* 靛蓝夜间纸墨：保留主栏边界，柔和化列内次级横线避免全屏白框过载。 */
+:root[data-theme="modernist"][data-modernist-base="indigo"] :is(.session-breadcrumb, .cike-lyrics, .sb-bottom-compact, .compose) { border-color: var(--line); }
 
 /* 靛蓝只改变纸墨：同一箭头形状用继承色，避免固定深棕 fill 在浅色控件上混色。
    专注歌词仍保留原海报排版，但黄只作文字高亮，不把整块背景铺黄。 */

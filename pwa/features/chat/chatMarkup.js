@@ -1,5 +1,6 @@
 import { splitLeadingQuote } from './chatQuote.js';
 import { webSourcesHtml } from './webSources.js';
+import { parseRoleplaySegments } from './roleplaySpeech.js';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -44,45 +45,37 @@ function trackListHtml(tracks) {
   return `<div class="chat-tracks">${tracks.map(buildTrackCardHtml).join('')}</div>`;
 }
 
-/**
- * 长回复的纯文本与段落：判定编辑式排版用。
- * 段按换行切、去空；字数只数非空白码点，空行/缩进不影响判定。
- * 拿不到文本（无 text 且无 segments）返回 null，由调用方回退气泡。
- */
-function editorialPlainText({ text, segments } = {}) {
-  if (typeof text === 'string' && text.trim()) return text;
-  if (Array.isArray(segments)) {
-    const joined = segments.map(segment => String(segment?.content ?? '')).join('\n');
-    return joined.trim() ? joined : null;
+function groupSegmentRuns(segments) {
+  const runs = [];
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    const type = segment?.type ? String(segment.type) : '';
+    const content = String(segment?.content ?? '');
+    if (!content.trim()) continue;
+    const item = { type, content, inline: segment?.inline === true };
+    if (item.inline && runs.length > 0) {
+      runs.at(-1).push(item);
+    } else {
+      runs.push([item]);
+    }
   }
-  return null;
+  return runs;
 }
 
-/**
- * 编辑式排版判定：assistant 长纯文本回复改用无气泡底的阅读排版。
- * 规则：非空白字数 > 120，或段数 ≥ 2 且字数 > 80。
- * 用户消息与未知角色不走此分支。
- */
-export function shouldRenderEditorial({ role, text, segments } = {}) {
-  try {
-    if (role !== 'assistant') return false;
-    const plain = editorialPlainText({ text, segments });
-    if (!plain) return false;
-    const paragraphs = plain.split('\n').map(part => part.trim()).filter(Boolean);
-    const charCount = [...paragraphs.join('')].length;
-    return charCount > 120 || (paragraphs.length >= 2 && charCount > 80);
-  } catch {
-    return false;
-  }
+function inlineSpanHtml(item) {
+  const typeClass = item.type ? ` class="chat-seg-${escapeHtml(item.type)}"` : '';
+  return `<span${typeClass}>${escapeHtml(item.content.trim())}</span>`;
 }
 
-function editorialHtml(plainText, trailingHtml = '') {
-  const paragraphs = plainText.split('\n').map(part => escapeHtml(part.trim())).filter(Boolean);
-  // 段落一律同级：不设标题段/开场段，首段也不加粗、不放大、不换字体。
-  // 编辑式排版只体现在容器形式上：无气泡底、左缘强调竖线、段间距。
-  const bodyHtml = paragraphs.map(part => `<p>${part}</p>`).join('');
-  // 卡片与时间留在容器内（CSS 的 .chat-editorial .chat-tracks / .chat-time 依赖这层嵌套）。
-  return `<div class="chat-editorial" data-presentation="editorial">${bodyHtml}${trailingHtml}</div>`;
+export function voiceButtonHtml(voice, turnId, { playingVoice = false, loadingVoice = false, beats = null } = {}) {
+  if (!voice?.canSynthesize || !turnId) return '';
+  const hasBeatAudio = (Array.isArray(beats) && beats.some(beat => Boolean(beat?.audioUrl)))
+    || (Array.isArray(voice?.beats) && voice.beats.some(beat => Boolean(beat?.audioUrl)));
+  const hasAudio = Boolean(voice.audioUrl || voice.url || hasBeatAudio);
+  const state = loadingVoice ? 'loading' : playingVoice ? 'playing' : hasAudio ? 'ready' : 'idle';
+  const label = loadingVoice ? '正在合成…' : playingVoice ? '■ 停止' : hasAudio ? '▶ 重听' : '生成语音';
+  const ariaLabel = loadingVoice ? '正在合成这段语音' : playingVoice ? '停止播放这段语音' : hasAudio ? '重听这段语音' : '生成并播放这段语音';
+  const busyAttr = loadingVoice ? ' aria-busy="true"' : '';
+  return `<div class="chat-voice-bar"><button type="button" class="quiet-button chat-voice-btn" data-voice-turn="${escapeHtml(turnId)}" data-voice-state="${state}" data-has-audio="${hasAudio ? '1' : '0'}" aria-pressed="${playingVoice && !loadingVoice ? 'true' : 'false'}"${busyAttr} aria-label="${escapeHtml(ariaLabel)}">${label}</button><span class="chat-voice-note" role="status" aria-live="polite"></span></div>`;
 }
 
 /**
@@ -159,27 +152,96 @@ export function musicRecommendationHtml(view) {
   return `<div class="chat-recommendation" data-state="${state}">${head}<span class="chat-recommendation-note">${copy}</span></div>`;
 }
 
-export function buildChatMessageHtml({ text, segments, tracks, time = '', speakerName = '', replyToName = '', hostsTrack = false, floorAsk = '', role = null, hostSuggestion = null, musicRecommendation = null, webSources = null } = {}) {
-  return `${messageBodyHtml({ text, segments, tracks, time, speakerName, replyToName, hostsTrack, floorAsk, role })}${hostSuggestionHtml(hostSuggestion)}${musicRecommendationHtml(musicRecommendation)}${role === 'assistant' ? webSourcesHtml(webSources) : ''}`;
+function beatInnerHtml(beat, { forceRoleplayClasses = true } = {}) {
+  const action = typeof beat?.action === 'string' ? beat.action.trim() : '';
+  const say = typeof beat?.say === 'string' ? beat.say.trim() : '';
+  if (forceRoleplayClasses) {
+    const actionHtml = action ? `<div class="roleplay-action">${escapeHtml(action)}</div>` : '';
+    const speechHtml = (say || !action) ? `<div class="roleplay-speech">${escapeHtml(say)}</div>` : '';
+    return `${actionHtml}${speechHtml}`;
+  }
+  return `<div class="chat-text">${escapeHtml(say)}</div>`;
 }
 
-function messageBodyHtml({ text, segments, tracks, time, speakerName, replyToName, hostsTrack, floorAsk, role }) {
+function isMultiBeatMessage({ role, beats, beatProgress } = {}) {
+  return role === 'assistant'
+    && Array.isArray(beats)
+    && (beats.length > 1 || (beats.length >= 1 && Number(beatProgress?.totalCount) > 1));
+}
+
+export function buildChatMessageHtml({ text, segments, beats = null, beatProgress = null, interactionMode = null, visibleBeatCount = null, activeBeatIndex = null, tracks, time = '', speakerName = '', replyToName = '', hostsTrack = false, floorAsk = '', role = null, hostSuggestion = null, musicRecommendation = null, webSources = null, voice = null, turnId = null, playingVoice = false, loadingVoice = false } = {}) {
+  const body = messageBodyHtml({ text, segments, beats, beatProgress, interactionMode, visibleBeatCount, activeBeatIndex, tracks, time, speakerName, replyToName, hostsTrack, floorAsk, role, hostSuggestion, musicRecommendation, webSources, voice, turnId, playingVoice, loadingVoice });
+  if (isMultiBeatMessage({ role, beats, beatProgress })) {
+    return body;
+  }
+  return `${body}${hostSuggestionHtml(hostSuggestion)}${musicRecommendationHtml(musicRecommendation)}${role === 'assistant' ? webSourcesHtml(webSources) : ''}`;
+}
+
+function messageBodyHtml({ text, segments, beats, beatProgress, interactionMode, visibleBeatCount, activeBeatIndex, tracks, time, speakerName, replyToName, hostsTrack, floorAsk, role, hostSuggestion, musicRecommendation, webSources, voice, turnId, playingVoice, loadingVoice }) {
+  const speakerHtml = speakerLineHtml(speakerName, replyToName, hostsTrack, floorAsk);
+  const voiceHtml = role === 'assistant' ? voiceButtonHtml(voice, turnId, { playingVoice, loadingVoice, beats }) : '';
+
+  if (isMultiBeatMessage({ role, beats, beatProgress })) {
+    let deliveredBeats = beats;
+    if (beatProgress && !beatProgress.done && Number.isFinite(Number(beatProgress.deliveredCount))) {
+      deliveredBeats = beats.slice(0, Math.max(1, Math.floor(Number(beatProgress.deliveredCount))));
+    }
+    const shownBeats = Number.isFinite(Number(visibleBeatCount)) && Number(visibleBeatCount) > 0
+      ? deliveredBeats.slice(0, Math.max(1, Math.floor(Number(visibleBeatCount))))
+      : deliveredBeats;
+    const trailingHtml = `${trackListHtml(tracks)}${hostSuggestionHtml(hostSuggestion)}${musicRecommendationHtml(musicRecommendation)}${webSourcesHtml(webSources)}<div class="chat-time">${escapeHtml(time)}</div>${voiceHtml}`;
+    const bubblesHtml = shownBeats.map((beat, idx) => {
+      const beatIdx = Number.isInteger(beat?.index) ? beat.index : idx;
+      const isFirst = idx === 0;
+      const isLast = idx === shownBeats.length - 1;
+      const isMiddle = !isFirst && !isLast;
+      const isSpeaking = Number.isInteger(activeBeatIndex) && activeBeatIndex === beatIdx;
+      const classes = [
+        'chat-beat-bubble',
+        isFirst ? 'is-first' : '',
+        isMiddle ? 'is-middle' : '',
+        isLast ? 'is-last' : '',
+        isSpeaking ? 'is-speaking' : '',
+      ].filter(Boolean).join(' ');
+      return `<div class="${classes}" data-beat-index="${escapeHtml(beatIdx)}"${isSpeaking ? ' data-speaking="1"' : ''}>`
+        + `${beatInnerHtml(beat, { forceRoleplayClasses: true })}`
+        + `${isLast ? trailingHtml : ''}`
+        + '</div>';
+    }).join('');
+    const pendingAttr = beatProgress && !beatProgress.done ? ' data-beat-pending="1"' : '';
+    const turnAttr = turnId ? ` data-turn-id="${escapeHtml(turnId)}"` : '';
+    return `${speakerHtml}<div class="chat-beat-group"${turnAttr}${pendingAttr}>${bubblesHtml}</div>`;
+  }
+
+  let effectiveSegments = segments;
+  if (role === 'assistant' && (!Array.isArray(beats) || !beats.length) && !Array.isArray(effectiveSegments)
+    && interactionMode === 'roleplay' && typeof text === 'string' && text.trim()) {
+    const parsed = parseRoleplaySegments(text);
+    if (parsed.hasAction && parsed.segments.length) effectiveSegments = parsed.segments;
+  }
+
+  if (role === 'assistant' && Array.isArray(beats) && beats.length === 1) {
+    const beat = (beats[0]?.say || beats[0]?.action || typeof text !== 'string' || !text.trim())
+      ? beats[0]
+      : { ...beats[0], say: text };
+    const content = beatInnerHtml(beat, { forceRoleplayClasses: Boolean(beat?.action || interactionMode === 'roleplay') });
+    return `${speakerHtml}<div class="chat-bubble">${content}${trackListHtml(tracks)}<div class="chat-time">${escapeHtml(time)}</div>${voiceHtml}</div>`;
+  }
+
   let content = '';
-  if (Array.isArray(segments)) {
-    content = segments.map(segment => {
-      const typeClass = segment?.type ? ` chat-seg-${escapeHtml(segment.type)}` : '';
-      return `<div class="chat-segment${typeClass}">${escapeHtml(segment?.content)}</div>`;
+  if (Array.isArray(effectiveSegments)) {
+    content = groupSegmentRuns(effectiveSegments).map(run => {
+      if (run.length > 1) {
+        return `<div class="chat-segment chat-seg-mixed">${run.map(inlineSpanHtml).join('')}</div>`;
+      }
+      const segment = run[0];
+      const typeClass = segment.type ? ` chat-seg-${escapeHtml(segment.type)}` : '';
+      return `<div class="chat-segment${typeClass}">${escapeHtml(segment.content)}</div>`;
     }).join('');
   } else {
     content = role === 'user' ? userTextHtml(text) : `<div class="chat-text">${escapeHtml(text)}</div>`;
   }
-  const speakerHtml = speakerLineHtml(speakerName, replyToName, hostsTrack, floorAsk);
-  if (shouldRenderEditorial({ role, text, segments })) {
-    // 编辑式排版不带气泡容器：卡片与时间随段落一起放进 .chat-editorial。
-    const trailing = `${trackListHtml(tracks)}<div class="chat-time">${escapeHtml(time)}</div>`;
-    return `${speakerHtml}${editorialHtml(editorialPlainText({ text, segments }), trailing)}`;
-  }
-  return `${speakerHtml}<div class="chat-bubble">${content}${trackListHtml(tracks)}<div class="chat-time">${escapeHtml(time)}</div></div>`;
+  return `${speakerHtml}<div class="chat-bubble">${content}${trackListHtml(tracks)}<div class="chat-time">${escapeHtml(time)}</div>${voiceHtml}</div>`;
 }
 
 export function parsePersistedChats(raw) {

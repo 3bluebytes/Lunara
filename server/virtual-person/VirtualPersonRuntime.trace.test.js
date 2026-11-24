@@ -77,6 +77,17 @@ test('one turn records input, context, tool execution and the committed reply un
   assert.ok(Array.isArray(assembled.messages) && assembled.messages.length >= 1);
   assert.ok(assembled.messages.every(message => typeof message.role === 'string' && Number.isInteger(message.chars)));
 
+  // 每次调用模型前记录上下文构成（add-context-usage-observation）：只有数值与小节标题。
+  const usage = h.records.find(entry => entry.event.type === 'context_usage');
+  assert.ok(usage, '缺少 context_usage');
+  assert.equal(usage.context.requestId, 'request-trace');
+  assert.equal(usage.event.round, 1);
+  assert.equal(usage.event.taskId, 'chat_dialogue');
+  assert.equal(usage.event.tools.count, 1);
+  assert.ok(usage.event.outputReserveTokens > 0);
+  assert.ok(usage.event.sections.some(section => section.title === '平台原则'));
+  assert.ok(!('systemPrompt' in usage.event) && !JSON.stringify(usage.event).includes('开始探测'), '不带正文');
+
   const proposed = h.records.find(entry => entry.event.type === 'tool_proposed').event;
   assert.equal(proposed.calls[0].name, 'probe_tool');
   const result = h.records.find(entry => entry.event.type === 'tool_result').event;

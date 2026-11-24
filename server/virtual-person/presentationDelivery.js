@@ -7,16 +7,24 @@
 // Python 伪代码：
 //   message, overlay = delivery_payload(presentation, audio, session_id=sid, reason='virtual-person:reply')
 export function deliveryPayload({ presentation, audio = null, sessionId, virtualPersonId, reason,
-  allowAudio = true, overlayType = 'listener_response', extra = {} }) {
+  allowAudio = true, overlayType = 'listener_response', beatOverlay = null, extra = {} }) {
   const message = { say: presentation.displayText, mood: presentation.mood || 'neutral', reason,
     virtualPersonId, speakerId: virtualPersonId, conversationId: sessionId,
     sourceTurnId: presentation.sourceTurnId, turnId: presentation.sourceTurnId, ...extra };
   const overlayNarration = audio?.url && allowAudio ? {
-    kind: 'narration', url: audio.url, text: presentation.spokenText,
+    kind: 'narration', url: audio.url, text: beatOverlay?.text ?? presentation.spokenText,
     type: overlayType, source: audio.source || null, duck: true,
     virtualPersonId, voiceProfileId: presentation.voiceProfileId,
     sourceTurnId: presentation.sourceTurnId, conversationId: sessionId,
     expiresAt: presentation.expiresAt,
+    ...(beatOverlay && Number.isInteger(beatOverlay.beatIndex) ? {
+      beatIndex: beatOverlay.beatIndex,
+      beatCount: beatOverlay.beatCount,
+      isLastBeat: beatOverlay.isLastBeat,
+      delayBeforeMs: beatOverlay.delayBeforeMs,
+      turnDuckLeaseId: beatOverlay.turnDuckLeaseId,
+      holdDuckLease: beatOverlay.holdDuckLease,
+    } : {}),
   } : null;
   return { message, overlayNarration };
 }

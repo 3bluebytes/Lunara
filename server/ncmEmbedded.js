@@ -14,6 +14,7 @@ import { createServer, connect } from 'node:net';
 import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runWithNcmLogBoundary, protectNcmServerLogs } from './ncmLogBoundary.js';
 
 const PACKAGE_ID = 'NeteaseCloudMusicApi';
 const DEFAULT_HOST = '127.0.0.1';
@@ -158,10 +159,17 @@ async function listenEmbedded({ host, port, requireFn }) {
   const { serveNcmApi } = requireFn(`${PACKAGE_ID}/server.js`);
   // 包内部的端口计算是 `port || process.env.PORT || 3000`，传 0 会落到 Lunara 的
   // PORT(=8080) 上撞端口；所以必须给一个已经探好的具体端口。
-  const app = await serveNcmApi({ port, host, checkVersion: false });
+  // 当前依赖的第四参 ip 不被三参数 transport 消费；不再做无效的模块定义包装。
+  const app = await runWithNcmLogBoundary(() => serveNcmApi({ port, host, checkVersion: false }));
   const server = app.server;
-  await waitForListening(server);
-  return server;
+  try {
+    protectNcmServerLogs(server);
+    await waitForListening(server);
+    return server;
+  } catch (error) {
+    await closeServer(server);
+    throw error;
+  }
 }
 
 async function closeServer(server) {

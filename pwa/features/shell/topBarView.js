@@ -10,7 +10,7 @@ import { escapeHtml } from '../chat/chatMarkup.js';
 import { deriveTopBarTabs } from './timelineModel.js';
 
 export const TOP_BAR_DESTINATIONS = Object.freeze([
-  Object.freeze({ id: 'today', label: '帐本', nav: '#nav-today' }),
+  Object.freeze({ id: 'today', label: '手帐', nav: '#nav-today' }),
   Object.freeze({ id: 'people', label: '人物', nav: '#nav-people' }),
   Object.freeze({ id: 'settings', label: '设置', nav: '#nav-settings' }),
 ]);
@@ -219,6 +219,12 @@ export function createTopBarView({ controller, store, browse, appearance = null,
       toggleOverlay($('#person-detail-switch'));
     });
     on($('#people-list-create'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#recording-review-open'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#nav-conversations'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#nav-today'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#nav-settings'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#person-detail-back'), 'click', () => closeOverlay({ restoreFocus: false }));
+    on($('#person-detail-chat'), 'click', () => closeOverlay({ restoreFocus: false }));
     on(documentLike, 'keydown', onKeyDown);
     on(documentLike, 'click', onDocumentClick);
     // 在浮层里点开一个聊天或一位伙伴：打开由侧栏自己的处理器完成，这里只收起浮层。

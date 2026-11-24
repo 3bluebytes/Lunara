@@ -8,7 +8,8 @@
 // 每路径 env（LUNARA_DB_PATH 等）优先于 LUNARA_DATA_DIR 推导；
 // 相对 env 值相对数据根解析（历史行为曾锚 cwd，属静默破坏性变更，故告警）。
 
-import { homedir } from 'node:os';
+import { mkdtempSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,9 +23,28 @@ function resolveOverride(primaryName, legacyName, fallback) {
   return resolved;
 }
 
+/** 当前进程是否是被直接运行的测试文件（`node foo.test.js` 或 node:test 子进程）。 */
+export function isTestProcess(argv = process.argv) {
+  return /\.test\.m?js$/.test(String(argv?.[1] || ''));
+}
+
+let directTestHome = null;
+
+/**
+ * 默认的 Lunara 主目录（数据根与密钥目录共用的 ~/.lunara）。
+ *
+ * run-tests.mjs 会给每个测试进程注入隔离 env，但单独 `node foo.test.js` 时没有；
+ * 测试进程未显式指定目录时改用进程级临时目录，杜绝测试写进真实数据库或配置。
+ */
+export function defaultLunaraHome(argv = process.argv) {
+  if (!isTestProcess(argv)) return join(homedir(), '.lunara');
+  directTestHome ??= mkdtempSync(join(tmpdir(), 'lunara-direct-test-'));
+  return directTestHome;
+}
+
 /** 数据根：所有运行期状态（data/user/cache/backup）的根。 */
 export function resolveDataRoot() {
-  return resolve(process.env.LUNARA_DATA_DIR || join(homedir(), '.lunara'));
+  return resolve(process.env.LUNARA_DATA_DIR || defaultLunaraHome());
 }
 
 /** 包根：随安装分发的代码资产（pwa/prompts/electron）根。 */
@@ -85,6 +105,11 @@ export function resolveTaskTraceDir(fallback = resolve(resolveDataRoot(), 'tasks
   return resolveOverride('LUNARA_TASK_TRACE_DIR', null, fallback);
 }
 
+/** 本地 embedding 模型目录（npm run embedding:install 装入；运行时只读，不联网下载）。 */
+export function resolveEmbeddingModelDir(fallback = resolve(resolveDataRoot(), 'models/embedding')) {
+  return resolveOverride('LUNARA_EMBEDDING_MODEL_DIR', null, fallback);
+}
+
 /** 提供商图片缓存（/img 静态挂载），锚数据根。 */
 export function resolveImageCacheDir() {
   return resolve(resolveDataRoot(), 'cache/img');
@@ -95,6 +120,7 @@ export default {
   resolveDataRoot,
   resolvePackageRoot,
   resolveAudioCacheDir,
+  resolveEmbeddingModelDir,
   resolveImageCacheDir,
   resolvePersonaRoot,
   resolveSessionTraceDir,

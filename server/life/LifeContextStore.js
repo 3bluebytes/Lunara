@@ -2,12 +2,12 @@
 // 表结构与写入都为增量：不自动导入 user/routines.md，不动其他服务的表。
 // 删除/撤回不保留正文，只留最小失效凭据（life_revocations），防止旧快照复活来源。
 
-import Database from 'better-sqlite3';
-import { mkdirSync, mkdtempSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-export const LIFE_SCHEMA_VERSION = 3;
+export const LIFE_SCHEMA_VERSION = 5;
 
 const LIFE_ENTRIES_CANONICAL = `
     CREATE TABLE life_entries (
@@ -26,6 +26,17 @@ const LIFE_ENTRIES_CANONICAL = `
       companion_note        TEXT,
       allowed_person_ids    TEXT NOT NULL DEFAULT '[]',
       scene_tag              TEXT,
+      mood                  TEXT,
+      tags_json             TEXT NOT NULL DEFAULT '[]',
+      pinned                INTEGER NOT NULL DEFAULT 0,
+      archived              INTEGER NOT NULL DEFAULT 0,
+      share_scope           TEXT NOT NULL DEFAULT 'summary',
+      attached_track_json   TEXT,
+      attached_tracks_json  TEXT NOT NULL DEFAULT '[]',
+      attached_quotes_json  TEXT NOT NULL DEFAULT '[]',
+      checklist_json        TEXT NOT NULL DEFAULT '[]',
+      annotations_json      TEXT NOT NULL DEFAULT '[]',
+      layout_variant        TEXT NOT NULL DEFAULT 'blank',
       revision              INTEGER NOT NULL DEFAULT 1,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL
@@ -90,6 +101,17 @@ function createLifeSchema(db) {
       companion_note        TEXT,
       allowed_person_ids    TEXT NOT NULL DEFAULT '[]',
       scene_tag             TEXT,
+      mood                  TEXT,
+      tags_json             TEXT NOT NULL DEFAULT '[]',
+      pinned                INTEGER NOT NULL DEFAULT 0,
+      archived              INTEGER NOT NULL DEFAULT 0,
+      share_scope           TEXT NOT NULL DEFAULT 'summary',
+      attached_track_json   TEXT,
+      attached_tracks_json  TEXT NOT NULL DEFAULT '[]',
+      attached_quotes_json  TEXT NOT NULL DEFAULT '[]',
+      checklist_json        TEXT NOT NULL DEFAULT '[]',
+      annotations_json      TEXT NOT NULL DEFAULT '[]',
+      layout_variant        TEXT NOT NULL DEFAULT 'blank',
       revision              INTEGER NOT NULL DEFAULT 1,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL
@@ -142,19 +164,20 @@ export class LifeContextStore {
   initialize() {
     if (this.db?.open && this.statements) return;
     if (this.ownsDb && !this.db?.open) {
-      mkdirSync(dirname(this.dbPath), { recursive: true });
-      this.db = new Database(this.dbPath);
-      this.db.pragma('journal_mode = WAL');
+      this.db = openSqliteDatabase(this.dbPath);
     }
     const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='life_entries'").get();
-    const needsUpgrade = existing && !this.db.prepare('PRAGMA table_info(life_entries)').all().some(column => column.name === 'repeat_frequency');
+    const existingCols = existing ? new Set(this.db.prepare('PRAGMA table_info(life_entries)').all().map(column => column.name)) : null;
+    const hasUpgradeV4 = Boolean(existingCols && !existingCols.has('mood'));
+    const hasUpgradeV5 = Boolean(existingCols && (!existingCols.has('attached_tracks_json') || !existingCols.has('annotations_json')));
+    const needsUpgrade = Boolean(existingCols && !existingCols.has('repeat_frequency')) || hasUpgradeV4 || hasUpgradeV5;
     let migrationRows = null;
     if (needsUpgrade) {
       // VACUUM INTO is a consistent SQLite snapshot including committed WAL rows.
       const backupDir = mkdtempSync(join(tmpdir(), 'lunara-life-upgrade-'));
       this.migrationBackupPath = join(backupDir, 'life.sqlite');
       this.db.prepare('VACUUM INTO ?').run(this.migrationBackupPath);
-      const backup = new Database(this.migrationBackupPath, { readonly: true });
+      const backup = openSqliteDatabase(this.migrationBackupPath, { readonly: true });
       try {
         const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
         migrationRows = [];
@@ -170,9 +193,24 @@ export class LifeContextStore {
     this.db.transaction(() => {
       createLifeSchema(this.db);
       const columns = this.db.prepare('PRAGMA table_info(life_entries)').all();
-      if (!columns.some(column => column.name === 'repeat_frequency')) {
+      const colNames = new Set(columns.map(column => column.name));
+      if (!colNames.has('repeat_frequency')) {
         this.db.exec("ALTER TABLE life_entries ADD COLUMN repeat_frequency TEXT NOT NULL DEFAULT 'none'; ALTER TABLE life_entries ADD COLUMN repeat_weekdays TEXT NOT NULL DEFAULT '[]'; UPDATE life_entries SET repeat_frequency = 'yearly' WHERE yearly_repeat = 1;");
       }
+      if (!colNames.has('mood')) this.db.exec('ALTER TABLE life_entries ADD COLUMN mood TEXT;');
+      if (!colNames.has('tags_json')) this.db.exec("ALTER TABLE life_entries ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';");
+      if (!colNames.has('pinned')) this.db.exec('ALTER TABLE life_entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
+      if (!colNames.has('archived')) this.db.exec('ALTER TABLE life_entries ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;');
+      if (!colNames.has('share_scope')) this.db.exec("ALTER TABLE life_entries ADD COLUMN share_scope TEXT NOT NULL DEFAULT 'summary';");
+      if (!colNames.has('attached_track_json')) this.db.exec('ALTER TABLE life_entries ADD COLUMN attached_track_json TEXT;');
+      if (!colNames.has('attached_tracks_json')) {
+        this.db.exec("ALTER TABLE life_entries ADD COLUMN attached_tracks_json TEXT NOT NULL DEFAULT '[]';");
+        this.db.exec("UPDATE life_entries SET attached_tracks_json = json_array(json(attached_track_json)) WHERE attached_track_json IS NOT NULL AND attached_track_json != '';");
+      }
+      if (!colNames.has('attached_quotes_json')) this.db.exec("ALTER TABLE life_entries ADD COLUMN attached_quotes_json TEXT NOT NULL DEFAULT '[]';");
+      if (!colNames.has('checklist_json')) this.db.exec("ALTER TABLE life_entries ADD COLUMN checklist_json TEXT NOT NULL DEFAULT '[]';");
+      if (!colNames.has('annotations_json')) this.db.exec("ALTER TABLE life_entries ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '[]';");
+      if (!colNames.has('layout_variant')) this.db.exec("ALTER TABLE life_entries ADD COLUMN layout_variant TEXT NOT NULL DEFAULT 'blank';");
       this.db.exec(`CREATE TABLE IF NOT EXISTS life_entry_completions (
         entry_id TEXT NOT NULL, occurrence_date TEXT NOT NULL, completed_at INTEGER NOT NULL,
         PRIMARY KEY(entry_id, occurrence_date));`);
@@ -196,15 +234,21 @@ export class LifeContextStore {
       deleteOverride: this.db.prepare('DELETE FROM life_day_overrides WHERE local_date = ?'),
       listOverrides: this.db.prepare('SELECT * FROM life_day_overrides ORDER BY local_date'),
       listEntries: this.db.prepare('SELECT * FROM life_entries ORDER BY local_date, start_time IS NULL, start_time, id'),
+      listQuotedJson: this.db.prepare("SELECT attached_quotes_json FROM life_entries WHERE attached_quotes_json IS NOT NULL AND attached_quotes_json != '[]'"),
       getEntry: this.db.prepare('SELECT * FROM life_entries WHERE id = ?'),
       getEntryCreateRequest: this.db.prepare('SELECT * FROM life_entry_create_requests WHERE request_id = ?'),
       insertEntryCreateRequest: this.db.prepare('INSERT INTO life_entry_create_requests (request_id, payload_hash, entry_id) VALUES (?, ?, ?)'),
       insertEntry: this.db.prepare(`INSERT INTO life_entries (id, type, title, content, local_date, end_date, start_time, end_time, done,
-        yearly_repeat, use_for_companionship, note_uses_title, companion_note, allowed_person_ids, scene_tag, revision, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`),
+        yearly_repeat, use_for_companionship, note_uses_title, companion_note, allowed_person_ids, scene_tag,
+        mood, tags_json, pinned, archived, share_scope, attached_track_json,
+        attached_tracks_json, attached_quotes_json, checklist_json, annotations_json, layout_variant,
+        revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`),
       updateEntry: this.db.prepare(`UPDATE life_entries SET type = ?, title = ?, content = ?, local_date = ?, end_date = ?, start_time = ?, end_time = ?,
         done = ?, yearly_repeat = ?, use_for_companionship = ?, note_uses_title = ?, companion_note = ?, allowed_person_ids = ?,
-        scene_tag = ?, revision = ?, updated_at = ? WHERE id = ?`),
+        scene_tag = ?, mood = ?, tags_json = ?, pinned = ?, archived = ?, share_scope = ?, attached_track_json = ?,
+        attached_tracks_json = ?, attached_quotes_json = ?, checklist_json = ?, annotations_json = ?, layout_variant = ?,
+        revision = ?, updated_at = ? WHERE id = ?`),
       deleteEntry: this.db.prepare('DELETE FROM life_entries WHERE id = ?'),
       getSceneDefault: this.db.prepare('SELECT * FROM life_scene_defaults WHERE scene_tag = ?'),
       upsertSceneDefault: this.db.prepare(`INSERT INTO life_scene_defaults (scene_tag, mode_id, revision, updated_at)
@@ -268,7 +312,13 @@ export class LifeContextStore {
   }
 
   listEntries() {
-    return this.statements.listEntries.all().map(row => ({ ...row, completed_dates: this.completedDates(row.id) }));
+    const completions = new Map();
+    for (const row of this.db.prepare('SELECT entry_id, occurrence_date FROM life_entry_completions ORDER BY entry_id, occurrence_date').all()) {
+      let list = completions.get(row.entry_id);
+      if (!list) { list = []; completions.set(row.entry_id, list); }
+      list.push(row.occurrence_date);
+    }
+    return this.statements.listEntries.all().map(row => ({ ...row, completed_dates: completions.get(row.id) || [] }));
   }
 
   getEntry(id) {
@@ -302,7 +352,16 @@ export class LifeContextStore {
     this.statements.insertEntry.run(row.id, row.type, row.title, row.content ?? null, row.localDate, row.endDate ?? null,
       row.startTime ?? null, row.endTime ?? null, row.done ? 1 : 0, row.yearlyRepeat ? 1 : 0,
       row.useForCompanionship ? 1 : 0, row.noteUsesTitle ? 1 : 0, row.companionNote ?? null,
-      JSON.stringify(row.allowedPersonIds ?? []), row.sceneTag ?? null, this.now(), this.now());
+      JSON.stringify(row.allowedPersonIds ?? []), row.sceneTag ?? null,
+      row.mood ?? null, JSON.stringify(row.tags ?? []), row.pinned ? 1 : 0, row.archived ? 1 : 0,
+      row.shareScope === 'note' ? 'note' : 'summary',
+      row.attachedTrack ? JSON.stringify(row.attachedTrack) : null,
+      JSON.stringify(row.attachedTracks ?? []),
+      JSON.stringify(row.attachedQuotes ?? []),
+      JSON.stringify(row.checklist ?? []),
+      JSON.stringify(row.annotations ?? []),
+      row.layoutVariant || 'blank',
+      this.now(), this.now());
     this.saveRepeatRule(row.id, row);
     return this.bumpContextRevision();
   }
@@ -311,7 +370,16 @@ export class LifeContextStore {
     this.statements.updateEntry.run(row.type, row.title, row.content ?? null, row.localDate, row.endDate ?? null, row.startTime ?? null,
       row.endTime ?? null, row.done ? 1 : 0, row.yearlyRepeat ? 1 : 0, row.useForCompanionship ? 1 : 0,
       row.noteUsesTitle ? 1 : 0, row.companionNote ?? null, JSON.stringify(row.allowedPersonIds ?? []),
-      row.sceneTag ?? null, row.revision, this.now(), id);
+      row.sceneTag ?? null,
+      row.mood ?? null, JSON.stringify(row.tags ?? []), row.pinned ? 1 : 0, row.archived ? 1 : 0,
+      row.shareScope === 'note' ? 'note' : 'summary',
+      row.attachedTrack ? JSON.stringify(row.attachedTrack) : null,
+      JSON.stringify(row.attachedTracks ?? []),
+      JSON.stringify(row.attachedQuotes ?? []),
+      JSON.stringify(row.checklist ?? []),
+      JSON.stringify(row.annotations ?? []),
+      row.layoutVariant || 'blank',
+      row.revision, this.now(), id);
     this.saveRepeatRule(id, row);
     return this.bumpContextRevision();
   }
@@ -332,7 +400,13 @@ export class LifeContextStore {
     if (!entry || !entry.use_for_companionship) return this.contextRevision();
     this.statements.updateEntry.run(entry.type, entry.title, entry.content ?? null, entry.local_date, entry.end_date, entry.start_time,
       entry.end_time, entry.done, entry.yearly_repeat, 0, entry.note_uses_title, entry.companion_note,
-      entry.allowed_person_ids, entry.scene_tag, entry.revision + 1, this.now(), id);
+      entry.allowed_person_ids, entry.scene_tag,
+      entry.mood ?? null, entry.tags_json ?? '[]', entry.pinned ?? 0, entry.archived ?? 0,
+      entry.share_scope ?? 'summary', entry.attached_track_json ?? null,
+      entry.attached_tracks_json ?? '[]', entry.attached_quotes_json ?? '[]',
+      entry.checklist_json ?? '[]', entry.annotations_json ?? '[]',
+      entry.layout_variant ?? 'blank',
+      entry.revision + 1, this.now(), id);
     this.statements.insertRevocation.run(id, 'entry-authorization', entry.revision, this.now());
     return this.bumpContextRevision();
   }
@@ -357,5 +431,23 @@ export class LifeContextStore {
   deleteSceneDefault(sceneTag) {
     this.statements.deleteSceneDefault.run(sceneTag);
     return this.bumpContextRevision();
+  }
+
+  /** 返回所有未被删除的手账条目所引用的对话 turnId 集合，用于音频防淘汰。 */
+  listQuotedTurnIds() {
+    const turnIds = new Set();
+    for (const row of this.statements.listQuotedJson.all()) {
+      try {
+        const list = JSON.parse(row.attached_quotes_json || '[]');
+        if (!Array.isArray(list)) continue;
+        for (const item of list) {
+          const id = typeof item?.turnId === 'string' ? item.turnId.trim() : '';
+          if (id) turnIds.add(id);
+        }
+      } catch {
+        // 脏数据跳过，不阻断只读引用统计
+      }
+    }
+    return turnIds;
   }
 }

@@ -18,6 +18,7 @@ const THEME_DEFAULTS = {
   count: 56,          // 星点数量
   twinkle: 1.1,       // 闪烁速度
   jitter: 12,         // 单颗星的色相抖动
+  opacity: 1,         // 粒子层整体不透明度（<=0 时视为空层停帧）
 };
 
 function readNumber(style, name, fallback) {
@@ -29,8 +30,10 @@ function readNumber(style, name, fallback) {
 
 export function createParticleField({
   canvas,
+  container = null,
   windowLike = globalThis.window,
   root = globalThis.document?.documentElement,
+  documentLike = root?.ownerDocument ?? canvas?.ownerDocument ?? globalThis.document,
   getComputedStyle = globalThis.getComputedStyle,
   requestFrame = globalThis.requestAnimationFrame?.bind(globalThis),
   cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis),
@@ -72,6 +75,7 @@ export function createParticleField({
       count: readNumber(style, '--particle-count', THEME_DEFAULTS.count),
       twinkle: readNumber(style, '--particle-twinkle', THEME_DEFAULTS.twinkle),
       jitter: readNumber(style, '--particle-hue-jitter', THEME_DEFAULTS.jitter),
+      opacity: readNumber(style, '--particle-opacity', THEME_DEFAULTS.opacity),
     };
     const blend = style.getPropertyValue('--particle-blend').trim();
     if (blend) canvas.style.mixBlendMode = blend;
@@ -79,13 +83,49 @@ export function createParticleField({
   }
 
   function readMotionPreference() {
-    const query = windowLike.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const query = windowLike?.matchMedia?.('(prefers-reduced-motion: reduce)');
     reducedMotion = Boolean(query?.matches);
     return reducedMotion;
   }
 
+  function isDocumentHidden() {
+    return Boolean(documentLike?.hidden || documentLike?.visibilityState === 'hidden');
+  }
+
+  function isCanvasHidden() {
+    const parent = container ?? canvas.parentElement;
+    const zeroOpacity = value => value !== undefined && String(value).trim() !== '' && Number.parseFloat(value) <= 0;
+    return Boolean(
+      canvas.hidden
+      || canvas.style?.display === 'none'
+      || canvas.style?.visibility === 'hidden'
+      || zeroOpacity(canvas.style?.opacity)
+      || parent?.hidden
+      || parent?.style?.display === 'none'
+      || parent?.style?.visibility === 'hidden'
+      || zeroOpacity(parent?.style?.opacity),
+    );
+  }
+
+  function hasVisibleParticles() {
+    return particles.length > 0 && theme.opacity > 0 && !isCanvasHidden();
+  }
+
+  function shouldAnimate() {
+    return initialized && !isDocumentHidden() && !reducedMotion && hasVisibleParticles();
+  }
+
+  function stopFrame() {
+    if (frameId != null) cancelFrame?.(frameId);
+    frameId = null;
+    lastDrawAt = 0;
+  }
+
   function desiredCount() {
-    return Math.max(1, Math.round(Number(count ?? theme.count ?? THEME_DEFAULTS.count) || THEME_DEFAULTS.count));
+    const raw = count ?? theme.count ?? THEME_DEFAULTS.count;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.round(parsed));
+    return THEME_DEFAULTS.count;
   }
 
   function resize() {
@@ -95,6 +135,9 @@ export function createParticleField({
     canvas.style.width = `${windowLike.innerWidth}px`;
     canvas.style.height = `${windowLike.innerHeight}px`;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (initialized && reducedMotion && !isDocumentHidden() && hasVisibleParticles()) {
+      paintFrame(now(), 1);
+    }
   }
 
   // 三档色相偏移的精灵（-jitter / 0 / +jitter），让星点有细微色差而不是完全同色。
@@ -149,20 +192,10 @@ export function createParticleField({
     }
   }
 
-  function draw() {
-    if (!initialized) return;
-    frameId = null;
-    const time = now();
-    const elapsed = lastDrawAt ? time - lastDrawAt : FRAME_MS;
-    // 只有“明显快于 60fps 的真实帧”才跳过；同时调用（测试、事件回调）的 elapsed 不足 1ms，按一帧处理。
-    if (elapsed >= 1 && elapsed < FRAME_MS - 1.5) {
-      frameId = requestFrame?.(draw) ?? null;
-      return;
-    }
-    const step = elapsed < 1 ? 1 : Math.min(4, elapsed / FRAME_MS);
-    lastDrawAt = time;
+  function paintFrame(time, step) {
     context.clearRect(0, 0, windowLike.innerWidth, windowLike.innerHeight);
     const seconds = time / 1000;
+    const effectiveAmplitude = reducedMotion ? 0 : amplitude;
     for (const particle of particles) {
       if (!reducedMotion) {
         if (rises) {
@@ -179,8 +212,8 @@ export function createParticleField({
         ? 0
         : 0.5 + 0.5 * Math.sin(seconds * theme.twinkle * particle.twinkleSpeed + particle.phase);
       const falloff = rises ? Math.max(.25, 1 - particle.y / windowLike.innerHeight) : 1;
-      const alpha = Math.min(rises ? .5 : 1, particle.base + twinkle * 0.38 + amplitude * 0.4) * falloff;
-      const haloSize = particle.r * particle.glow * 2 * (1 + amplitude * 0.5);
+      const alpha = Math.min(rises ? .5 : 1, particle.base + twinkle * 0.38 + effectiveAmplitude * 0.4) * falloff * theme.opacity;
+      const haloSize = particle.r * particle.glow * 2 * (1 + effectiveAmplitude * 0.5);
       const sprite = sprites[particle.spriteIndex];
       if (sprite && context.drawImage) {
         context.globalAlpha = alpha;
@@ -195,7 +228,51 @@ export function createParticleField({
       }
     }
     amplitude *= Math.pow(0.92, step);
-    frameId = requestFrame?.(draw) ?? null;
+  }
+
+  function draw() {
+    frameId = null;
+    if (!shouldAnimate()) {
+      if (initialized && !isDocumentHidden()) {
+        if (!hasVisibleParticles()) context.clearRect(0, 0, windowLike.innerWidth, windowLike.innerHeight);
+        else if (reducedMotion) paintFrame(now(), 1);
+      }
+      return;
+    }
+    const time = now();
+    const elapsed = lastDrawAt ? time - lastDrawAt : FRAME_MS;
+    // 只有“明显快于 60fps 的真实帧”才跳过；同时调用（测试、事件回调）的 elapsed 不足 1ms，按一帧处理。
+    if (elapsed >= 1 && elapsed < FRAME_MS - 1.5) {
+      frameId = requestFrame?.(draw) ?? null;
+      return;
+    }
+    const step = elapsed < 1 ? 1 : Math.min(4, elapsed / FRAME_MS);
+    lastDrawAt = time;
+    paintFrame(time, step);
+    if (shouldAnimate()) {
+      frameId = requestFrame?.(draw) ?? null;
+    }
+  }
+
+  function syncLoop() {
+    if (!initialized) return;
+    if (isDocumentHidden()) {
+      stopFrame();
+      return;
+    }
+    if (!hasVisibleParticles()) {
+      stopFrame();
+      context.clearRect(0, 0, windowLike.innerWidth, windowLike.innerHeight);
+      return;
+    }
+    if (reducedMotion) {
+      stopFrame();
+      paintFrame(now(), 1);
+      return;
+    }
+    if (frameId == null) {
+      frameId = requestFrame?.(draw) ?? null;
+    }
   }
 
   function init() {
@@ -206,37 +283,48 @@ export function createParticleField({
     buildSprites();
     resize();
     populate();
-    windowLike.addEventListener?.('resize', resize);
-    motionQuery = windowLike.matchMedia?.('(prefers-reduced-motion: reduce)');
+    windowLike?.addEventListener?.('resize', resize);
+    documentLike?.addEventListener?.('visibilitychange', syncLoop);
+    motionQuery = windowLike?.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
     motionQuery?.addEventListener?.('change', refreshTheme);
-    frameId = requestFrame?.(draw) ?? null;
+    syncLoop();
+    return api;
+  }
+
+  function start() {
+    if (!initialized) return init();
+    syncLoop();
     return api;
   }
 
   function destroy() {
     if (!initialized) return;
     initialized = false;
-    windowLike.removeEventListener?.('resize', resize);
+    windowLike?.removeEventListener?.('resize', resize);
+    documentLike?.removeEventListener?.('visibilitychange', syncLoop);
     motionQuery?.removeEventListener?.('change', refreshTheme);
     motionQuery = null;
-    if (frameId != null) cancelFrame?.(frameId);
-    frameId = null;
+    stopFrame();
     particles.length = 0;
   }
 
   function setAmplitude(value) {
     const next = Math.max(0, Math.min(1, Number(value) || 0));
     amplitude = Math.max(amplitude, next);
+    if (shouldAnimate() && frameId == null) syncLoop();
   }
 
   function refreshTheme() {
     readMotionPreference();
     readTheme();
     buildSprites();
-    if (initialized) populate();
+    if (initialized) {
+      populate();
+      syncLoop();
+    }
   }
 
-  const api = Object.freeze({ init, destroy, setAmplitude, refreshTheme });
+  const api = Object.freeze({ init, start, destroy, setAmplitude, refreshTheme });
   return api;
 }
 
@@ -249,7 +337,7 @@ export function mountParticleAtmosphere(container, { motion = 'drift', documentL
   canvas.id = 'particle-canvas';
   canvas.setAttribute('aria-hidden', 'true');
   container.appendChild(canvas);
-  const field = createParticleField({ canvas, motion, ...options });
+  const field = createParticleField({ canvas, container, documentLike, motion, ...options });
   field.init();
   return {
     update(state = {}) {

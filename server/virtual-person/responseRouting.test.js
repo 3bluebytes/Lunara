@@ -27,7 +27,7 @@ test('a collective greeting is planned semantically through the sole restricted 
     assert.equal(profile.emptyRetry, false);
     return toolCall(['lunara', 'night']);
   });
-  assert.deepEqual(await h.planner(input('两位早上好')), { plan: ['night', 'lunara'], source: 'context', reason: 'accepted' });
+  assert.deepEqual(await h.planner(input('两位早上好')), { plan: ['lunara', 'night'], source: 'context', reason: 'accepted' });
   assert.equal(h.calls.length, 1, 'one routing call, no extra dialogue round');
 });
 
@@ -37,10 +37,21 @@ test('a follow-up receives attributed context; a new addressee overrides the pre
   const h = harness(messages => {
     const data = JSON.parse(messages[0].content.split('路由输入（JSON）：\n')[1]);
     assert.deepEqual(data.history, history);
-    return toolCall(data.userText === '没啥只想你回我一下' ? ['night'] : ['lunara', 'night']);
+    if (data.userText === '没啥只想你回我一下') return toolCall(['night']);
+    return toolCall(data.userText === '两位每人推一首歌' ? ['night', 'lunara'] : ['lunara', 'night']);
   });
   assert.deepEqual((await h.planner(input('没啥只想你回我一下', { history }))).plan, ['night']);
-  assert.deepEqual((await h.planner(input('换个话题，你们都喜欢什么？', { history }))).plan, ['night', 'lunara']);
+  assert.deepEqual((await h.planner(input('换个话题，你们都喜欢什么？', { history }))).plan, ['lunara', 'night']);
+  assert.deepEqual((await h.planner(input('两位每人推一首歌', { history }))).plan, ['night', 'lunara'],
+    '涉及多人选歌/排歌仍保留主持人最后收歌');
+});
+
+test('validated contextual order is not overridden by music words', async () => {
+  const h = harness(() => toolCall(['lunara', 'night']));
+  for (const userText of ['今晚别选歌，你们陪我聊聊', '你们觉得这首歌的歌词怎么样？']) {
+    assert.deepEqual((await h.planner(input(userText))).plan, ['lunara', 'night']);
+  }
+  assert.equal(h.calls.length, 2, 'one routing call for each unmentioned turn');
 });
 
 test('explicit mentions and single-member rooms cost no routing calls', async () => {
@@ -117,4 +128,33 @@ test('routing history is current-room public intersection only, attributed and b
   assert.ok(bounded.reduce((n, t) => n + t.text.length, 0) <= 12000);
   assert.ok(bounded.every(t => t.text.length <= 1200));
   assert.match(bounded.at(-1).text, /^59:/);
+});
+
+test('routing history leaves out private or sensitive turns even when every member was present', () => {
+  const turns = [
+    { sessionId: 'room', role: 'user', visibility: 'visible', visibleText: '别告诉别人，我在准备跳槽', policy: { disclosure: 'private' } },
+    { sessionId: 'room', role: 'user', visibility: 'visible', visibleText: '下周三去医院复查', policy: { sensitive: true } },
+    { sessionId: 'room', role: 'user', visibility: 'visible', visibleText: '来点爵士', policy: {} },
+  ];
+  const store = { listTurns: () => turns, readTurnAs: (id, t) => ({ readable: true, policy: t.policy }) };
+  assert.deepEqual(routingHistory(store, room, persons), [{ role: 'user', text: '来点爵士' }]);
+});
+
+test('members payload includes bounded public profile for trait-based unmentioned routing without leaking private sections', async () => {
+  let captured = null;
+  const richPersons = [
+    { id: 'lunara', displayName: 'Lunara', personaDocument: '默认主虚拟人，温和真诚。' },
+    { id: 'retro', displayName: '林深', personaDocument: '# 林深\n\n精通70至90年代港台老歌与黑胶版本。\n\n## 我对这个用户的态度\n私密态度不公开' },
+  ];
+  const h = harness(messages => {
+    captured = JSON.parse(messages[0].content.split('路由输入（JSON）：\n')[1]);
+    return toolCall(['retro']);
+  });
+  const res = await h.planner({ room: { sessionId: 'room', memberIds: ['lunara', 'retro'], activeVirtualPersonId: 'lunara' },
+    persons: richPersons, userText: '懂老歌的那位出来聊聊', sessionId: 'room', requestId: 'r-profile' });
+  assert.deepEqual(res, { plan: ['retro'], source: 'context', reason: 'accepted' });
+  const retroEntry = captured.members.find(m => m.id === 'retro');
+  assert.match(retroEntry.profile, /精通70至90年代港台老歌/);
+  assert.doesNotMatch(retroEntry.profile, /私密态度/);
+  assert.ok(retroEntry.profile.length <= 80);
 });

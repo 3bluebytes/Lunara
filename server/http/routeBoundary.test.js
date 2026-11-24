@@ -67,9 +67,12 @@ const EXPECTED_GET_ROUTES = Object.freeze([
   '/api/library/status',
   // 曲库中的跨源待确认建议与已确认来源；只读，不自动写等价关系。
   '/api/library/recordings',
-  // 今日生活资料：本地只读（周作息 / 单日投影 / 条目 / 场景默认）。
+  // 今日生活资料：本地只读（当日听歌投影 / 当日原话投影 / 周作息 / 单日投影 / 条目 / 待回应事项 / 场景默认）。
+  '/api/life/day-music',
+  '/api/life/day-quotes',
   '/api/life/days/:date',
   '/api/life/entries',
+  '/api/life/open-loops',
   '/api/life/routine',
   '/api/life/scene-defaults',
   '/api/life/status',
@@ -84,6 +87,8 @@ const EXPECTED_GET_ROUTES = Object.freeze([
   '/api/persona-presets',
   // 陪伴感在场状态：只读产品事实（档位/静默时段/今日次数），不含原因码与调度内部结构。
   '/api/presence/status',
+  // 生效话量：只给界面要解释的产品级原因（全局关闭/安静点/模式/在场性格），不含调度内部状态。
+  '/api/presence/effective',
   // 「一起听歌时伙伴会主动说话」开关的读取（写入走 POST）。
   '/api/presence/preferences',
   '/api/reflection/status',

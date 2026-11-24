@@ -168,6 +168,9 @@ function resultMessage(program, status, count, failure = null) {
  * Resolves an immutable CandidateProgram into an immutable ResolvedProgram.
  * Queue mutation and user-visible song commitments intentionally happen later.
  */
+/** 预热批次的串词按这个身份对上实际提交的歌：解析失败的歌，它的串词不会落到别的歌上。 */
+export const trackNarrationKey = track => `${String(track?.source || '').split(/[:-]/)[0]}:${track?.songId ?? ''}`;
+
 export class ProgramCommitService {
   constructor({
     resolveTrack,
@@ -238,15 +241,17 @@ export class ProgramCommitService {
       guard: () => (!options.isCurrent || options.isCurrent())
         && committedProgram.tracks.every(track => sourceAllowed(this.getSourcePolicy(), track.source)),
       signal: options.signal, listeningPlan: options.listeningPlan,
-      tracks: committedProgram.tracks.map((track, trackIndex) => ({
+      tracks: committedProgram.tracks.map(track => ({
         ...track, programId, requestId: committedProgram.requestId,
         // 提交人就是这首的负责人与串词人；别的成员推荐的歌另记 recommendedBy，不再借用负责人字段。
         virtualPersonId: options.virtualPersonId || track.evidence?.virtualPersonId,
         recommendedBy: recommenderOf(track, options),
         voiceProfileId: options.voiceProfileId, conversationId: options.listeningSessionId,
-        // No model or TTS call at selection time. Each actual transition prepares narration independently.
-        narration: options.trackNarrations?.[trackIndex]
-          || { status: 'absent', assetStatus: 'missing', generationRevision: 0,
+        // 提交时只定串词的状态：写好的（预热批次带来的）直接挂上，line pass 要写的标 preparing
+        // （代次 1 对应那一轮的提交），其余没有串词，这首安静播放。
+        narration: options.trackNarrations?.get(trackNarrationKey(track))
+          || { status: options.linePassComing ? 'preparing' : 'absent', assetStatus: 'missing',
+            generationRevision: options.linePassComing ? 1 : 0,
             text: `接下来是${track.artist}的《${track.title}》。`, ttsUrl: null, contentHash: null,
             voiceProfileId: options.voiceProfileId || null,
             context: options.narrationContext || { origin: 'live', reason: 'user_request', mode: candidateProgram.mode } },

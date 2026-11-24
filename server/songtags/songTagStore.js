@@ -14,9 +14,7 @@
 //   - upsert 幂等：同主键覆盖、bump updated_at、保留 created_at
 //   - 无 bpm 列（真 BPM 是音频域，Phase B 再说）
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 import { getRecordingStore as getSharedRecordingStore } from '../music/recordingStore.js';
 
@@ -131,9 +129,8 @@ export class SongTagStore {
 
   initialize() {
     const dbPath = this.dbPath || databasePath();
-    mkdirSync(dirname(dbPath), { recursive: true });
-    if (!this.db) this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    if (!this.db) this.db = openSqliteDatabase(dbPath);
+    else this.db.pragma('journal_mode = WAL');
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS song_tags (

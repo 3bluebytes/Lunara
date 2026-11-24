@@ -113,6 +113,8 @@ export function createSidebarResize({
     listen(handle, 'pointermove', onPointerMove);
     listen(handle, 'pointerup', endDrag);
     listen(handle, 'pointercancel', endDrag);
+    listen(handle, 'lostpointercapture', endDrag);
+    listen(windowLike, 'blur', endDrag);
     listen(handle, 'keydown', onKeyDown);
     listen(handle, 'dblclick', reset);
     return api;

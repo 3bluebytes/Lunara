@@ -58,14 +58,14 @@ export function createPersonVoice({
   }
 
   // performance 是中立表演意图（情绪/语速/力度/指令），由网关按实际 provider 翻译或丢弃。
-  async function synthesizeForPerson(text, { voiceProfileId, signal, performance = null } = {}) {
+  async function synthesizeForPerson(text, { voiceProfileId, signal, performance = null, speechPlan = null, allowFallback = true } = {}) {
     signal?.throwIfAborted();
     const voice = resolvePersonVoice(voiceProfileId);
     if (voice.unavailable) throw new TtsProviderUnavailableError('这把声音当前不可用，请重新选择声音。');
     // 显式 providerId 会跳过网关的解析器，所以声音自带的参数（model）在这里一并带上。
     // 每次发声结果都上报给声音健康：失败给出可见提醒（代读时说明由谁代读），成功解除。
     return synthesizeWithFallback(text, {
-      voice, signal, performance, voiceHealth, fallbackTarget,
+      voice, signal, performance, speechPlan, allowFallback, voiceHealth, fallbackTarget,
       synth: (input, options) => tts.synth(input, options),
       resolveFallback: target => resolvePersonVoice(target.profileId),
     });

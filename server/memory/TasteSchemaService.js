@@ -85,9 +85,12 @@ export class TasteSchemaService {
     // source of truth: revokeMemory expires the row, which hides it from search.
     const db = service.store.db;
     const hasRevocations = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_revocations'`).get();
+    // 墓碑按图式的固定 writeKey 查：被撤回的行过期后会被定时清理删掉，只靠 JOIN memories 会查不到而重建。
+    // JOIN 仍保留，覆盖没有 writeKey 的旧图式。
     if (hasRevocations
-      && db.prepare(`SELECT 1 FROM memory_revocations r JOIN memories m ON m.id = r.memory_id
-        WHERE m.namespace = ? AND m.tags LIKE '%taste-schema%' LIMIT 1`).get(namespace)) {
+      && (db.prepare('SELECT 1 FROM memory_revocations WHERE namespace = ? AND source_key = ?').get(namespace, `taste-schema:${namespace}`)
+        || db.prepare(`SELECT 1 FROM memory_revocations r JOIN memories m ON m.id = r.memory_id
+          WHERE m.namespace = ? AND m.tags LIKE '%taste-schema%' LIMIT 1`).get(namespace))) {
       return { ok: false, code: 'SCHEMA_REVOKED' };
     }
     const existing = this.schemaRow(service, namespace);
@@ -95,7 +98,10 @@ export class TasteSchemaService {
       return { ok: false, code: 'ALREADY_TODAY' };
     }
     const inputs = await this._collect(service, namespace, existing, personId);
-    const rendered = await this._render(personId, existing, inputs, signal);
+    // 上一版全文会交给模型「仍成立的保留」：只要有一条来源已被撤回、收窄或删除，上一版就可能带着它，
+    // 这时不给模型看上一版，从仍有效的输入重新蒸馏。
+    const carried = existing && !this._contributorGone(service, existing) ? existing : null;
+    const rendered = await this._render(personId, carried, inputs, signal);
     const content = String(rendered.content || '').trim().slice(0, CONTENT_LIMIT);
     if (!content) return { ok: false, code: 'EMPTY_SCHEMA' };
     let priorRevision = 0;
@@ -123,14 +129,25 @@ export class TasteSchemaService {
     return { ok: true, id: result.id, revision, source: rendered.source };
   }
 
+  /** 上一版图式的贡献来源里是否有已删除、撤回或不再适用于最宽受众的。 */
+  _contributorGone(service, row) {
+    let ids = [];
+    try { ids = JSON.parse(row.evidence || '{}')?.contributorIds || []; } catch { /* legacy schema */ }
+    return ids.some(id => {
+      const contributor = service.store.getById(id);
+      return !contributor || /(?:^|,)revoked(?:,|$)/.test(contributor.tags || '') || isMemoryRevoked(service.store, contributor)
+        || !memoryApplies(contributor, { shared: true, sessionId: null, now: this.now() });
+    });
+  }
+
   async _collect(service, namespace, existing, personId) {
     const live = row => !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '')
       && (!row.expiresAt || row.expiresAt > this.now());
-    // 图式是 namespace 级、无条件注入的（会进群聊和其他会话）。因此蒸馏只收「最宽受众
-    // 可用」的输入：会话限定与 private 记忆一旦被蒸进来，等于把私人事实升级成全局事实，
-    // 而且之后再撤回原记忆也收不回图式里的副本。
+    // 图式是 namespace 级、无条件注入的蒸馏文字，进去的内容就没了来源标签。因此只收「最宽受众
+    // 可用」的输入：会话限定的一旦蒸进来就升级成全局事实；私下说的、敏感的会丢掉「私下」标签，
+    // 伙伴没法再拿捏分寸；之后再撤回原记忆也收不回图式里的副本。
     const usable = row => !isMemoryRevoked(service.store, row) && live(row)
-      && memoryApplies(row, { isGroup: true, sessionId: null, now: this.now() });
+      && memoryApplies(row, { shared: true, sessionId: null, now: this.now() });
     const insightRows = service.searchMemory(undefined, { namespace, type: MemoryType.SEMANTIC, tags: 'reflection-insight', limit: 50 })
       .filter(usable);
     const insights = insightRows.map(row => {
@@ -142,12 +159,13 @@ export class TasteSchemaService {
       } catch { /* plain insight */ }
       return { observation: row.content, confidence: Number(row.confidence) || 0, claim, occurrences };
     });
-    const explicitRows = service.searchMemory(undefined, { namespace, type: MemoryType.SEMANTIC, limit: 100 })
-      .filter(row => row.source === 'user_explicit_feedback' && usable(row))
-      .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10);
+    // 先在库里按来源过滤、去掉已撤回与已取代的行再截取：更新的反思再多也挤不掉显式口味。
+    const explicitRows = service.store.search({ namespace, type: MemoryType.SEMANTIC, sources: ['user_explicit_feedback'],
+      excludeTags: ['revoked', 'superseded'], orderBy: 'updated_at_desc', limit: 500 })
+      .filter(usable).slice(0, 10);
     const explicit = explicitRows.map(row => row.content);
-    // 贡献来源：注入前要逐条重验（撤回/收窄/过期后不能再由图式携带）。
-    const contributorIds = [...new Set([...insightRows, ...explicitRows].map(row => row.id).filter(Boolean))].slice(0, 40);
+    // 贡献来源：交给模型的每一行都记下（不截断），注入前逐条重验（撤回/收窄/过期后不能再由图式携带）。
+    const contributorIds = [...new Set([...explicitRows, ...insightRows].map(row => row.id).filter(Boolean))];
     const stats = (this.getSongStats?.(personId) || []).slice(0, 30);
     const inputs = { insights, explicit, stats, contributorIds, legacy: null, migratedFrom: null,
       summary: { insights: insights.length, explicit: explicit.length, stats: stats.length } };

@@ -1,29 +1,16 @@
-// ProgramNarrationComposer：串词的确定性技能（场合/素材装配/机械校验/兜底）
-// 与已持久化串词的 TTS 资产解析。
+// ProgramNarrationComposer：串词的机械校验与已持久化串词的 TTS 资产解析。
 //
-// 串词正文的生成路径在 NarrationAgent.test.js / narrationTools.test.js 覆盖；这里锁定
-// “本模块不再持有 chat、也不存在内部模型调用”，以及确定性函数的既有质量期望。
+// 串词正文由 host 在 line pass 里写（trackLineTools.test.js）；这里锁定本模块不持有 chat、
+// 没有内部模型调用，以及确定性函数的质量期望。
 //
 // Run: node --test server/program/ProgramNarrationComposer.test.js
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assembleNarrationMaterial, buildFallbackTrackNarration,
-  narrationDefect, narrationRuleFeedback, ProgramNarrationComposer } from './ProgramNarrationComposer.js';
-
-const effect = (origin = 'prepared', reason = 'user_request') => ({ track: { title: '晴天', artist: '周杰伦', voiceProfileId: 'voice-a',
-  album: '叶惠美', intro: { context: { origin, reason, mode: 'discovery', softPreferences: '熟悉的华语旋律' } } },
-previousTrack: { title: '花海', artist: '周杰伦' } });
-
-const trackFacts = {
-  song: { year: 2003, genre: '流行', mood: '怀旧', tempo: 'mid', themes: ['青春', '错过'], instruments: ['吉他'] },
-  artist: { genre: '华语流行', region: '华语' },
-};
+import { narrationDefect, narrationRuleFeedback, ProgramNarrationComposer } from './ProgramNarrationComposer.js';
 
 const richFacts = { album: '叶惠美', year: 2003, genre: '流行', mood: '怀旧', tempo: 'mid', language: '',
   instruments: ['吉他'], themes: ['青春', '错过'], scenes: [], artistGenre: '华语流行', artistRegion: '华语' };
-
-const canonicalFallback = buildFallbackTrackNarration(effect().track, { previousTrack: effect().previousTrack });
 
 test('the composer exposes no chat path and ignores one passed at construction', () => {
   let calls = 0;
@@ -34,7 +21,7 @@ test('the composer exposes no chat path and ignores one passed at construction',
   });
   assert.equal('chat' in composer, false, '组件不得持有 chat');
   assert.equal('getContext' in composer, false);
-  assert.equal(composer.prepareTrack, undefined, '串词准备已迁到 NarrationAgent.prepareTrack');
+  assert.equal(composer.prepareTrack, undefined, '串词正文不由本模块生成');
   assert.equal(calls, 0);
 });
 
@@ -70,76 +57,13 @@ test('persisted asset recovery is bounded and never returns late audio', async (
     { signal: controller.signal }), { name: 'AbortError' });
 });
 
-test('assembleNarrationMaterial only promotes structured request intent to a listener preference', () => {
-  const withoutPreference = { ...effect(), track: { ...effect().track, intro: { context: { origin: 'live', reason: 'user_request', mode: 'discovery' } } } };
-  const freeForm = { trackFacts, recentConversation: [{ role: 'user', presentation: null, text: '怎么又推荐了同一首歌' }] };
-  assert.equal(assembleNarrationMaterial(withoutPreference, freeForm).situation.softPreference, null, '自由对话不得变成听歌偏好');
-  assert.equal(assembleNarrationMaterial(effect(), { trackFacts, recentConversation: [] }).situation.softPreference,
-    '熟悉的华语旋律', '结构化 softPreferences 才进入场合');
-});
-
-test('assembleNarrationMaterial keeps situation, mode guide, bounds and fallback in one deterministic snapshot', () => {
-  const context = { person: { voiceProfileId: 'voice-a' }, trackFacts, companionMode: { modeId: 'occasional', label: '偶尔介绍' },
-    recentConversation: [] };
-  const material = assembleNarrationMaterial(effect(), context);
-  assert.equal(material.modeId, 'occasional');
-  assert.match(material.modeGuide, /偶尔介绍/u);
-  assert.equal(material.situation.occasion, 'chosen_for_request');
-  assert.equal(material.minChars, 20);
-  assert.equal(material.minSentences, 1);
-  assert.equal(material.targetMaxChars, 100, '偶尔介绍收紧目标上限');
-  assert.equal(material.targetMaxSentences, 2);
-  assert.equal(material.maxChars, 650);
-  assert.equal(material.maxSentences, 6);
-  assert.equal(material.fallbackText, canonicalFallback);
-  assert.equal(material.previousSongId, null);
-  assert.deepEqual(Object.keys(material.track).sort(), ['artist', 'songId', 'source', 'title']);
-  const now = new Date('2026-10-21T08:00:00Z');
-  assert.deepEqual(assembleNarrationMaterial(effect(), context, { now }), assembleNarrationMaterial(effect(), context, { now }),
-    '没有随机：相同输入得到相同装配');
-});
-
-test('a chat introduction and expression preferences reach the assembly as verified inputs', () => {
-  const material = assembleNarrationMaterial(effect(), {
-    trackFacts,
-    expressionPreferences: [{ content: '介绍歌时不要每首都以关照听众收尾' }, { content: '   ' }],
-    recentConversation: [
-      { role: 'assistant', presentation: null, text: '下一首是周杰伦的《晴天》，收在《叶惠美》里，钢琴和弦乐把告别铺得很开。' },
-      { role: 'user', presentation: null, text: '想听熟悉的华语旋律' },
-    ],
-  });
-  assert.equal(material.chatIntroduced, true);
-  assert.equal(material.targetMaxChars, 120, '聊天已介绍本曲时按短边界写');
-  assert.deepEqual(material.expressionPreferences, ['介绍歌时不要每首都以关照听众收尾']);
-  assert.deepEqual(material.recentIntroductions, [], 'presentation 非 track_intro 的聊天不算最近串词');
-  assert.equal(material.minSentences, 1);
-});
-
-test('thin verified material still yields a valid assembly and the canonical fallback', () => {
-  const material = assembleNarrationMaterial({ ...effect(), track: { ...effect().track, album: '' } }, {});
-  assert.equal(material.knowledge.lyrics, null);
-  assert.deepEqual(material.knowledge.aboutThisSong, { memories: [], liked: null });
-  assert.equal(material.fallbackText, '接下来是周杰伦的《晴天》，接着刚才的《花海》。');
-});
-
-test('the fallback is one canonical sentence and never a dimension template', () => {
-  assert.equal(buildFallbackTrackNarration(effect().track, { previousTrack: { title: '花海' } }),
-    '接下来是周杰伦的《晴天》，接着刚才的《花海》。');
-  assert.equal(buildFallbackTrackNarration(effect().track), '接下来是周杰伦的《晴天》。');
-  assert.equal(buildFallbackTrackNarration(effect().track, { previousTrack: { title: '晴天' } }),
-    '接下来是周杰伦的《晴天》。');
-  for (const value of [canonicalFallback, buildFallbackTrackNarration(effect().track)]) {
-    assert.equal((value.match(/。/g) || []).length, 1);
-    assert.doesNotMatch(value, /曲库|专辑|标签|至于|我记着|你刚才|推荐/u);
-  }
-});
-
 test('narrationDefect stays the single rejection source and feedback names the rule', () => {
   const inputs = { track: { title: '晴天', artist: '周杰伦' }, facts: richFacts, recentIntroductions: [], recentConversation: [],
     minSentences: 3, previousTrack: { title: '花海', artist: '周杰伦' }, chatIntroduced: false, minChars: 60 };
   assert.equal(narrationDefect('', inputs), 'too-short');
   assert.equal(narrationDefect('周杰伦的《晴天》' + '好听'.repeat(330), inputs), 'too-long');
-  assert.equal(narrationDefect('接下来听周杰伦的《晴天》。它收录在《叶惠美》里，曲库记录的发行年份是2003年。曲库标签把它归为流行与怀旧，节奏感偏中速，适合把注意力慢慢放回旋律。你刚才想沿着熟悉的华语旋律继续走，所以我把这一首放在这里。', inputs), null);
+  assert.equal(narrationDefect('接下来听周杰伦的《晴天》。它收录在《叶惠美》里，发行年份是2003年。这张专辑听到这里差不多过半，歌词也是这几年写的，放着正合适，不用特意去听它。', inputs), null);
+  assert.equal(narrationDefect('《晴天》你刚才说想听，放给你，这首写的是那些年的事，歌词也还算耐听，不用特意去听它。', { ...inputs, minChars: 12, minSentences: 1 }), 'immediate-reference', '到点才说的话不提“刚才”');
   assert.match(narrationRuleFeedback('missing-artist', { track: { artist: '周杰伦' }, minChars: 60 }, '短文'), /违反校验规则「missing-artist」/u);
   assert.match(narrationRuleFeedback('too-short', { minChars: 60 }, '短文'), /至少需要 60 个字符/u);
 });

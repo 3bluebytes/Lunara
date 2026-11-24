@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ContextBudgeter, groupsFrom } from './ContextBudgeter.js';
+import { isSummaryMessage, summaryBody, summaryMessage } from './contextBlocks.js';
 
 test('context budgeter never splits an assistant tool call from its result', async () => {
   const messages = [
@@ -25,39 +26,55 @@ test('context budgeter never splits an assistant tool call from its result', asy
   assert.equal(output.at(-1).content, '现在的问题');
 });
 
-test('context budgeter can summarize older dialogue while retaining recent turns', async () => {
-  let audit = null;
-  const output = await new ContextBudgeter({
-    maxMessages: 4,
-    maxBytes: 3000,
-    summarize: async removed => `保留的旧目标；来自 ${removed.length} 条消息`,
-  }).prepare([
-    { role: 'user', content: '第一条' },
-    { role: 'assistant', content: '第一答' },
-    { role: 'user', content: '第二条' },
-    { role: 'assistant', content: '第二答' },
-    { role: 'user', content: '第三条' },
-    { role: 'assistant', content: '第三答' },
-  ], { onSummary: value => { audit = value; } });
-  assert.equal(output[0].role, 'system');
-  assert.match(output[0].content, /保留的旧目标/);
-  assert.equal(output.at(-1).content, '第三答');
-  assert.equal(audit.removedCount, 2);
-  assert.deepEqual(audit.removedIndexes, [0, 1]);
-  assert.match(audit.content, /来源 2 条/);
+const dialogue = count => Array.from({ length: count }, (_, index) => ({
+  role: index % 2 ? 'assistant' : 'user', content: `${index % 2 ? '答' : '问'} ${Math.floor(index / 2) + 1}` }));
+
+test('history under the limits is returned unchanged, so the request prefix stays byte-stable', async () => {
+  const budgeter = new ContextBudgeter({ maxMessages: 8, maxBytes: 3000 });
+  const earlier = await budgeter.prepare(dialogue(5));
+  const later = await budgeter.prepare(dialogue(7));
+  assert.deepEqual(earlier, dialogue(5));
+  assert.deepEqual(later.slice(0, 5), earlier, '只追加：上一轮的请求是下一轮的前缀');
 });
 
-test('context budgeter preserves explicit commitments and unresolved referents', async () => {
-  const messages = [
-    { role: 'user', content: '下周提醒我继续这个话题', contextState: { commitment: true } },
-    { role: 'assistant', content: '我记住这个约定。', contextState: { validReferent: true } },
-    ...Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `填充 ${index} ${'x'.repeat(350)}` })),
-    { role: 'user', content: '那件事你还记得吗？' },
-  ];
-  const output = await new ContextBudgeter({ maxMessages: 6, maxBytes: 5000 }).prepare(messages);
-  assert.equal(output.some(message => message.content === '下周提醒我继续这个话题'), true);
-  assert.equal(output.some(message => message.content === '我记住这个约定。'), true);
-  assert.equal(output.at(-1).content, '那件事你还记得吗？');
+test('over the limit, the budgeter keeps one contiguous tail and hands the dropped head to onSummary', async () => {
+  let audit = null;
+  const input = dialogue(11);
+  const output = await new ContextBudgeter({ maxMessages: 8, maxBytes: 3000 }).prepare(input, {
+    onSummary: info => { audit = info; return summaryMessage('user: 问 1'); },
+  });
+  assert.equal(isSummaryMessage(output[0]), true, '摘要是历史的第一条消息，不进系统提示');
+  const kept = output.slice(1);
+  assert.deepEqual(kept, input.slice(audit.keptFrom), '保留的是连续的结尾，中间没有空洞');
+  assert.equal(kept[0].role, 'user');
+  assert.ok(kept.length <= 4, `裁到低水位（留 ${kept.length} 条），之后很多轮不用再裁`);
+  assert.deepEqual(audit.removedIndexes, input.slice(0, audit.keptFrom).map((_m, index) => index));
+  assert.equal(audit.removedCount, audit.keptFrom);
+});
+
+test('an existing summary head stays pinned and is replaced, not duplicated, on the next compaction', async () => {
+  const head = summaryMessage('user: 很早的事');
+  const input = [head, ...dialogue(11)];
+  const budgeter = new ContextBudgeter({ maxMessages: 8, maxBytes: 3000 });
+  let audit = null;
+  const replaced = await budgeter.prepare(input, { onSummary: info => { audit = info; return summaryMessage('新的摘要'); } });
+  assert.equal(replaced.filter(isSummaryMessage).length, 1);
+  assert.equal(summaryBody(replaced[0]), '新的摘要');
+  assert.equal(audit.removedIndexes[0], 1, '下标按输入数组算，摘要头不算被裁掉的消息');
+  const fallback = await budgeter.prepare(input);
+  assert.equal(fallback.filter(isSummaryMessage).length, 1);
+  assert.match(summaryBody(fallback[0]), /很早的事[\s\S]*问 4/, '没有回调时旧摘要与被裁掉的话并成一条');
+});
+
+test('the current turn is never dropped, however long its tool loop runs', async () => {
+  const loop = Array.from({ length: 6 }, (_, index) => ([
+    { role: 'assistant', content: '', tool_calls: [{ id: `c${index}`, type: 'function', function: { name: 'lookup', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: `c${index}`, content: 'ok' },
+  ])).flat();
+  const output = await new ContextBudgeter({ maxMessages: 8, maxBytes: 3000 })
+    .prepare([...dialogue(6), { role: 'user', content: '本轮的问题' }, ...loop]);
+  assert.equal(output.some(message => message.content === '本轮的问题'), true);
+  assert.deepEqual(output.slice(-12), loop);
 });
 
 test('context budgeter keeps the current turn tool results whole and compacts only earlier ones', async () => {

@@ -50,13 +50,19 @@ export class WarmPoolService {
     this.entries.clear();
   }
 
-  invalidate({ sessionId = null } = {}) {
+  invalidate({ sessionId = null, personId = null } = {}) {
     for (const [id, entry] of this.entries) {
-      if (!sessionId || entry.sessionId === sessionId) { this.entries.delete(id); this.stats.discarded++; }
+      if ((!sessionId || entry.sessionId === sessionId) && (!personId || entry.personId === personId)) {
+        this.entries.delete(id);
+        this.stats.discarded++;
+      }
     }
-    if (!sessionId || this.running?.sessionId === sessionId) this.running?.controller.abort();
+    if ((!sessionId || this.running?.sessionId === sessionId)
+      && (!personId || !this.running?.personId || this.running.personId === personId)) {
+      this.running?.controller.abort();
+    }
     // 记忆/标签/曲库/成员变化同样作废未采用的预热批次（单次使用，不可复活）。
-    this.invalidatePrepared?.({ sessionId });
+    this.invalidatePrepared?.(personId ? { sessionId, personId } : { sessionId });
   }
 
   prune() {
@@ -77,7 +83,8 @@ export class WarmPoolService {
     if (this.running?.signature === signature) return { skipped: 'already-preparing' };
     if (this.running) { this.running.controller.abort(); return { skipped: 'cancelling-previous-demand' }; }
     // One background call at a time. A changed demand cancels the old generation.
-    const run = { signature, sessionId: demand.context.sessionId, controller: new AbortController() };
+    const run = { signature, sessionId: demand.context.sessionId,
+      personId: demand.context?.virtualPersonId || null, controller: new AbortController() };
     this.running = run;
     this.stats.selectionCalls++;
     const startedAt = this.now();

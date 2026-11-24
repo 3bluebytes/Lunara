@@ -133,3 +133,23 @@ test('concurrent resolves for the same identity share one provider query', async
     assert.equal(lookups, 1);
   } finally { await ctx.close(); }
 });
+
+test('seed executes inside a single SQLite transaction', async () => {
+  const ctx = await tempStore();
+  try {
+    let txCalls = 0;
+    const origTx = ctx.store.db.transaction.bind(ctx.store.db);
+    ctx.store.db.transaction = fn => {
+      txCalls += 1;
+      return origTx(fn);
+    };
+    const written = ctx.store.seed('qq', [
+      { song_id: 'S1', pic_url: COVER },
+      { song_id: 'S2', pic_url: COVER },
+      { song_id: 'S3', pic_url: COVER },
+    ]);
+    assert.equal(written, 3);
+    assert.equal(txCalls, 1);
+    assert.equal(ctx.store.peek('qq', 'S2'), COVER);
+  } finally { await ctx.close(); }
+});

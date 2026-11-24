@@ -99,3 +99,30 @@ test('a throwing recorder does not stop the warning', () => {
   health.observe('custom', { error: coded('TTS_CREDIT_EXHAUSTED') });
   assert.equal(messages.length, 1);
 });
+
+test('narration window deadline cancellation does not count as a provider timeout fault', async () => {
+  const { synthesizeWithin } = await import('./boundedSynthesis.js');
+  const { synthesizeWithFallback } = await import('./voiceFallback.js');
+  const records = [];
+  const messages = [];
+  const health = createVoiceHealth({ displayNameOf: id => id, record: entry => records.push(entry) });
+  health.subscribe(message => messages.push(message));
+
+  const synth = async (_text, { signal }) => synthesizeWithFallback('短窗测试', {
+    voice: { providerId: 'custom', voiceId: 'v1', params: {} },
+    signal,
+    voiceHealth: health,
+    synth: async (_input, opts) => new Promise((_, reject) => {
+      opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('request aborted'), { name: 'TtsSynthesisError', providerId: 'custom' })), { once: true });
+    }),
+  });
+
+  const outcome = await synthesizeWithin(synth, '短窗测试', {}, {
+    budgetMs: 30_000,
+    deadlineMs: Date.now() + 25,
+  });
+  assert.equal(outcome.reason, 'timeout');
+  assert.deepEqual(messages, [], '窗口剩余不足取消不得触发声音接口告警');
+  assert.deepEqual(records, [], '窗口剩余不足取消不得写失败记录');
+  assert.deepEqual(health.issues(), []);
+});

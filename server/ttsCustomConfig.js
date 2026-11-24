@@ -13,11 +13,11 @@
 // 都不得包含 key。content 内除声音列表外不做任何结构承诺。
 //
 // 一次性迁移：`seedFromLegacyMinimax` 把旧 MiniMax 环境变量与已存的声音
-// 选择按新接口格式填入（幂等：配置文件已存在即跳过）。协议默认 openai，
-// 官方 MiniMax 端点需在设置里显式切到 minimax 协议才能合成/拉取声音。
+// 选择按新接口格式填入（幂等：配置文件已存在即跳过）。没有显式旧配置就不播种空接口。
+// 新安装只保留默认 Edge 晓晓预选；启用与知情确认仍由 ttsFallbackConfig 独立管理。
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getLLMConfigDir } from './llmConfig.js';
 import { validateRecipe } from './tts/providers/protocols/recipe.js';
@@ -35,6 +35,13 @@ const ENDPOINT_ID_PATTERN = /^custom(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
 const PROFILE_ID_PATTERN = /^vp_cx_[0-9a-f]{8}$/;
 /** 内置免费声音（Edge 朗读）的接口 id：声音池可以保留它的声音，但它不是一条可编辑的接口。 */
 const FREE_VOICE_ENDPOINT_ID = 'free-edge';
+/** 默认预选的声音身份；保留不代表已启用，也不写入知情确认。 */
+export const DEFAULT_FREE_VOICE = Object.freeze({
+  profileId: customVoiceProfileId(FREE_VOICE_ENDPOINT_ID, 'zh-CN-XiaoxiaoNeural'),
+  endpointId: FREE_VOICE_ENDPOINT_ID,
+  sourceVoiceId: 'zh-CN-XiaoxiaoNeural',
+  displayName: '晓晓',
+});
 const poolEndpointIds = endpoints => new Set([...endpoints.map(endpoint => endpoint.id), FREE_VOICE_ENDPOINT_ID]);
 
 function configPath() {
@@ -275,7 +282,7 @@ export function customTtsConfigured() {
 
 /**
  * 一次性迁移：旧 MiniMax 环境变量 + 已存的声音选择 → 新自定义接口配置。
- * 配置文件已存在即跳过（幂等）。声音集合 = MINIMAX_VOICE_ID ∪ 全局 voice
+ * 只有显式旧配置存在、且用户配置文件尚不存在才播种。声音集合 = MINIMAX_VOICE_ID ∪ 全局 voice
  * 偏好 ∪ collectLegacyVoiceSelections()（角色绑定的原生声线），显示名经
  * displayNameForLegacySource 回填，拿不到就用源 id——绝不编造。
  */
@@ -287,10 +294,15 @@ export function seedFromLegacyMinimax({
   logger = console,
 } = {}) {
   if (readCustomTtsConfig().migratedFromMinimax) return { seeded: false, reason: 'already-migrated' };
+  if (existsSync(configPath())) return { seeded: false, reason: 'already-configured' };
   const legacyBaseUrl = String(env.MINIMAX_BASE_URL || '').trim();
   const legacyApiKey = String(env.MINIMAX_API_KEY || '').trim();
   const legacyModel = String(env.MINIMAX_MODEL || '').trim();
   const legacyVoiceId = String(env.MINIMAX_VOICE_ID || '').trim();
+  // 角色绑定可能来自旧默认值，不足以证明用户配置过 MiniMax。
+  if (![legacyBaseUrl, legacyApiKey, legacyModel, legacyVoiceId].some(Boolean)) {
+    return { seeded: false, reason: 'no-legacy-config' };
+  }
 
   const selections = new Set();
   const savedSettings = state?.getPref?.('settings');
@@ -326,6 +338,14 @@ export function seedFromLegacyMinimax({
   writeConfig(seeded);
   logger?.log?.(`[tts] custom endpoint config seeded from legacy minimax values (${seeded.voices.length} kept voices, key ${legacyApiKey ? 'present' : 'absent'})`);
   return { seeded: true, voices: seeded.voices.length };
+}
+
+/** 只为尚无声音配置、且根角色使用新默认的安装保留晓晓。尊重用户保存/删除，不启用联网。 */
+export function seedDefaultFreeVoice({ voiceProfileId } = {}) {
+  if (voiceProfileId !== DEFAULT_FREE_VOICE.profileId) return { seeded: false, reason: 'existing-voice' };
+  if (existsSync(configPath())) return { seeded: false, reason: 'already-configured' };
+  writeConfig({ ...emptyConfig(), voices: [{ ...DEFAULT_FREE_VOICE }] });
+  return { seeded: true };
 }
 
 /** 仅供测试：清空模块级缓存。 */

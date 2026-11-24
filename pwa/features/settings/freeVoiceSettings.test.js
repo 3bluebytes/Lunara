@@ -55,7 +55,8 @@ test('勾选免费声音先展开固定说明，不发请求；同意后才带 c
   assert.deepEqual(h.patches, [{ freeVoicesEnabled: true, consent: true }]);
   assert.equal(h.$('#tts-free-toggle').checked, true);
   assert.equal(h.$('#tts-free-consent').hidden, true);
-  assert.match(h.$('#tts-free-status').textContent, /来源接口」已切到免费声音/);
+  assert.match(h.$('#tts-free-status').textContent, /已保留的声音可直接使用/);
+  assert.match(page, /新安装默认预选「晓晓」/);
   assert.equal(h.configs.length, 1, '保存后的配置交回声音池');
 });
 
@@ -120,12 +121,16 @@ test('保存失败如实显示原因，开关回到服务端状态', async () =>
   assert.equal(h.$('#tts-free-toggle').checked, false);
 });
 
-test('免费声音小节在声音池卡里、紧挨发现结果之前；代读卡在声音池之后', () => {
-  const customCard = page.match(/<section class="settings-card" aria-label="声音池">[\s\S]*?<section class="settings-card" aria-label="主声音失败时代读">/)?.[0] || '';
-  const free = customCard.indexOf('id="tts-free-block"');
-  const candidates = customCard.indexOf('id="tts-custom-candidates"');
-  assert.ok(free > 0 && candidates > free, '免费声音小节在发现结果之前');
-  assert.ok(customCard.indexOf('id="tts-custom-voice-editor"') > candidates, '声音池在发现结果之后、代读卡之前');
+test('免费声音小节置顶在声音页最上方；排在语音接口、声音池与代读卡之前', () => {
+  const voicePage = page.slice(page.indexOf('<section class="settings-page" data-settings-page="voice"'));
+  const free = voicePage.indexOf('id="tts-free-block"');
+  const statusCard = voicePage.indexOf('aria-label="语音服务状态"');
+  const poolCard = voicePage.indexOf('aria-label="声音池"');
+  const candidates = voicePage.indexOf('id="tts-custom-candidates"');
+  const editor = voicePage.indexOf('id="tts-custom-voice-editor"');
+  const fallback = voicePage.indexOf('aria-label="主声音失败时代读"');
+  assert.ok(free > 0 && statusCard > free && poolCard > free, '免费声音小节置顶在声音页最前');
+  assert.ok(editor > candidates && fallback > editor, '声音池在发现结果之后、代读卡之前');
 });
 
 test('开关结果写在免费声音小节，代读结果写在代读卡', async () => {
@@ -133,7 +138,7 @@ test('开关结果写在免费声音小节，代读结果写在代读卡', async
   h.change('#tts-free-toggle', node => { node.checked = true; });
   h.click('#tts-free-agree');
   await h.settle();
-  assert.match(h.$('#tts-free-status').textContent, /发现结果/);
+  assert.match(h.$('#tts-free-status').textContent, /获取更多声音/);
   h.change('#tts-fallback-toggle', node => { node.checked = false; });
   await h.settle();
   assert.match(h.$('#tts-fallback-status').textContent, /已关闭代读/);

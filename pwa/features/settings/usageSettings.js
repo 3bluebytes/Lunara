@@ -21,6 +21,15 @@ const HEATMAP_WEEKDAYS = Object.freeze(['一', '三', '五', '日']);
 const WEEKDAY_NAMES = Object.freeze(['日', '一', '二', '三', '四', '五', '六']);
 const STRIP_MAX_DAYS = 14;
 const HEATMAP_SCROLL_ATTRS = 'tabindex="0" role="group" aria-label="每日 token 热力图，可横向滚动"';
+const OUTCOME_LABELS = Object.freeze({
+  provider_error: '服务商异常',
+  timeout: '请求超时',
+  rate_limited: '触发限流',
+  auth_failed: '鉴权失败',
+  invalid_response: '返回格式异常',
+  network_error: '网络中断',
+  cancelled: '已取消',
+});
 
 /** token 数量的人类可读写法（中文数量级；0 也如实显示）。 */
 export function formatTokens(value) {
@@ -255,7 +264,7 @@ export function createUsageSettings({
     const rows = Array.isArray(report?.byModel) ? report.byModel : [];
     if (!rows.length) return '<p class="usage-empty-line">这段时间还没有按模型的记录。</p>';
     const body = rows.map((row) => {
-      const name = row.provider ? providerNames.get(row.provider) || row.provider : '未记录 provider';
+      const name = row.provider ? providerNames.get(row.provider) || row.provider : '未记录服务商';
       const model = row.model || '未知模型';
       const label = `${name} · ${model}`;
       const share = byModelShare(row);
@@ -279,11 +288,15 @@ export function createUsageSettings({
   function failuresHtml() {
     const failures = Array.isArray(report?.failingOutcomes) ? report.failingOutcomes : [];
     const estimated = Number(report?.totals?.estimatedCalls) || 0;
-    const parts = failures.map(item => `<span class="usage-chip">${esc(item.outcome)} × ${String(Number(item.count) || 0)}</span>`);
+    const parts = failures.map((item) => {
+      const zh = OUTCOME_LABELS[item.outcome];
+      const text = zh ? `${zh} · ${item.outcome}` : String(item.outcome || '未知错误');
+      return `<span class="usage-chip">${esc(text)} × ${String(Number(item.count) || 0)}</span>`;
+    });
     if (estimated > 0) parts.push(`<span class="usage-chip is-muted">估计用量 ${String(estimated)} 次</span>`);
     if (!parts.length) parts.push('<span class="usage-chip is-muted">没有失败记录</span>');
     return `<div class="usage-chips">${parts.join('')}</div>
-      <p class="usage-note">失败按分类计数。估计用量是供应方没有返回 token 的请求次数，其 token 按预留额度保守计入上方总量（不虚报为真实值）；账本保留 ${String(report?.retentionDays || 0)} 天。</p>`;
+      <p class="usage-note">失败按分类计数。估计用量是服务商未返回字数明细的请求次数，按预留额度保守计入上方总量（不虚报为真实值）；账本保留 ${String(report?.retentionDays || 0)} 天。</p>`;
   }
 
   /** 可选时间范围：不超过账本保留期；同时保证当前实际窗口一定有一个对应按钮。 */
@@ -333,7 +346,7 @@ export function createUsageSettings({
       <section class="settings-card usage-card" aria-label="每日 token 热力图">
         <div class="usage-card-head">
           <div class="usage-card-title">
-            <span class="boot-h">Token 活动</span>
+            <span class="boot-h">用量热力图</span>
             <span class="usage-card-meta">${esc(String(report.coverage?.from || ''))} → ${esc(String(report.coverage?.to || ''))}</span>
           </div>
           ${rangeHtml()}
@@ -343,14 +356,14 @@ export function createUsageSettings({
       <section class="settings-card usage-card" aria-label="每日 token 趋势">
         <div class="usage-card-head">
           <div class="usage-card-title"><span class="boot-h">每日趋势</span></div>
-          <span class="usage-card-meta">${esc(formatTokens(report.totals?.outputTokens))} tokens</span>
+          <span class="usage-card-meta">输出总量 ${esc(formatTokens(report.totals?.outputTokens))}</span>
         </div>
         ${barsHtml()}
       </section>
       <section class="settings-card usage-card" aria-label="按模型拆分">
         <div class="usage-card-head">
           <div class="usage-card-title"><span class="boot-h">按模型</span></div>
-          <span class="usage-card-meta">输出 token 占比</span>
+          <span class="usage-card-meta">输出用量占比</span>
         </div>
         ${modelRowsHtml()}
       </section>

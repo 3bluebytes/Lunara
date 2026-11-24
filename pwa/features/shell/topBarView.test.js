@@ -36,7 +36,7 @@ let fixture;
 function setup({ layout = 'timeline', page = 'rooms', appearance = null } = {}) {
   const nodes = new Map();
   for (const id of ['#top-bar', '#conversation-sidebar', '#room-search', '#room-list', '#people-list', '#room-row-menu', '#nav-conversations',
-    '#nav-radio', '#nav-today', '#nav-people', '#nav-settings', '#person-detail', '#person-detail-name', '#person-detail-switch', '#people-list-create', '#appearance-pop']) nodes.set(id, element(id));
+    '#nav-radio', '#nav-today', '#nav-people', '#nav-settings', '#recording-review-open', '#person-detail', '#person-detail-name', '#person-detail-switch', '#people-list-create', '#appearance-pop', '#person-detail-back', '#person-detail-chat']) nodes.set(id, element(id));
   nodes.get('#appearance-pop').hidden = true;
   nodes.get('#room-row-menu').hidden = true;
   nodes.get('#conversation-sidebar').classList.add('expanded');
@@ -210,6 +210,15 @@ test('人物新增面板有键盘优先权，点新增先收起列表', () => {
   assert.equal(view.isOverlayOpen(), false);
 });
 
+test('从「全部」浮层点开歌曲整理时自动收起浮层', () => {
+  const { view, nodes } = setup();
+  view.openOverlay(null);
+  assert.equal(view.isOverlayOpen(), true);
+  nodes.get('#recording-review-open').dispatch('click', {});
+  assert.equal(view.isOverlayOpen(), false);
+  assert.equal(fixture.documentLike.body.classList.contains(OVERLAY_CLASS), false);
+});
+
 test('人物页正文也属于列表外部；切换按钮本身不会立即把列表关掉', () => {
   const { view } = setup({ page: 'people' });
   view.openOverlay(null);
@@ -331,6 +340,39 @@ test('点在浮层和顶栏之外收起「外观」', () => {
 });
 
 // 外观选项的标记本身在 appearancePop.test.js 里覆盖；这里只测顶栏按钮与浮层的接线。
+
+test('窄屏导航按钮点击自动收起已打开的浮层', () => {
+  for (const navId of ['#nav-today', '#nav-settings', '#nav-conversations']) {
+    const { view, nodes } = setup();
+    view.openOverlay(null);
+    assert.equal(view.isOverlayOpen(), true);
+    nodes.get(navId).dispatch('click', {});
+    assert.equal(view.isOverlayOpen(), false, `${navId} 应关闭浮层`);
+  }
+});
+
+test('人物详情「返回聊天」和「去聊天」点击自动收起浮层', () => {
+  for (const navId of ['#person-detail-back', '#person-detail-chat']) {
+    const { view, nodes } = setup();
+    view.openOverlay(null);
+    assert.equal(view.isOverlayOpen(), true);
+    nodes.get(navId).dispatch('click', {});
+    assert.equal(view.isOverlayOpen(), false, `${navId} 应关闭浮层`);
+  }
+});
+
+test('桌面「人物」按钮不绑 closeOverlay（先 click 再 openOverlay）', () => {
+  const { view, nodes } = setup();
+  nodes.get('#nav-people').click = function () {
+    this.clicks += 1;
+    this.setAttribute('aria-current', 'page');
+  };
+  view.openOverlay(null);
+  assert.equal(view.isOverlayOpen(), true);
+  // #nav-people 没有绑定 closeOverlay click handler，不应由 click dispatch 自动关闭
+  // 仍然 open 因为 #nav-people 由 onBarClick 的 data-top-dest 通过 toggleOverlay 控制
+  assert.equal(view.isOverlayOpen(), true, '人物按钮不应自动关闭浮层');
+});
 
 test('窄屏去处收进菜单，「外观」仍留在顶栏', async () => {
   const css = await readFile(new URL('./timeline.css', import.meta.url), 'utf8');

@@ -1,7 +1,7 @@
 /* usageSettings.css — 「设置 → 使用统计」：统计卡、每日热力图、趋势与按模型拆分。
    只消费主题变量：四档热度由 --studio-accent-ink 的 color-mix 生成，
    所以 cike / moonlight / modernist / organic 切换时颜色自动一致，不在样式里写死颜色。
-   字阶与「模型与连接」页统一：卡标题 12px/550、说明 12.5px、数字用 Geist Mono。 */
+   字阶与「模型与连接」页统一：卡标题 12px/550、说明 12.5px、数字用 --font-mono。 */
 
 .usage { display: flex; flex-direction: column; gap: 14px; }
 
@@ -23,7 +23,7 @@
 }
 .usage-stat-label { font-size: 12px; line-height: 1.4; color: var(--t-mid); }
 .usage-stat-value {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 20px;
   font-weight: 500;
   line-height: 1.25;
@@ -172,7 +172,7 @@
   color: var(--t-mid);
 }
 .usage-legend .usage-cell { width: 10px; height: 10px; }
-.usage-legend-total { margin-left: auto; font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+.usage-legend-total { margin-left: auto; font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
 
 /* ── 趋势柱 ─────────────────────────────────────────────────────────────── */
 .usage-bars-scroll { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
@@ -222,7 +222,7 @@
 }
 .usage-model-tokens {
   flex-shrink: 0;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px;
   color: var(--t-hi);
 }
@@ -248,7 +248,7 @@
   padding: 4px 9px;
   border: 1px solid var(--studio-line);
   border-radius: 999px;
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--warn-ink);
@@ -315,7 +315,7 @@
   white-space: nowrap;
 }
 .usage-tooltip-detail {
-  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--t-mid);

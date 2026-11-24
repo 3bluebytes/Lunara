@@ -1,3 +1,4 @@
+import { parseEvidence } from '../memory/memoryPolicy.js';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -64,7 +65,8 @@ test('A and B retain different relationships across rooms, restart and old-room 
   const chat = async messages => {
     const text = messages.at(-1).content;
     if (messages.at(-1).role === 'user' && text.startsWith('记住')) return memoryCall(text, text);
-    prompts.push(messages[0].content);
+    // 跨会话摘录与本轮背景在最后一条 user 消息里，检查每个角色收到的完整提示范围。
+    prompts.push(messages.map(message => message.content).join('\n'));
     return { message: { role: 'assistant', content: '我们接着聊。' } };
   };
   let h = harness(dbPath, chat);
@@ -84,15 +86,15 @@ test('A and B retain different relationships across rooms, restart and old-room 
   prompts.length = 0;
   const result = await h.runtime.handleTurn({ sessionId: 'three', requestId: 'group', userText: '大家各自聊聊我们吧', speak: true });
   assert.equal(result.responses.length, 3);
-  // 主持人 a 在多人计划里排最后：b、c 先说，a 收尾。
-  assert.deepEqual(result.responses.map(response => response.presentation.voiceProfileId), ['voice-b', 'voice-c', 'voice-a']);
-  assert.match(prompts[2], /小月亮/);
-  assert.match(prompts[2], /R&B/);
-  assert.doesNotMatch(prompts[2], /老铁|Rap/);
-  assert.match(prompts[0], /老铁/);
-  assert.match(prompts[0], /Rap/);
-  assert.doesNotMatch(prompts[0], /小月亮|R&B/);
-  assert.doesNotMatch(prompts[1], /小月亮|老铁|R&B|Rap/);
+  // 纯闲聊多人局保持入群自然顺序：a（主持）、b、c。
+  assert.deepEqual(result.responses.map(response => response.presentation.voiceProfileId), ['voice-a', 'voice-b', 'voice-c']);
+  assert.match(prompts[0], /小月亮/);
+  assert.match(prompts[0], /R&B/);
+  assert.doesNotMatch(prompts[0], /老铁|Rap/);
+  assert.match(prompts[1], /老铁/);
+  assert.match(prompts[1], /Rap/);
+  assert.doesNotMatch(prompts[1], /小月亮|R&B/);
+  assert.doesNotMatch(prompts[2], /小月亮|老铁|R&B|Rap/);
   assert.equal(h.conversationStore.listTurns('three', { visibleOnly: true }).filter(turn => turn.role === 'user').length, 1);
   const replay = await h.runtime.handleTurn({ sessionId: 'three', requestId: 'group', userText: '不能重复执行', speak: true });
   assert.deepEqual(replay, result);
@@ -112,7 +114,7 @@ test('a silent member retains witnessed group events but a later invitee does no
   assert.equal(h.conversationStore.recentEncounters('b').filter(turn => turn.role === 'user').length, 1);
 });
 
-test('temporary applicability and private disclosure do not erase the rest of a relationship', async t => {
+test('temporary applicability does not erase the rest of a relationship; private facts follow her into groups with their label', async t => {
   const h = harness(temporary(t), async () => ({ message: { content: '继续。' } }));
   t.after(() => h.close());
   createPeople(h);
@@ -130,9 +132,13 @@ test('temporary applicability and private disclosure do not erase the rest of a 
     virtualPersonId: 'a', namespace: 'radiohost:a', query: '你好', sessionId, isGroup,
   });
   assert.match(JSON.stringify(retrieve('private', false)), /电子音乐|辞职/);
-  const newGroup = JSON.stringify(retrieve('another-group', true));
-  assert.match(newGroup, /小月亮/);
-  assert.doesNotMatch(newGroup, /电子音乐|辞职/);
+  const newGroup = retrieve('another-group', true);
+  assert.match(JSON.stringify(newGroup), /小月亮/);
+  assert.doesNotMatch(JSON.stringify(newGroup), /电子音乐/, '「今晚只…」限定在原聊天');
+  // 私下说的她在群里也记得，带标签；提不提是她的分寸。
+  const secret = newGroup.find(item => /辞职/.test(item.content));
+  assert.ok(secret, '私下说的在群聊里仍在她的记忆里');
+  assert.equal(parseEvidence(secret).policy.disclosure, 'private');
   assert.match(JSON.stringify(retrieve('another-private', false)), /辞职/);
 });
 

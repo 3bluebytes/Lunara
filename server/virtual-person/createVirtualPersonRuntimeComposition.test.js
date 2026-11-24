@@ -112,7 +112,7 @@ test('context budget defaults match modern model windows and stay env-overridabl
   try {
     const composition = fixture(null);
     assert.equal(composition.contextBudgeter.maxBytes, 262_144);
-    assert.equal(composition.contextBudgeter.maxMessages, 128);
+    assert.equal(composition.contextBudgeter.maxMessages, 400);
   } finally {
     if (previousBytes !== undefined) process.env.CONVERSATION_CONTEXT_MAX_BYTES = previousBytes;
     if (previousMessages !== undefined) process.env.CONVERSATION_CONTEXT_MAX_MESSAGES = previousMessages;
@@ -132,4 +132,82 @@ test('ambient turn 的 presence_respond 已注册，但普通回合的能力里�
   assert.ok(!ordinary.includes('presence.ambient'));
   assert.ok(!ordinary.includes('presence.notes'));
   assert.ok(!composition.toolRegistry.definitions({ capabilities: ordinary }).some(item => item.function.name === 'presence_respond'));
+});
+
+test('给模型的播放状态：长队列里当前这首和刚撤下的那首都看得到', () => {
+  const queue = Array.from({ length: 108 }, (_, index) => ({ queueItemId: `q${index}`, songId: `s${index}`, title: `歌${index}`, artist: '歌手' }));
+  const listening = { queue, currentIndex: 107, currentSongId: 's107', phase: 'playing',
+    lastOutputTrack: { title: '管他的公路尽头', artist: '王源', songId: 'w1' }, txn: { queueItemId: 'q107', reason: 'disliked_track_removed' } };
+  const composition = createVirtualPersonRuntimeComposition({
+    chat: async () => ({ message: { role: 'assistant', content: 'ok' } }), synthesize: async () => null, publish() {},
+    queueService: { snapshot: () => ({}), publishSnapshot() {} },
+    playbackRuntime: { snapshot: () => listening, listeningSnapshot: () => listening },
+    getMusicService: null, logger: { error() {}, warn() {} },
+  });
+  const state = composition.runtime.getRuntimeState({ sessionId: 'a' });
+  assert.equal(state.playback.queue[state.playback.currentIndex].title, '歌107');
+  assert.equal(state.playback.queueWindow.total, 108);
+  assert.match(state.playback.lastOutputTrack.endedBy, /不喜欢/u);
+});
+
+test('composition 中用 settle_thought 了结 open_loop 时同步退场对应的 reflection-life 近况', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { MemoryService } = await import('../memory/MemoryService.js');
+  const { MemorySource, MemoryType } = await import('../memory/types.js');
+  const { LIFE_NOTE_TAG } = await import('../memory/reflectionInsights.js');
+
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-vp-loop-sync-'));
+  const prevDb = process.env.LUNARA_DB_PATH;
+  process.env.LUNARA_DB_PATH = join(dir, 'state.db');
+  const memory = await new MemoryService('person:lunara').initialize();
+  let step = 0;
+  const composition = createVirtualPersonRuntimeComposition({
+    dbPath: join(dir, 'state.db'),
+    getMemoryService: () => memory,
+    chat: async () => {
+      step += 1;
+      if (step === 1) return { message: { role: 'assistant', content: '交了就好。', tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'settle_thought', arguments: JSON.stringify({ noteId: 'n1', status: 'resolved' }) } },
+      ] } };
+      return { message: { role: 'assistant', content: '交了就好。' } };
+    },
+    synthesize: async () => null, publish() {},
+    queueService: { snapshot: () => ({}), publishSnapshot() {} },
+    playbackRuntime: { snapshot: () => ({ phase: 'idle' }) },
+    logger: { error() {}, warn() {} },
+  });
+  composition.runtime.initialize();
+  try {
+    composition.conversationStore.createRoom({ sessionId: 'chat-a', memberIds: ['lunara'], hostId: 'lunara' });
+    composition.conversationStore.createRoom({ sessionId: 'chat-b', memberIds: ['lunara'], hostId: 'lunara' });
+    const { turn } = composition.conversationStore.beginRequest({ sessionId: 'chat-a', requestId: 'r0', virtualPersonId: 'lunara', userText: '周五要交方案' });
+    composition.conversationStore.completeRequest({ requestId: 'r0', virtualPersonId: 'lunara', message: { content: '好。' } });
+    assert.equal(composition.conversationStore.notes.acceptOpenLoop({
+      personId: 'lunara', sessionId: 'chat-a', batchTag: 'b-comp', index: 0,
+      text: '对方周五要交方案', sourceTurnIds: [turn.turnId], policy: { disclosure: 'normal' },
+    }), true);
+    memory.store.insert({
+      createdAt: Date.now(), updatedAt: Date.now(), lastAccessedAt: Date.now(),
+      namespace: 'person:lunara', type: MemoryType.SEMANTIC, source: MemorySource.AGENT_REFLECTION,
+      content: '对方周五要交方案', summary: '近况', tags: `${LIFE_NOTE_TAG},life-upcoming`,
+      confidence: 0.4, importance: 5,
+      evidence: JSON.stringify({ schema: 2, writeKey: 'b-comp:life:0', sourceTurnIds: [turn.turnId], sessions: ['chat-a'], originSessionId: 'chat-a', policy: { disclosure: 'normal' } }),
+    });
+    assert.equal((await composition.runtime.contextAssembler.retrieveMemories({
+      query: '在吗', namespace: 'person:lunara', virtualPersonId: 'lunara', sessionId: 'chat-b',
+    })).filter(row => row.kind === 'life').length, 1);
+
+    await composition.runtime.handleTurn({ sessionId: 'chat-a', requestId: 'r1', userText: '方案交啦', speak: false });
+    assert.equal((await composition.runtime.contextAssembler.retrieveMemories({
+      query: '在吗', namespace: 'person:lunara', virtualPersonId: 'lunara', sessionId: 'chat-b',
+    })).filter(row => row.kind === 'life').length, 0, '了结后别的聊天不再注入该近况');
+  } finally {
+    composition.runtime.shutdown();
+    await memory.shutdown();
+    if (prevDb === undefined) delete process.env.LUNARA_DB_PATH;
+    else process.env.LUNARA_DB_PATH = prevDb;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

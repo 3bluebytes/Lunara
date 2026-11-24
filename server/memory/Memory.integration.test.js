@@ -41,7 +41,7 @@ async function runTests() {
 
   // Initialize fresh service
   const svc = new MemoryService();
-  svc.initialize();
+  await svc.initialize();
   await seedPersonaMemory(svc, svc.namespace);
 
   // Wipe all test data from previous runs (keep persona)

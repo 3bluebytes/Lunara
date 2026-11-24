@@ -7,6 +7,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveModelEndpoint } from './llmProviders.js';
+import { defaultLunaraHome } from './runtimePaths.js';
 import { readConfigDocument, withConfigLock, writeConfigDocument } from './configLock.js';
 
 const EMPTY_CONFIG = Object.freeze({ baseUrl: '', apiKey: '', model: '' });
@@ -14,7 +15,7 @@ const EMPTY_CONFIG = Object.freeze({ baseUrl: '', apiKey: '', model: '' });
 export function getLLMConfigDir() {
   return process.env.LUNARA_CONFIG_DIR
     || process.env.CLAUDIO_CONFIG_DIR
-    || join(homedir(), '.lunara');
+    || defaultLunaraHome();
 }
 
 export function getLLMConfigPath() {

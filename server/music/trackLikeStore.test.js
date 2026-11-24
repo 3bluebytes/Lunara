@@ -127,3 +127,23 @@ test('pending listing honours the batch limit', () => {
   for (const id of ['1', '2', '3']) likes.setDesired('ncm', id, true, { requestId: `r${id}` });
   assert.equal(likes.listPending({ limit: 2 }).length, 2);
 });
+
+test('listLikedTracks keeps canonical (provider, songId) separation and likesRevision ignores adopted hydration', () => {
+  const likes = store();
+  const r0 = likes.likesRevision();
+  likes.setDesired('ncm', '100', true, { remoteState: 'synced', origin: 'adopted' });
+  assert.equal(likes.listLikedTracks().length, 1);
+  assert.equal(likes.likesRevision(), r0, '远端只读采纳不抖动显式红心修订号');
+
+  likes.setDesired('qq', '100', true, { remoteState: 'local_only', origin: 'user', requestId: 'u1' });
+  const r1 = likes.likesRevision();
+  assert.notEqual(r1, r0);
+  assert.deepEqual(likes.listLikedTracks().map(x => `${x.provider}:${x.songId}`), ['ncm:100', 'qq:100']);
+
+  likes.markState('qq', '100', 'synced');
+  assert.equal(likes.likesRevision(), r1, '仅同步状态刷新不改变意图修订号');
+
+  likes.setDesired('qq', '100', false, { remoteState: 'local_only', origin: 'user', requestId: 'u2' });
+  assert.notEqual(likes.likesRevision(), r1);
+  assert.deepEqual(likes.listLikedTracks().map(x => `${x.provider}:${x.songId}`), ['ncm:100']);
+});

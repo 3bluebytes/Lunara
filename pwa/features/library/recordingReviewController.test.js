@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRecordingReviewController } from './recordingReviewController.js';
 
-const proposal = n => ({ id: 'p' + n, title: '歌曲 ' + n, artist: '歌手', members: [] });
+const proposal = (n, evidence = 'fingerprint') => ({ id: 'p' + n, title: '歌曲 ' + n, artist: '歌手', evidence, members: [] });
 const snapshot = (count = 7) => ({ revision: 'r1', proposals: Array.from({ length: count }, (_, n) => proposal(n)),
   proposalCount: count, recordings: [], recordingCount: 0, trackCount: count * 2, latestBatchId: null });
 function fixture({ get = async () => snapshot(), post = async () => ({ ok: true, confirmed: 7 }) } = {}) {
@@ -117,4 +117,20 @@ test('dismiss, split and undo use local review routes without player or account 
     ['/api/library/recordings/split', { recordingId: 'g1', revision: 'g-rev' }],
     ['/api/library/recordings/split', { batchId: 'b1' }],
   ]);
+});
+
+test('only acoustic fingerprint matches are preselected by default; metadata-only suggestions stay unchecked across pages', async () => {
+  const mixed = [
+    ...Array.from({ length: 50 }, (_, n) => proposal(n, n % 2 === 0 ? 'fingerprint' : 'metadata')),
+    proposal(50, 'fingerprint'),
+    proposal(51, null),
+  ];
+  const { controller } = fixture({
+    get: async () => ({ ...snapshot(0), proposals: mixed, proposalCount: mixed.length }),
+  });
+  await controller.open();
+  assert.equal(controller.getSnapshot().selected.length, 25);
+  assert.ok(controller.getSnapshot().selected.every(id => Number(id.slice(1)) % 2 === 0));
+  controller.setPage(1);
+  assert.deepEqual(controller.getSnapshot().selected, ['p50']);
 });

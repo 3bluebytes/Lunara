@@ -102,10 +102,12 @@ test('recent listening facts exclude technical failures and old rows（3.3）', 
   assert.equal(lines.join('\n').includes('坏链接'), false);
 });
 
-test('persona taste comes from the persona document, never from memory; placeholders are not taste', () => {
+test('persona taste comes from the persona document with free-form intro fallback; placeholders are not taste', () => {
   const entity = { personaDocument: '# 我\n\n## 我喜欢的音乐\n老派爵士与器乐\n\n## 我对这个用户的态度\n亲近' };
   assert.equal(personaMusicTaste({ entity }), '老派爵士与器乐');
   assert.equal(personaMusicTaste({ entity: { personaDocument: '性格：安静\n音乐审美：偏好民谣' } }), '偏好民谣');
+  assert.equal(personaMusicTaste({ entity: { personaDocument: '# 阿泽\n\n偏爱独立摇滚与深夜器乐，挑歌看重呼吸感。\n\n第二段故事。' } }),
+    '偏爱独立摇滚与深夜器乐，挑歌看重呼吸感。');
   assert.equal(personaMusicTaste({ entity: { personaDocument: '## 我喜欢的音乐\n（待补充）' } }), '');
   assert.equal(personaMusicTaste({ entity: { personaDocument: '' } }), '');
 });

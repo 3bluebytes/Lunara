@@ -11,6 +11,7 @@
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { parseConsentAt, recordedFreeEdgeConsent } from '../pwa/core/usableVoice.js';
 import { getLLMConfigDir } from './llmConfig.js';
 
 const CONFIG_FILE = 'tts-fallback.json';
@@ -37,11 +38,11 @@ function normalizeTarget(target) {
 function sanitize(raw) {
   const base = defaults();
   if (!raw || typeof raw !== 'object') return base;
-  const consentAt = typeof raw.consentAt === 'string' && !Number.isNaN(Date.parse(raw.consentAt)) ? raw.consentAt : null;
+  const consentAt = parseConsentAt(raw.consentAt);
   return {
     ...base,
     // 没有确认时间的"已开启"按未开启处理：手改文件不能绕过知情确认。
-    freeVoicesEnabled: raw.freeVoicesEnabled === true && Boolean(consentAt),
+    freeVoicesEnabled: recordedFreeEdgeConsent({ freeVoicesEnabled: raw.freeVoicesEnabled === true, consentAt }),
     consentAt,
     fallbackEnabled: raw.fallbackEnabled === true,
     fallbackTarget: normalizeTarget(raw.fallbackTarget) ?? null,

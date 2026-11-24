@@ -4,12 +4,14 @@ export function createChatInputView({
   compose = null,
   input,
   sendButton,
+  stopButton = null,
   hint = null,
   hintText = null,
   mentionMenu = null,
   onSubmit,
   onCancel = () => {},
   onWarmAudio = () => {},
+  onEditLastUserMessage = null,
 } = {}) {
   if (!input || !sendButton || typeof onSubmit !== 'function') {
     throw new TypeError('chat input view dependencies are required');
@@ -32,11 +34,37 @@ export function createChatInputView({
     cleanups.push(() => element.removeEventListener(type, listener));
   }
 
+  function hasDraftText() {
+    return Boolean(String(input?.value || '').trim());
+  }
+
+  /** 生成期输入非空草稿时切换为「插话发送」，把「停止」让给独立的停止按钮。 */
+  function syncActionState() {
+    const interjecting = pending && hasDraftText();
+    const showStopGlyph = pending && !interjecting;
+    sendButton.classList?.toggle('stop', showStopGlyph);
+    if (showStopGlyph) {
+      sendButton.setAttribute?.('aria-label', '停止回复');
+      sendButton.title = '停止这轮回复；已安排的歌曲不会撤回';
+    } else if (interjecting) {
+      sendButton.setAttribute?.('aria-label', '插话发送');
+      sendButton.title = '插话发送；已安排的歌曲不会撤回';
+    } else {
+      sendButton.setAttribute?.('aria-label', '发送');
+      sendButton.title = '发送消息';
+    }
+    if (stopButton) {
+      stopButton.hidden = !interjecting;
+      stopButton.disabled = locked;
+    }
+  }
+
   /**
    * 输入条随内容增高：单行起步，长草稿折行长高，超过 CSS max-height 后内部滚动。
    * 只依赖 style 与 scrollHeight，测试替身缺少这两个字段时静默无操作。
    */
   function syncSize() {
+    syncActionState();
     const style = input?.style;
     if (!style || typeof input.scrollHeight !== 'number') return;
     style.height = 'auto';
@@ -86,6 +114,7 @@ export function createChatInputView({
     compose?.classList?.toggle('locked', locked);
     input.disabled = locked;
     sendButton.disabled = locked;
+    syncActionState();
     if (message && hintText) hintText.textContent = message;
     hint?.classList?.toggle('visible', locked || pending);
     if (changed && !locked) input.focus?.();
@@ -94,9 +123,7 @@ export function createChatInputView({
   function setPending(nextPending, message = '') {
     pending = Boolean(nextPending);
     compose?.classList?.toggle('pending', pending);
-    sendButton.classList?.toggle('stop', pending);
-    sendButton.setAttribute?.('aria-label', pending ? '停止回复' : '发送');
-    sendButton.title = pending ? '停止这轮回复；已安排的歌曲不会撤回' : '发送消息';
+    syncActionState();
     if (message && hintText) hintText.textContent = message;
     hint?.classList?.toggle('visible', locked || pending);
   }
@@ -198,7 +225,7 @@ export function createChatInputView({
 
   function buttonAction() {
     if (locked) return;
-    if (pending) { onCancel(); return; }
+    if (pending && !hasDraftText()) { onCancel(); return; }
     submit();
   }
 
@@ -206,6 +233,7 @@ export function createChatInputView({
     if (initialized) return api;
     initialized = true;
     listen(sendButton, 'click', buttonAction);
+    if (stopButton) listen(stopButton, 'click', () => { if (!locked && pending) onCancel(); });
     listen(input, 'compositionstart', () => { composing = true; closeMentions(); });
     listen(input, 'compositionend', () => { composing = false; syncSize(); updateMentions(); });
     listen(input, 'input', () => { syncSize(); updateMentions(); });
@@ -228,11 +256,18 @@ export function createChatInputView({
           return;
         }
       }
+      if (!mentionOpen && !composing && !event.isComposing && !locked
+        && event.key === 'ArrowUp' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey
+        && !input.value && typeof onEditLastUserMessage === 'function') {
+        if (onEditLastUserMessage()) event.preventDefault();
+        return;
+      }
       if (event.key !== 'Enter' || event.shiftKey || composing || event.isComposing || locked) return;
       event.preventDefault();
       submit();
     });
     input.setAttribute?.('aria-autocomplete', 'list');
+    syncActionState();
     return api;
   }
 

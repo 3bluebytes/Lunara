@@ -36,7 +36,7 @@ function fixture(options = {}) {
     publish: message => messages.push(message),
     ...options,
   });
-  return { runtime, messages, projected, prefs };
+  return { runtime, messages, projected, prefs, queueService };
 }
 
 test('zero-track continuation result closes the pending boundary as recoverable failure', async () => {
@@ -92,18 +92,22 @@ test('zero-track continuation result closes the pending boundary as recoverable 
   assert.match(exhausted.lastError?.message || '', /no tracks committed/i);
 });
 
-test('narration preparation clips the current automatic task to its delivery window but gives upcoming work its task budget', async t => {
+// 串词已经写好的歌：到点要做的只剩合成声音。
+function written(songId) {
+  return { ...track(songId), intro: undefined,
+    narration: { status: 'ready', assetStatus: 'missing', generationRevision: 1, text: `《Title ${songId}》这首可以听下去。` } };
+}
+
+test('narration audio clips the current automatic task to its delivery window but gives upcoming work its task budget', async t => {
   const calls = [];
   const h = fixture({ now: () => 1_000,
-    prepareTrackNarration: async (effect, options) => {
+    resolveTrackNarrationAsset: async (effect, options) => {
       calls.push({ effect, options });
-      return { text: 'Prepared intro.', ttsUrl: '/intro.mp3', voiceProfileId: 'voice' };
+      return { ttsUrl: `/intro-${effect.songId}.mp3`, voiceProfileId: 'voice' };
     } });
   t.after(() => h.runtime.stop());
-  const tracks = ['one', 'two', 'three', 'four'].map(id => ({ ...track(id),
-    narration: { status: 'absent', context: { origin: 'live' } } }));
   await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED,
-    eventId: 'budget-commit', delivery: 'replace_now', source: 'user', tracks });
+    eventId: 'budget-commit', delivery: 'replace_now', source: 'user', tracks: ['one', 'two', 'three', 'four'].map(written) });
   await settle();
   assert.equal(calls[0].options.deadlineMs, 61_000, '当前自动口播用六十秒开口窗口');
   assert.equal(typeof calls[0].options.isCurrent, 'function');
@@ -123,14 +127,14 @@ test('narration preparation clips the current automatic task to its delivery win
 
 test('replacing a queue cancels removed narration work without cancelling retained background items', async t => {
   const signals = [];
-  const h = fixture({ prepareTrackNarration: async (effect, options) => {
+  const h = fixture({ resolveTrackNarrationAsset: async (effect, options) => {
     signals.push({ songId: effect.track.songId, signal: options.signal });
     return new Promise(resolve => options.signal.addEventListener('abort', () => resolve(null), { once: true }));
   } });
   t.after(() => h.runtime.stop());
   for (const id of ['removed', 'replacement']) {
     await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: `cancel-${id}`,
-      delivery: 'replace_now', source: 'user', tracks: [{ ...track(id), narration: { status: 'absent', context: {} } }] });
+      delivery: 'replace_now', source: 'user', tracks: [written(id)] });
     await settle();
   }
   assert.equal(signals[0].signal.aborted, true);
@@ -141,7 +145,7 @@ test('narration work failures stay closed: no raw error reaches diagnostics or t
   const traces = [];
   let now = 1_000;
   const h = fixture({ now: () => now, trace: entry => traces.push(entry),
-    prepareTrackNarration: async () => {
+    resolveTrackNarrationAsset: async () => {
       now = 4_000;
       const error = new Error('synthesis exploded with key sk-secret');
       error.name = 'SynthesisError';
@@ -149,12 +153,11 @@ test('narration work failures stay closed: no raw error reaches diagnostics or t
     } });
   t.after(() => h.runtime.stop());
   await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'closed-failure-commit',
-    delivery: 'replace_now', source: 'user',
-    tracks: [{ ...track('failed'), narration: { status: 'absent', context: {} } }] });
+    delivery: 'replace_now', source: 'user', tracks: [written('failed')] });
   await settle();
   await settle();
   const state = h.runtime.snapshot();
-  const failed = state.diagnostics.find(entry => entry.type === 'track-narration-failed');
+  const failed = state.diagnostics.find(entry => entry.type === 'track-narration-asset-failed');
   assert.equal(failed?.reason, 'failed', '封闭原因');
   assert.equal(failed?.elapsedMs >= 3_000, true, '耗时进诊断');
   assert.equal(JSON.stringify({ state, traces }).includes('sk-secret'), false, '原始错误不得外泄');
@@ -167,85 +170,135 @@ test('missing narration work is reported as not-configured instead of an empty r
   const h = fixture({});
   t.after(() => h.runtime.stop());
   await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'unwired-commit',
-    delivery: 'replace_now', source: 'user',
-    tracks: [{ ...track('unwired'), narration: { status: 'absent', context: {} } }] });
+    delivery: 'replace_now', source: 'user', tracks: [written('unwired')] });
   await settle();
   await settle();
   const state = h.runtime.snapshot();
-  const failed = state.diagnostics.find(entry => entry.type === 'track-narration-failed');
+  const failed = state.diagnostics.find(entry => entry.type === 'track-narration-asset-failed');
   assert.equal(failed?.reason, 'not-configured');
-  assert.equal(state.queue[0].narration.status, 'failed');
+  assert.equal(state.queue[0].narration.assetStatus, 'failed');
 });
 
 test('cancelled narration work releases the worker even when the work promise never settles', async t => {
   const seen = [];
   let releaseFirst;
   const h = fixture({ maxPreparationConcurrency: 1,
-    prepareTrackNarration: effect => {
+    resolveTrackNarrationAsset: effect => {
       seen.push(effect.track.songId);
       if (effect.track.songId === 'first') return new Promise(resolve => { releaseFirst = resolve; });
-      return Promise.resolve({ text: 'Second intro.', ttsUrl: '/second.mp3', voiceProfileId: 'voice' });
+      return Promise.resolve({ ttsUrl: '/second.mp3', voiceProfileId: 'voice' });
     } });
   t.after(() => h.runtime.stop());
   await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'abort-commit',
-    delivery: 'replace_now', source: 'user',
-    tracks: [{ ...track('first'), narration: { status: 'absent', context: {} } },
-      { ...track('second'), narration: { status: 'absent', context: {} } }] });
+    delivery: 'replace_now', source: 'user', tracks: [written('first'), written('second')] });
   await settle();
   await settle();
-  assert.deepEqual(seen, ['first'], '单个准备位被未完成的准备占用');
+  assert.deepEqual(seen, ['first'], '单个准备位被未完成的合成占用');
   await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'abort-replace',
-    delivery: 'replace_now', source: 'user',
-    tracks: [{ ...track('second'), narration: { status: 'absent', context: {} } },
-      { ...track('third'), narration: { status: 'absent', context: {} } }] });
+    delivery: 'replace_now', source: 'user', tracks: [written('second'), written('third')] });
   for (let i = 0; i < 20 && !seen.includes('second'); i += 1) await settle();
-  assert.equal(seen.includes('second'), true, '已取消的准备必须尽快释放准备位');
-  releaseFirst?.({ text: 'Late first intro.', ttsUrl: '/late.mp3' });
+  assert.equal(seen.includes('second'), true, '已取消的合成必须尽快释放准备位');
+  releaseFirst?.({ ttsUrl: '/late.mp3' });
   await settle();
   await settle();
   assert.equal(h.runtime.snapshot().queue.some(item => item.songId === 'first'), false);
 });
 
-test('background narration remains useful after a track switch and is not projected to queue UI', async () => {
-  let releasePreparation;
-  let preparationStarted;
-  const started = new Promise(resolve => { preparationStarted = resolve; });
+test('background narration audio remains useful after a track switch and is not projected to queue UI', async () => {
+  let releaseAudio;
+  let audioStarted;
+  const started = new Promise(resolve => { audioStarted = resolve; });
   const h = fixture({
-    prepareTrackNarration: effect => {
-      preparationStarted(effect);
-      return new Promise(resolve => { releasePreparation = resolve; });
+    resolveTrackNarrationAsset: effect => {
+      audioStarted(effect);
+      return new Promise(resolve => { releaseAudio = resolve; });
     },
   });
   await h.runtime.submit({
     type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'background-commit', delivery: 'replace_now', source: 'user',
-    tracks: [
-      { ...track('first'), intro: { text: 'First', context: { transition: 'from-prev' } } },
-      track('second'), track('third'), track('fourth'), track('fifth'),
-    ],
+    tracks: [written('first'), track('second'), track('third'), track('fourth'), track('fifth')],
   });
   const effect = await started;
   assert.equal(h.runtime.snapshot().phase, PlaybackPhase.LOADING);
-  assert.equal(h.runtime.snapshot().queue[0].narration.status, 'preparing');
+  assert.equal(h.runtime.snapshot().queue[0].narration.assetStatus, 'resolving');
   assert.equal(h.runtime.snapshot().queue[1].narration.status, 'absent');
 
   const firstVersion = h.runtime.snapshot().version;
   await h.runtime.submit({ type: PlaybackEventType.NEXT_REQUESTED, eventId: 'background-next',
     runtimeVersion: firstVersion, songId: 'first' });
   assert.equal(h.runtime.snapshot().currentSongId, 'second');
-  releasePreparation({ text: 'First canonical narration.', ttsUrl: '/first.mp3', contentHash: 'first-hash', voiceProfileId: 'voice-a' });
+  releaseAudio({ ttsUrl: '/first.mp3', contentHash: 'first-hash', voiceProfileId: 'voice-a' });
   await settle();
   await settle();
 
   const state = h.runtime.snapshot();
   assert.equal(state.currentSongId, 'second');
   assert.equal(state.queue[0].queueItemId, effect.queueItemId);
-  assert.equal(state.queue[0].narration.status, 'ready');
+  assert.equal(state.queue[0].narration.assetStatus, 'ready');
   assert.equal(state.queue[0].narration.contentHash, 'first-hash');
   assert.equal(h.messages.some(message => message.type === 'runtime-command'
     && message.command.type === 'PLAY_TRACK_NARRATION' && message.command.queueItemId === effect.queueItemId), false);
   const queueMessage = h.messages.find(message => message.type === 'queue-update');
   assert.equal(Object.hasOwn(queueMessage.queue[0], 'narration'), false);
   assert.equal(Object.hasOwn(queueMessage.queue[0], 'intro'), false);
+  h.runtime.stop();
+});
+
+test('a line that no longer holds is dropped before any audio: no TTS, the song keeps playing', async t => {
+  const traces = [];
+  let resolved = 0;
+  const h = fixture({ trace: entry => traces.push(entry),
+    lineDropReason: track => (track.songId === 'one' ? 'too-old' : null),
+    resolveTrackNarrationAsset: async () => { resolved += 1; return { ttsUrl: '/x.mp3' }; } });
+  t.after(() => h.runtime.stop());
+  await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'drop-commit',
+    delivery: 'replace_now', source: 'user', tracks: [written('one')] });
+  await settle();
+  await settle();
+  const state = h.runtime.snapshot();
+  assert.equal(resolved, 0, '作废的串词不花 TTS');
+  assert.equal(state.queue[0].narration.status, 'absent');
+  assert.equal(state.queue[0].narration.text, '');
+  assert.equal(state.currentSongId, 'one', '音乐不受影响');
+  assert.equal(state.diagnostics.find(entry => entry.type === 'track-narration-dropped')?.reason, 'too-old');
+  assert.equal(h.messages.some(message => message.command?.type === 'PLAY_TRACK_NARRATION'), false);
+});
+
+test('audio resolved ahead and again at activation is not rejected as a duplicate event', async t => {
+  const calls = [];
+  const h = fixture({ resolveTrackNarrationAsset: async effect => {
+    calls.push(effect.songId);
+    return { ttsUrl: `/${effect.songId}-${calls.length}.mp3`, contentHash: `hash-${calls.length}` };
+  } });
+  t.after(() => h.runtime.stop());
+  await h.runtime.submit({ type: PlaybackEventType.COMPANION_MODE_CHANGED, eventId: 'twice-mode', modeId: 'conversational', requestId: 'twice-mode' });
+  await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'twice-commit',
+    delivery: 'replace_now', source: 'user', tracks: [written('one'), written('two')] });
+  await settle();
+  await settle();
+  const ahead = h.runtime.snapshot().queue[1].narration;
+  assert.equal(ahead.assetStatus, 'ready', '提前一首合成好');
+  await h.runtime.submit({ type: PlaybackEventType.NEXT_REQUESTED, eventId: 'twice-next',
+    runtimeVersion: h.runtime.snapshot().version, songId: 'one' });
+  await settle();
+  await settle();
+  const narration = h.runtime.snapshot().queue[1].narration;
+  assert.equal(narration.assetStatus, 'ready');
+  assert.equal(narration.text, ahead.text);
+  const rejected = h.runtime.snapshot().diagnostics.filter(entry => /duplicate/i.test(String(entry.reason || '')));
+  assert.deepEqual(rejected, []);
+  assert.equal(calls.filter(id => id === 'two').length >= 1, true);
+});
+
+test('nothing published to the PWA carries a line that has not been spoken', async t => {
+  const h = fixture({ resolveTrackNarrationAsset: () => new Promise(() => {}) });
+  t.after(() => h.runtime.stop());
+  await h.runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'private-commit',
+    delivery: 'replace_now', source: 'user', tracks: [written('one'), written('two')] });
+  await settle();
+  assert.equal(h.runtime.snapshot().queue[1].narration.text.includes('Title two'), true, '后台存着');
+  assert.equal(JSON.stringify(h.messages).includes('这首可以听下去'), false, '消息里没有');
+  assert.equal(JSON.stringify(h.projected.map(item => item.snapshot)).includes('这首可以听下去'), false, '投影里没有');
 });
 
 test('historical cached narration is resolved in the background without another model preparation', async () => {
@@ -396,7 +449,7 @@ test('the boundary hook gives prewarm the in-flight boundary and reports the fai
     queueService: { projectRuntimeSnapshot() {} },
     publish() {},
     getRadioRequestService: () => ({
-      prepareContinuation: async options => { prewarmCalls.push(options); return { ok: true, prepared: true }; },
+      prepareAfterBoundary: async options => { prewarmCalls.push(options); return { ok: true, prepared: true }; },
       handleContinue: async () => ({ ok: false, code: 'MUSIC_NOT_COMMITTED', message: 'resolution failed (qq)' }),
     }),
   });
@@ -420,11 +473,40 @@ test('the boundary hook gives prewarm the in-flight boundary and reports the fai
   assert.equal(exhausted.pendingContinuation?.status, 'failed');
   assert.equal(exhausted.lastError?.message, 'MUSIC_NOT_COMMITTED: resolution failed (qq)',
     'runtime 的 lastError 同时带上具体码与原因，而不是通用文案');
-  assert.ok(prewarmCalls.length >= 1, '边界钩子同时发起下一个边界的预热');
-  assert.ok(prewarmCalls.every(call => typeof call.boundaryInFlight === 'string' && /^\d+:.+:\d+$/.test(call.boundaryInFlight)),
-    '每次预热都拿到当时的在飞边界，绝不绑定它');
-  assert.equal(prewarmCalls.at(-1).boundaryInFlight, exhausted.pendingContinuation.boundaryKey,
-    '最后一次预热与正在解析的边界同源');
+  assert.equal(prewarmCalls.length, 0, '这个边界没落定，不预热下一个');
+});
+
+test('continuation commits first, then prewarm: the host never thinks about two batches at once', async () => {
+  const order = [];
+  const prefs = new Map();
+  let prewarmSignal = null;
+  let release;
+  const runtime = createPlaybackRuntimeComposition({
+    prefs: { getPref: key => prefs.get(key), setPref: (key, value) => prefs.set(key, value) },
+    queueService: { projectRuntimeSnapshot() {} },
+    publish() {},
+    getRadioRequestService: () => ({
+      handleContinue: async () => { order.push('live'); return { ok: true, tracks: [{}] }; },
+      prepareAfterBoundary: options => {
+        order.push('prewarm');
+        prewarmSignal = options.signal;
+        assert.equal(options.sessionId, 'conversation:primary');
+        assert.equal(options.isCurrent(), true);
+        return new Promise(resolve => { release = resolve; });
+      },
+    }),
+  });
+  await runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'program:order', delivery: 'replace_now',
+    source: 'user', tracks: [track('order')] });
+  const loading = runtime.snapshot();
+  await runtime.submit({ type: PlaybackEventType.TRACK_STARTED, eventId: 'track:order:started',
+    runtimeVersion: loading.version, songId: 'order', programId: 'program', correlationId: loading.txn.correlationId });
+  await settle();
+  await settle();
+  assert.deepEqual(order, ['live', 'prewarm']);
+  await runtime.stop();
+  assert.equal(prewarmSignal.aborted, true, '停机时还在预热的 host 回合被取消');
+  release({ ok: true });
 });
 
 test('a failed continuation is retried after restart within a bounded number of attempts', async () => {
@@ -474,4 +556,140 @@ test('a failed continuation is retried after restart within a bounded number of 
   assert.deepEqual(observed.map(entry => entry.state.pendingContinuation.attempts), [2, 3, 3]);
   assert.equal(observed[0].state.pendingContinuation.boundaryKey, observed[1].state.pendingContinuation.boundaryKey);
   assert.deepEqual(observed.map(entry => entry.state.phase), ['exhausted', 'exhausted', 'exhausted']);
+});
+
+// 停得够久再接着放：旧串词作废的几首交给原 host 重写；交不出去就按代次报失败，安静播放。
+async function pausedForHours(options) {
+  let clock = 1_000_000;
+  const lined = songId => ({ ...track(songId), intro: undefined,
+    narration: { status: 'ready', assetStatus: 'missing', text: `《Title ${songId}》。`, generationRevision: 1, writtenAt: clock - 1_000 } });
+  const { runtime } = fixture({ now: () => clock, artwork: null, ...options });
+  await runtime.ready;
+  await runtime.submit({ type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'gap:commit', delivery: 'replace_now',
+    source: 'user', tracks: [lined('one'), lined('two')] });
+  // 串词资产解析没配置，会先报一个失败事件；等它落定再取版本。
+  await settle();
+  const ids = () => { const s = runtime.snapshot(); return { songId: s.currentSongId, programId: s.txn?.programId,
+    correlationId: s.txn?.correlationId, queueItemId: s.txn?.queueItemId, listeningSessionId: s.activeListeningSessionId,
+    outputGeneration: s.outputGeneration, runtimeVersion: s.version }; };
+  await runtime.submit({ type: PlaybackEventType.TRACK_STARTED, eventId: 'gap:started', ...ids() });
+  await settle();
+  clock += 30_000;
+  await runtime.submit({ type: PlaybackEventType.PAUSE_REQUESTED, eventId: 'gap:pause', ...ids(), positionSeconds: 30 });
+  clock += 3 * 60 * 60 * 1000;
+  await runtime.submit({ type: PlaybackEventType.RESUME_REQUESTED, eventId: 'gap:resume', ...ids() });
+  await settle();
+  await settle();
+  return runtime;
+}
+
+test('隔久恢复：把开了新代次的那几首交给 rewriteTrackLines', async () => {
+  const calls = [];
+  const runtime = await pausedForHours({ rewriteTrackLines: async input => { calls.push(input); } });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].tracks.map(item => item.songId), ['two']);
+  assert.equal(calls[0].resumedAtMs - calls[0].stoppedAtMs, 3 * 60 * 60 * 1000);
+  assert.equal(runtime.listeningSnapshot().queue[1].narration.status, 'preparing');
+  await runtime.stop();
+});
+
+test('没配置重写或重写出错：这几首按代次报失败，安静播放', async () => {
+  for (const options of [{}, { rewriteTrackLines: async () => { throw new Error('no host'); } }]) {
+    const runtime = await pausedForHours(options);
+    const two = runtime.listeningSnapshot().queue[1];
+    assert.equal(two.narration.status, 'absent');
+    assert.equal(two.narration.generationRevision, 2);
+    await runtime.stop();
+  }
+});
+
+test('already-expired automatic narration window skips TTS invocation and records timeout', async t => {
+  let now = 1_000;
+  let calls = 0;
+  const h = fixture({
+    now: () => now,
+    resolveTrackNarrationAsset: async () => { calls += 1; return { ttsUrl: '/late.mp3' }; },
+  });
+  t.after(() => h.runtime.stop());
+  await h.runtime.submit({
+    type: PlaybackEventType.PROGRAM_COMMITTED, eventId: 'expired-win-commit', delivery: 'replace_now',
+    source: 'user', tracks: [{ ...track('one'), intro: undefined, narration: { status: 'preparing', generationRevision: 1 } }, track('two')],
+  });
+  await settle();
+  await settle();
+  const loading = h.runtime.snapshot();
+  const started = await h.runtime.submit({
+    type: PlaybackEventType.TRACK_STARTED, eventId: 'expired-win-started',
+    runtimeVersion: loading.version, songId: 'one', programId: 'program',
+    correlationId: loading.txn.correlationId, queueItemId: loading.txn.queueItemId,
+    listeningSessionId: loading.activeListeningSessionId, outputGeneration: loading.outputGeneration,
+  });
+  assert.equal(started.accepted, true, started.reason);
+  // 推进时钟跨过 60 秒 maxStartOffsetMs，再把串词送达 runtime。
+  now += 65_000;
+  const playing = h.runtime.snapshot();
+  await h.runtime.submit({
+    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'expired-win-line',
+    queueItemId: playing.txn.queueItemId, generationRevision: 1,
+    listeningSessionId: playing.activeListeningSessionId, songId: 'one', programId: 'program',
+    text: '《Title one》这一段已经过了开始窗口。',
+  });
+  await settle();
+  await settle();
+  assert.equal(calls, 0, '窗口已过不得再调 TTS');
+  assert.equal(h.runtime.snapshot().queue[0].narration.assetStatus, 'failed');
+  assert.equal(h.runtime.snapshot().queue[0].narration.synthesisReason, 'timeout');
+});
+
+test('POSITION_REPORTED publishes wire runtime-state without duplicate queue-update while updating QueueService runtimeVersion', async t => {
+  const h = fixture({ artwork: null });
+  t.after(() => h.runtime.stop());
+  const withLyric = id => ({ ...track(id), lyric: `[00:00] lyric-${id}` });
+  await h.runtime.submit({
+    type: PlaybackEventType.PROGRAM_COMMITTED,
+    eventId: 'pos-commit',
+    delivery: 'replace_now',
+    source: 'user',
+    tracks: ['p0', 'p1', 'p2', 'p3'].map(withLyric),
+  });
+  const loading = h.runtime.snapshot();
+  await h.runtime.submit({
+    type: PlaybackEventType.TRACK_STARTED,
+    eventId: 'pos-started',
+    runtimeVersion: loading.version,
+    songId: 'p0',
+    programId: 'program',
+    correlationId: loading.txn.correlationId,
+    listeningSessionId: loading.activeListeningSessionId,
+    outputGeneration: loading.outputGeneration,
+  });
+
+  h.messages.length = 0;
+  h.projected.length = 0;
+
+  const playing = h.runtime.snapshot();
+  const reported = await h.runtime.submit({
+    type: PlaybackEventType.POSITION_REPORTED,
+    eventId: 'pos-report-1',
+    runtimeVersion: playing.version,
+    songId: 'p0',
+    programId: 'program',
+    correlationId: playing.txn.correlationId,
+    listeningSessionId: playing.activeListeningSessionId,
+    outputGeneration: playing.outputGeneration,
+    positionSeconds: 12.5,
+  });
+  assert.equal(reported.accepted, true, reported.reason);
+
+  const queueUpdates = h.messages.filter(m => m.type === 'queue-update');
+  const runtimeStates = h.messages.filter(m => m.type === 'runtime-state');
+  assert.equal(queueUpdates.length, 0, '进度上报不再重复广播 queue-update');
+  assert.equal(runtimeStates.length, 1);
+  assert.equal(runtimeStates[0].state.positionSeconds, 12.5);
+  assert.equal(runtimeStates[0].state.queue[0].lyric, '[00:00] lyric-p0');
+  assert.equal(runtimeStates[0].state.queue[1].lyric, '[00:00] lyric-p1');
+  assert.equal(runtimeStates[0].state.queue[2].lyric, null);
+  assert.equal(runtimeStates[0].state.queue[3].lyric, null);
+  assert.deepEqual(h.projected.at(-1).extra, { publish: false });
+  assert.equal(h.queueService.snapshot().runtimeVersion, h.runtime.snapshot().version);
 });

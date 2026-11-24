@@ -12,6 +12,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { StationAgent } from './StationAgent.js';
+import { createRadioHost } from './RadioHost.js';
 import { EventType, createEvent, radiohostAgentId, StationAgentId } from './communication/messages.js';
 
 const testRoot = mkdtempSync(resolve(tmpdir(), 'lunara-reflection-int-test-'));
@@ -42,7 +43,10 @@ async function runIntegration() {
   const refl = station.getReflectionAgent();
   assert(refl !== null, 'station.getReflectionAgent() 非空');
 
-  // 取一个伙伴
+  // 显式注册测试伙伴；空安装只创建根 Lunara，不再隐式补一个旧版伙伴。
+  station.registry.register(createRadioHost({
+    id: 'reflection-fixture', name: '反思测试伙伴', voiceProfileId: '',
+  }));
   const host = station.listRadioHosts()[0];
   assert(!!host, 'station 有持久伙伴身份，不依赖全局激活');
   const radiohostId = host.id;

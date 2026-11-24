@@ -9,6 +9,7 @@ import { userFacingToastMessage } from './core/toastPolicy.js';
 import { createPlaybackController } from './features/playback/playbackController.js';
 import { createPlaybackRuntimeClient } from './features/playback/playbackRuntimeClient.js';
 import { createNarrationCoordinator } from './features/playback/narrationCoordinator.js';
+import { createAudioTextSync } from './features/playback/audioTextSync.js';
 import { createPlaybackView } from './features/playback/playbackView.js';
 import { createConversationController } from './features/conversations/conversationController.js';
 import { createConversationView } from './features/conversations/conversationView.js';
@@ -16,8 +17,10 @@ import { createTodayView } from './features/today/todayView.js';
 import { createListeningShellController } from './features/conversations/listeningShellController.js';
 import { createListeningReactions } from './features/listening/listeningReactions.js';
 import { createReactionConfirm } from './features/listening/reactionConfirm.js';
-import { canDismissRequiredSetup, createFirstRunCoordinator } from './features/conversations/firstRunCoordinator.js';
-import { createChatController } from './features/chat/chatController.js';
+import { canDismissRequiredSetup, createFirstRunCoordinator, firstRunReadiness } from './features/conversations/firstRunCoordinator.js';
+import { createOnboardingCard, createOnSetupRequired, onboardingPrefersChatPane, onboardingView } from './features/conversations/onboardingCard.js';
+import { ROOT_VIRTUAL_PERSON_ID } from './features/radiohost/radiohostController.js';
+import { createChatController, createTurnVoicePlayer } from './features/chat/chatController.js';
 import { createChatInputView } from './features/chat/chatInputView.js';
 import { escapeHtml } from './features/chat/chatMarkup.js';
 import { createRadiohostController } from './features/radiohost/radiohostController.js';
@@ -32,6 +35,7 @@ import { initMemoryView } from './features/memory/memoryView.js';
 import { createSettingsController } from './features/settings/settingsController.js';
 import { initSettingsView } from './features/settings/settingsView.js';
 import { createPresenceAmbientSetting } from './features/settings/presenceAmbientSetting.js';
+import { createCompanionEffect } from './features/listening/companionEffect.js';
 import { createWebAccessSetting } from './features/settings/webAccessSetting.js';
 import { createRoutineSettings } from './features/settings/routineSettings.js';
 import { createLlmProvidersSettings } from './features/settings/llmProvidersSettings.js';
@@ -55,10 +59,16 @@ import { createRuntimePlaybackCallbacks } from './runtimePlaybackCallbacks.js';
 import { createTooltipLayer } from './core/tooltip.js';
 
 const $ = s => document.querySelector(s);
+if (window.lunaraDesktop) {
+  document.documentElement.dataset.desktopShell = '1';
+} else {
+  delete document.documentElement.dataset.desktopShell;
+}
 const audio = $('#audio');
 const audioMusic = $('#audioMusic');
 let conversationController;
 let conversationView;
+let todayView = null;
 let topBarView = null;
 let appearancePop = null;
 let timelineView = null;
@@ -67,7 +77,12 @@ let autoplayRecoveryIdentity = null;
 let startupBootstrapped = false;
 let latestAuthSnapshot = null;
 let setupResumePromise = null;
-let automaticSetupPrompted = false;
+let onboardingCard = null;
+let onboardingVoices = null;
+let onboardingFallback = null;
+let onboardingSettled = false;
+let onboardingChatDefaulted = false;
+let onboardingVoiceFlight = null;
 const appStore = createAppState({
   queue: [],
   cursor: -1,
@@ -97,7 +112,7 @@ const authView = initAuthView({
 const sourceFailureWarning = createSourceFailureWarning({ onAction: ({ kind, source, code }) => {
   if (kind === 'voice') { settingsView.open(); settingsView.setPage('voice'); }
   else if (code === 'requires-auth' && authController.canLogin(source)) void authView.openSource(source);
-  else { settingsView.open(); settingsView.setPage('general'); }
+  else { settingsView.open(); settingsView.setPage('connection'); }
 } });
 const moonlightSidebar = createMoonlightSidebar().init();
 const recordingReviewView = createRecordingReviewView({
@@ -136,7 +151,10 @@ const settingsView = initSettingsView({
   },
   // 设置是壳层页面：由导航层切换，和帐本/人物走同一条路径，
   // 切到别的页面时设置自然让位，而不是继续压在聊天页上。
-  onPageEnter: () => conversationView?.openSettings?.(),
+  onPageEnter: () => {
+    recordingReviewView.close();
+    conversationView?.openSettings?.();
+  },
   onPageLeave: () => conversationView?.closeSettings?.(),
 });
 // 「设置 → 常规 → 作息」：生活上下文里工作日/上班时间/时区的来源。
@@ -148,7 +166,10 @@ const usageSettings = createUsageSettings({ apiClient });
 // 「设置 → 歌曲标签」：已入库歌曲标签的浏览与手动修正（song-tag-inspection）。
 const songTagInspector = createSongTagInspector({ apiClient, showToast });
 // 「设置 → 常规 → 陪伴」：一起听歌时伙伴会主动说话（add-companion-heartbeat）。
-const presenceAmbientSetting = createPresenceAmbientSetting({ apiClient, showToast });
+// 页头「陪伴」旁的原因按钮在后面装配；设置里改完开关后让它重读一次。
+let companionEffect = null;
+const presenceAmbientSetting = createPresenceAmbientSetting({ apiClient,
+  showToast: (...args) => { showToast(...args); void companionEffect?.refresh(); } });
 const webAccessSetting = createWebAccessSetting({ apiClient, showToast });
 const memoryController = createMemoryController({
   apiClient,
@@ -206,12 +227,18 @@ const artworkThemeController = createArtworkThemeController({
   },
 }).init();
 
-// --ambient-hue 的最终值是"主题基底或封面覆盖"，meta theme-color 只认这个解析后的值，
-// 否则封面取色关闭时会写出 hsl(null …)。
+// meta theme-color 读取当前主题实际生效背景色（--bg-page / --ink-0 / computed backgroundColor），
+// 若均为空再回退到 --ambient-hue 推导色，保证浅色素色与靛青基底等主题状态栏颜色一致。
 function syncMetaThemeColor() {
-  const resolved = Number.parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue('--ambient-hue'),
-  );
+  const styles = getComputedStyle(document.documentElement);
+  const bgColor = styles.getPropertyValue('--bg-page').trim()
+    || styles.getPropertyValue('--ink-0').trim()
+    || getComputedStyle(document.body).backgroundColor.trim();
+  if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bgColor);
+    return;
+  }
+  const resolved = Number.parseFloat(styles.getPropertyValue('--ambient-hue'));
   const hue = Number.isFinite(resolved) ? resolved : 230;
   document.querySelector('meta[name="theme-color"]')
     ?.setAttribute('content', `hsl(${hue} 30% 11%)`);
@@ -310,6 +337,12 @@ const playbackView = createPlaybackView({
     '点卡片只能切到队列里还在的歌；想让 Lunara 重新排这首，直接跟它说一句。', { curated: true }),
   onError: error => showToast('error', '播放操作失败', error.message),
   onUnlock: unlockInput,
+  getSetupGap: () => {
+    const snapshot = settingsController?.getSnapshot?.();
+    if (!snapshot?.current || !latestAuthSnapshot) return null; // 状态没读到时不下结论
+    const readiness = firstRunReadiness({ settings: snapshot, auth: latestAuthSnapshot });
+    return readiness.ready ? null : readiness.missing;
+  },
 });
 
 playbackController = createPlaybackController({
@@ -361,6 +394,7 @@ playbackRuntimeClient = createPlaybackRuntimeClient({
   narrationAudio: audio,
   musicAudio: audioMusic,
   narrationCoordinator,
+  playbackController,
   apiClient,
   locationHref: window.location.href,
   callbacks: createRuntimePlaybackCallbacks({
@@ -461,7 +495,7 @@ function handleServerMessage(m) {
   }
   else if (m.type === 'queue-update') applyQueueUpdate(m);
   else if (m.type === 'presence-activity') conversationController.consumeActivity(m.payload);
-  else if (m.type === 'presence-listener-quiet') conversationController.consumeListenerQuiet(m.payload);
+  else if (m.type === 'presence-listener-quiet') { conversationController.consumeListenerQuiet(m.payload); void companionEffect?.refresh(); }
   else if (m.type === 'environment') listeningShell.syncEnvironment(m.environment);
   else if (m.type === 'library-updated') void recordingReviewView.handleServerEvent(m);
   else if (m.type === 'thinking') playbackView.setStatus('thinking');
@@ -486,7 +520,7 @@ function handleServerMessage(m) {
 const wsClient = createWsClient({
   store: appStore,
   onMessage: handleServerMessage,
-  onOpen: () => { playbackView.setStatus('Idle'); void conversationController?.refreshListenerQuiet?.(); clientPresence?.connected(); },
+  onOpen: () => { playbackView.setStatus('Idle'); void conversationController?.refreshListenerQuiet?.(); void companionEffect?.refresh(); clientPresence?.connected(); },
   onClose: () => playbackView.setStatus('Idle'),
   onError: error => console.warn('[ws] connection error', error),
 });
@@ -503,13 +537,31 @@ const chatInputView = createChatInputView({
   compose: $('#compose'),
   input: $('#compose-input'),
   sendButton: $('#compose-send'),
+  stopButton: $('#compose-stop'),
   hint: $('#compose-hint'),
   hintText: $('#compose-hint-text'),
   onSubmit: send,
   onCancel: () => conversationController?.cancel(),
   onWarmAudio: warmAudio,
+  onEditLastUserMessage: () => {
+    const turns = conversationController?.snapshot?.().local?.turns || [];
+    const lastUser = [...turns].reverse().find(turn => turn.role === 'user' && turn.turnId);
+    if (!lastUser || !conversationController?.beginEdit?.(lastUser.turnId)) return false;
+    focusComposeEnd();
+    return true;
+  },
 });
-const chatController = createChatController({
+const freshOverlayTurnIds = new Set();
+let chatController = null;
+const turnVoicePlayer = createTurnVoicePlayer({
+  getTurn: turnId => conversationController?.snapshot?.().local?.turns?.find(item => item.turnId === turnId) || null,
+  synthesizeTurnSpeech: turnId => conversationController.synthesizeTurnSpeech(turnId),
+  touchTurnSpeech: turnId => conversationController.touchTurnSpeech(turnId),
+  getChatController: () => chatController,
+  narrationCoordinator,
+  clearStream: () => audioTextSync?.clearStream?.(),
+});
+chatController = createChatController({
   chatList,
   chatScroll,
   onTrackCardClick: button => playbackView.handleTrackCard(button),
@@ -525,16 +577,144 @@ const chatController = createChatController({
     .catch(error => showToast('error', '没能分叉', error.message)),
   // 引用只把那条消息的引用块写进输入框（可编辑文本），发送时才进账本。
   onQuoteMessage: quoteText => chatInputView.insertQuote(quoteText),
+  getPlayingTurnId: () => turnVoicePlayer.getPlayingTurnId(),
+  isTurnVoiceLoading: turnId => turnVoicePlayer.isTurnVoiceLoading(turnId),
+  narrationCoordinator,
+  hasPendingTurnAudio: turnId => freshOverlayTurnIds.has(turnId) || Boolean(playbackController?.hasOverlayForTurn?.(turnId)),
+  onToggleTurnVoice: payload => turnVoicePlayer.toggleTurnVoice(payload),
+  onSaveToJournal: item => {
+    const track = item.track?.songId ? item.track : null;
+    todayView?.openNewDraft?.({
+      type: 'note',
+      title: '',
+      content: '',
+      attachedTrack: track,
+      attachedTracks: track ? [track] : [],
+      attachedQuotes: item.text ? [{
+        turnId: item.turnId || '',
+        speaker: item.role === 'assistant' ? (item.speakerName || '伙伴') : '你',
+        ...(item.personId ? { personId: item.personId } : {}),
+        time: '',
+        text: item.text,
+      }] : [],
+    });
+    conversationView?.openToday?.();
+  },
 });
 function focusComposeEnd() {
   const input = $('#compose-input');
   input?.focus?.();
   input?.setSelectionRange?.(input.value.length, input.value.length);
 }
+function leafNodesForSync(blocks) {
+  return blocks.flatMap(node => {
+    const inlineLeaves = [...(node.children || [])].filter(
+      el => el.classList?.contains('chat-seg-action')
+        || el.classList?.contains('chat-seg-speech')
+        || el.classList?.contains('roleplay-action')
+        || el.classList?.contains('roleplay-speech'),
+    );
+    return inlineLeaves.length ? inlineLeaves : [node];
+  });
+}
+function orderedTurnBlockNodes(turnId, beatIndex = null) {
+  if (!turnId || !chatList) return [];
+  const msgEl = [...chatList.querySelectorAll('.chat-msg')].find(el => el.dataset?.turnId === turnId);
+  if (!msgEl) return [];
+  if (Number.isInteger(beatIndex)) {
+    const beatBubble = msgEl.querySelector(`.chat-beat-bubble[data-beat-index="${beatIndex}"]`);
+    if (beatBubble) {
+      const beatLeaves = [...beatBubble.querySelectorAll('.roleplay-action, .roleplay-speech')];
+      if (beatLeaves.length) return beatLeaves;
+    }
+  }
+  const beatLeaves = [...msgEl.querySelectorAll('.chat-beat-bubble .roleplay-action, .chat-beat-bubble .roleplay-speech')];
+  if (beatLeaves.length) return beatLeaves;
+  const roleplayLeaves = [...msgEl.querySelectorAll('.roleplay-action, .roleplay-speech')];
+  if (roleplayLeaves.length) return roleplayLeaves;
+  const editorialNodes = [...msgEl.querySelectorAll('.chat-editorial > p')];
+  if (editorialNodes.length) return leafNodesForSync(editorialNodes);
+  const segmentNodes = [...msgEl.querySelectorAll('.chat-segment')];
+  if (segmentNodes.length) return leafNodesForSync(segmentNodes);
+  const textEl = msgEl.querySelector('.chat-text');
+  return textEl ? [textEl] : [];
+}
+const audioTextSync = createAudioTextSync({
+  audio,
+  coordinator: narrationCoordinator,
+  documentLike: document,
+  getBeatBubbleForTask: (_task, { turnId, beatIndex }) => {
+    if (!turnId || !Number.isInteger(beatIndex) || !chatList) return null;
+    const msgEl = [...chatList.querySelectorAll('.chat-msg')].find(el => el.dataset?.turnId === turnId);
+    return msgEl?.querySelector?.(`.chat-beat-bubble[data-beat-index="${beatIndex}"]`) || null;
+  },
+  onActiveBeatChange: ({ turnId, beatIndex }) => {
+    chatController.syncPlayingBeat?.(turnId, beatIndex);
+  },
+  getTargetsForTask: task => {
+    if (!task) return [];
+    if (task.lane === 'runtime' && task.meta?.command?.type === 'PLAY_TRACK_NARRATION') {
+      if ($('#listening-intro-source')?.hidden) return [];
+      return [
+        [$('#listening-intro-text')],
+        [$('#focus-player-recommendation-text')],
+      ];
+    }
+    // 人工点击「生成语音 / ▶ 重听」时不隐藏或重放已有正文，只让按钮与当前拍高亮同步播放状态。
+    if (task.meta?.kind === 'turn_voice') return [];
+    const turnId = task.meta?.item?.sourceTurnId || null;
+    if (!turnId || !freshOverlayTurnIds.has(turnId)) return [];
+    const item = task.meta?.item;
+    const beatIndex = Number.isInteger(item?.beatIndex) ? item.beatIndex : null;
+    const nodes = orderedTurnBlockNodes(turnId, beatIndex);
+    return nodes.length ? [nodes] : [];
+  },
+});
+const unsubscribeFreshOverlay = narrationCoordinator.subscribe(event => {
+  const task = event?.task;
+  if (!task || task.meta?.kind === 'turn_voice') return;
+  const turnId = task.meta?.sourceTurnId || task.meta?.item?.sourceTurnId || null;
+  if (!turnId || !freshOverlayTurnIds.has(turnId)) return;
+  const item = task.meta?.item;
+  const isLast = item ? (item.isLastBeat !== false && !item.holdDuckLease)
+    : (task.meta?.isLastBeat !== false && !task.meta?.holdDuckLease);
+  if (event.type === 'cancelled' || event.type === 'error' || (event.type === 'finished' && isLast)) {
+    freshOverlayTurnIds.delete(turnId);
+  }
+});
+chatList?.addEventListener?.('pointerdown', () => audioTextSync.clearStream());
 chatInputView.init();
-// 「回来了」打招呼的依据：只上报窗口可见与是否在输入（add-app-open-greeting D1）。
-const clientPresence = createClientPresence({ getSocket: () => wsClient.getSocket(), input: $('#compose-input') });
+// 「回来了」打招呼的依据：只上报窗口可见、是否在输入以及当前聚焦房间（add-structured-beats-and-real-clock-presence）。
+const clientPresence = createClientPresence({
+  getSocket: () => wsClient.getSocket(),
+  input: $('#compose-input'),
+  windowLike: window,
+  getActiveSessionId: () => appStore.getState().sessionId,
+  isRoomViewActive: () => {
+    const appEl = $('#app');
+    return !appEl?.classList?.contains('settings-open') && !appEl?.classList?.contains('today-open');
+  },
+});
 clientPresence.init();
+function notifyActiveRoomFocus(sid = appStore.getState().sessionId) {
+  if (!sid || document.visibilityState === 'hidden') return;
+  const appEl = $('#app');
+  if (appEl?.classList?.contains('settings-open') || appEl?.classList?.contains('today-open')) return;
+  clientPresence.notifyRoomFocus?.(sid);
+}
+const onWindowForegroundFocus = () => {
+  if (document.visibilityState !== 'hidden') clientPresence.scheduleRoomFocus?.();
+};
+const onConversationsNavClick = () => {
+  queueMicrotask(() => notifyActiveRoomFocus());
+};
+document.addEventListener('visibilitychange', onWindowForegroundFocus);
+$('#nav-conversations')?.addEventListener?.('click', onConversationsNavClick);
+const unsubscribeRoomFocusPresence = appStore.subscribe((next, previous) => {
+  if (next.sessionId && next.sessionId !== previous?.sessionId) {
+    notifyActiveRoomFocus(next.sessionId);
+  }
+});
 const radiohostController = createRadiohostController({
   store: appStore,
   apiClient,
@@ -544,6 +724,7 @@ const radiohostView = createRadiohostView({
   store: appStore,
   documentLike: document,
   onToast: showToast,
+  saveTtsFallback: patch => settingsController.saveTtsFallback(patch),
   autoLoad: false,
   onRenderMeta: () => renderSidebarMeta(),
   onLoaded: async () => {
@@ -563,6 +744,9 @@ const radiohostView = createRadiohostView({
 conversationController = createConversationController({
   store: appStore, apiClient, storage: localStorage,
   onBeforeSend: ({ requestId }) => {
+    audioTextSync.clearStream();
+    chatController.fastForwardAllReveals?.();
+    playbackController?.stopOverlayNarrations?.();
     releaseForegroundTurn();
     state.foregroundTurnId = narrationCoordinator.beginForegroundTurn(requestId);
   },
@@ -571,27 +755,89 @@ conversationController = createConversationController({
   },
   onError: error => showToast('error', '聊天操作失败', error.message),
 });
-// 帐本：打开时才加载本地手记；浏览/编辑不切歌。作息在设置 → 常规管理。
-const todayView = createTodayView({
+function currentJournalTrack() {
+  const rt = appStore.getState().runtimeState;
+  const queue = Array.isArray(rt?.queue) ? rt.queue : [];
+  const idx = Number.isInteger(rt?.currentIndex) ? rt.currentIndex : -1;
+  const item = idx >= 0 ? queue[idx] : null;
+  if (!item?.songId || !item?.title) return null;
+  return {
+    provider: item.provider || 'qq',
+    songId: String(item.songId),
+    title: String(item.title),
+    artist: String(item.artist || ''),
+    album: String(item.album || ''),
+  };
+}
+// 手帐：打开时才加载本地手记；浏览/编辑不切歌。作息在设置 → 常规管理。
+todayView = createTodayView({
   apiClient,
   getPeople: () => appStore.getState().virtualPersons || [],
+  getNowPlaying: currentJournalTrack,
+  onTalkAboutEntry: entry => {
+    const title = String(entry?.title || '').trim();
+    const snippet = String(entry?.content || '').replace(/\s+/gu, ' ').trim().slice(0, 80);
+    const quote = [title ? `手帐《${title}》` : '刚刚在手帐里写到的内容', snippet].filter(Boolean).join('：');
+    conversationView?.openChat?.();
+    chatInputView.insertQuote(quote);
+    focusComposeEnd();
+  },
   showToast: (kind, title, message, options) => showToast(kind, title, message, options),
-  onError: error => showToast('error', '今日加载失败', error.message),
+  onError: error => showToast('error', '手帐加载失败', error.message),
 }).init();
 conversationView = createConversationView({
   controller: conversationController, store: appStore, apiClient, chatController,
   chatInputView, playbackRuntimeClient,
   sidebarPresentation: moonlightSidebar,
-  onBrowse: () => { releaseForegroundTurn(); narrationCoordinator.cancel(task => task.lane === 'foreground', 'conversation-browsed'); },
-  onTodayOpen: () => { void todayView.load(); },
-  onSettingsOpen: () => settingsView.open(),
+  onBrowse: () => {
+    audioTextSync.clearStream();
+    chatController.fastForwardAllReveals?.();
+    playbackController?.stopOverlayNarrations?.();
+    releaseForegroundTurn();
+    narrationCoordinator.cancel(task => task.lane === 'foreground', 'conversation-browsed');
+  },
+  onTodayOpen: () => { recordingReviewView.close(); void todayView.load(); },
+  onPeopleOpen: () => { recordingReviewView.close(); },
+  onPersonOpen: () => { recordingReviewView.close(); },
+  onSettingsOpen: () => { recordingReviewView.close(); settingsView.open(); },
   onSettingsClose: () => {
     void memoryView.setActive(false);
     void usageSettings.setActive(false);
     settingsView.stopPreview();
+    void syncOnboardingCard({ refreshVoices: true });
+    notifyActiveRoomFocus();
   },
   onError: error => showToast('error', '操作失败', error.message),
 }).init();
+// 生效话量：听歌来源、陪伴模式或出声的那首歌变了就重读；人物页关掉（可能改了在场性格）也重读。
+companionEffect = createCompanionEffect({
+  apiClient,
+  documentLike: document,
+  nameOf: id => conversationController.person(id)?.displayName || '',
+  restoreQuiet: () => conversationController.restoreListenerQuiet(),
+  openSettings: () => { settingsView.setPage('general'); conversationView.openSettings(); },
+  openPerson: id => conversationView.openPerson(id),
+}).init();
+let companionEffectKey = null;
+appStore.subscribe(snapshot => {
+  todayView?.refreshNowPlaying?.();
+  const rt = snapshot.runtimeState;
+  const key = [rt?.activeListeningSessionId, rt?.companionModeId, rt?.modeRevision,
+    rt?.queue?.[rt?.currentIndex]?.queueItemId].join('|');
+  if (key === companionEffectKey) return;
+  companionEffectKey = key;
+  void companionEffect.refresh();
+});
+$('#person-detail')?.addEventListener('close', () => { void companionEffect.refresh(); });
+onboardingCard = createOnboardingCard({
+  documentLike: document,
+  mount: $('#chat-scroll'),
+  setPage: pageId => settingsView.setPage(pageId),
+  openSettings: () => conversationView.openSettings(),
+  openSource: source => { void authView.openSource(source); },
+  saveTtsFallback: patch => settingsController.saveTtsFallback(patch),
+  onFreeVoiceEnabled: () => { void syncOnboardingCard({ refreshVoices: true }); },
+});
 // 「外观」浮层：时间线顶栏和舞台版式页眉共用一个面板。宿主只负责触发按钮，
 // 打开前后收起顶栏的「全部」浮层，关掉后同步两处按钮的 aria-expanded。
 appearancePop = createAppearancePopover({
@@ -603,7 +849,7 @@ appearancePop = createAppearancePopover({
     material: () => nocturneMaterial.material(),
     setMaterial: name => nocturneMaterial.set(name),
     base: () => themeController.modernistBase(),
-    setBase: name => themeController.setModernistBase(name),
+    setBase: name => { themeController.setModernistBase(name); syncMetaThemeColor(); },
     artwork: () => artworkThemeController.isEnabled(),
     setArtwork: enabled => { artworkThemeController.setEnabled(enabled); syncArtworkThemeQuick(); },
   },
@@ -639,6 +885,7 @@ const listeningShell = createListeningShellController({
   windowLike: window,
   beforePresentationChange: () => conversationView?.rememberView(),
 }).init();
+$('#focus-mode-enter')?.addEventListener('click', () => recordingReviewView.close());
 
 firstRunCoordinator = createFirstRunCoordinator({
   storage: localStorage,
@@ -648,17 +895,9 @@ firstRunCoordinator = createFirstRunCoordinator({
     sessionId, requestId, delivery,
   }),
   focusRoot: sessionId => conversationView.browse(sessionId),
-  onSetupRequired: state => {
-    // 设置已是应用内页面，不再首启强拉：只提示一次，用户自己点「设置」完成连接。
-    if (!automaticSetupPrompted) {
-      automaticSetupPrompted = true;
-      if (state.missing === 'source-login' && state.source) {
-        void authView.openSource(state.source);
-      } else {
-        showToast('error', '设置还没完成', '模型或音乐源未配置：点左侧「设置 → 模型与连接」填写后，Lunara 才能开始一起听。');
-      }
-    }
-  },
+  onSetupRequired: createOnSetupRequired({
+    openSource: source => { void authView.openSource(source); },
+  }),
   onState: state => {
     if (['started', 'returning-session', 'completed', 'autoplay-blocked'].includes(state.kind)) {
       const settings = settingsController.getSnapshot();
@@ -676,9 +915,56 @@ firstRunCoordinator = createFirstRunCoordinator({
 });
 
 function applyQueueUpdate(message) {
-  conversationController.consume(message);
   const belongs = (message.conversationId || message.sessionId) === appStore.getState().sessionId;
+  const knownTurnIds = belongs
+    ? new Set((conversationController.snapshot().local.turns || []).map(turn => turn.turnId))
+    : null;
+  const incoming = belongs
+    ? (message.messages || ((message.message?.say || message.message?.beats?.length) ? [message.message] : []))
+    : [];
+  const overlayTurnIds = belongs
+    ? new Set((message.overlayNarrations || []).map(item => item?.sourceTurnId).filter(Boolean))
+    : new Set();
+  if (belongs) {
+    for (const item of incoming) {
+      if (!item?.sourceTurnId || item.presentation === 'track_intro') continue;
+      if (overlayTurnIds.has(item.sourceTurnId)) {
+        freshOverlayTurnIds.add(item.sourceTurnId);
+        setTimeout(() => freshOverlayTurnIds.delete(item.sourceTurnId), 60_000).unref?.();
+      }
+    }
+  }
+  conversationController.consume(message);
+  if (belongs) {
+    const snapshot = conversationController.snapshot();
+    const listening = appStore.getState().runtimeState?.activeListeningSessionId === snapshot.sessionId;
+    for (const item of incoming) {
+      if (!item?.sourceTurnId) continue;
+      if (knownTurnIds?.has(item.sourceTurnId)) {
+        const mergedTurn = snapshot.local.turns.find(turn => turn.turnId === item.sourceTurnId);
+        if (mergedTurn) {
+          chatController.updateTurn?.(mergedTurn, { room: snapshot.room, listening });
+        }
+      } else if (item.presentation !== 'track_intro' && !overlayTurnIds.has(item.sourceTurnId)
+        && !(Array.isArray(item.beats) && item.beats.length > 1)) {
+        audioTextSync.streamTurn({
+          key: item.sourceTurnId,
+          getNodes: () => orderedTurnBlockNodes(item.sourceTurnId),
+        });
+      }
+    }
+  }
   playbackView.handleQueueUpdate({ ...message, overlayNarrations: belongs ? message.overlayNarrations : [] });
+  if (belongs) {
+    for (const item of incoming) {
+      if (!item?.sourceTurnId || item.beatProgress?.done !== true) continue;
+      playbackController.sealTurnDuckLease?.(item.sourceTurnId);
+      if (!playbackController.hasOverlayForTurn?.(item.sourceTurnId)) {
+        chatController.fastForwardTurn?.(item.sourceTurnId);
+        freshOverlayTurnIds.delete(item.sourceTurnId);
+      }
+    }
+  }
 }
 
 function unlockInput() {
@@ -734,9 +1020,16 @@ async function resumeFirstRunAfterSetup() {
 const unsubscribeFirstRunAuth = authController.subscribe(snapshot => {
   latestAuthSnapshot = snapshot;
   void resumeFirstRunAfterSetup();
+  void syncOnboardingCard();
 });
 const unsubscribeFirstRunSettings = settingsController.subscribe(() => {
   void resumeFirstRunAfterSetup();
+  void syncOnboardingCard();
+});
+const unsubscribeOnboardingPeople = appStore.subscribe((next, previous) => {
+  if (next.virtualPersons !== previous.virtualPersons) {
+    void syncOnboardingCard({ refreshVoices: onboardingVoices == null });
+  }
 });
 
 async function bootstrapFirstRun() {
@@ -756,15 +1049,65 @@ async function bootstrapFirstRun() {
     listeningShell.syncEnvironment(environmentResult.value.environment);
   }
 
-  let peopleReady = false;
-  try { peopleReady = await radiohostView.load(); } catch {}
   startupBootstrapped = true;
+  let peopleReady = false;
+  try { peopleReady = await radiohostView.load(); }
+  catch {
+    peopleReady = false;
+    if (onboardingVoices == null && !onboardingVoiceFlight) await syncOnboardingCard({ refreshVoices: true });
+  }
   await firstRunCoordinator.start({
     runtime: hasRuntime ? now.runtime : null,
     settings,
     auth,
     rooms: peopleReady ? conversationController.snapshot().rooms : [],
   });
+}
+
+function paintOnboardingCard() {
+  const settings = settingsController.getSnapshot();
+  const auth = latestAuthSnapshot;
+  if (!settings?.current || !auth) {
+    onboardingCard.render(null);
+    return;
+  }
+  const root = (appStore.getState().virtualPersons || []).find(person => person.id === ROOT_VIRTUAL_PERSON_ID);
+  const view = onboardingView({
+    settings,
+    auth,
+    voicesBody: onboardingVoices == null ? null : { voices: onboardingVoices },
+    customBody: { config: { fallback: onboardingFallback } },
+    rootVoiceId: root?.voiceProfileId || '',
+  });
+  const incomplete = ['model', 'music', 'voice'].some(id => view.checklist[id] !== 'complete');
+  if (!incomplete) onboardingSettled = true;
+  onboardingCard.render(view);
+  if (onboardingPrefersChatPane({ incomplete, alreadyDefaulted: onboardingChatDefaulted })) {
+    onboardingChatDefaulted = true;
+    listeningShell.setMobilePane('chat');
+  }
+}
+
+async function syncOnboardingCard({ refreshVoices = false } = {}) {
+  if (!startupBootstrapped || !onboardingCard || onboardingSettled) return;
+  if (refreshVoices) {
+    if (!onboardingVoiceFlight) {
+      onboardingVoiceFlight = Promise.all([
+        apiClient.get('/api/station/voices'),
+        apiClient.get('/api/tts/custom'),
+      ]).then(([voiceBody, customBody]) => {
+        onboardingVoices = Array.isArray(voiceBody?.voices) ? voiceBody.voices : [];
+        onboardingFallback = customBody?.config?.fallback ?? null;
+      }).catch(() => {
+        if (onboardingVoices == null) onboardingVoices = [];
+      }).finally(() => {
+        onboardingVoiceFlight = null;
+      });
+    }
+    await onboardingVoiceFlight;
+    if (onboardingSettled) return;
+  }
+  paintOnboardingCard();
 }
 
 void bootstrapFirstRun().catch(error => {
@@ -839,8 +1182,15 @@ window.addEventListener('beforeunload', event => {
   tasteView.destroy();
   memoryView.destroy();
   conversationView.destroy();
+  onboardingCard?.destroy();
   listeningShell.destroy();
   chatInputView.destroy();
+  document.removeEventListener('visibilitychange', onWindowForegroundFocus);
+  $('#nav-conversations')?.removeEventListener?.('click', onConversationsNavClick);
+  unsubscribeRoomFocusPresence();
+  unsubscribeFreshOverlay();
+  turnVoicePlayer.destroy();
+  chatController.destroy?.();
   clientPresence.destroy();
   radiohostView.destroy();
   wsClient.destroy();
@@ -856,5 +1206,6 @@ window.addEventListener('beforeunload', event => {
   artworkThemeController.destroy();
   sidebarResize.destroy();
   moonlightSidebar.destroy();
+  void todayView?.flushPendingDelete?.({ keepalive: true });
   todaySplit.destroy();
 }, { once: true });

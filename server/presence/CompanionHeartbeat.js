@@ -189,6 +189,14 @@ export class CompanionHeartbeat {
     this.refresh();
   }
 
+  /** 别的唤醒（回来时的问候）在这个聊天里叫醒过她：算作一拍，从这一刻重新算，之前的提前与改期作废。 */
+  noteExternalWake(sessionId) {
+    if (!sessionId) return;
+    this._remember(this.lastWakeAt, sessionId, this.now());
+    if (this.wake?.sessionId === sessionId) Object.assign(this.wake, { nudge: null, retry: null, retries: 0 });
+    this.refresh();
+  }
+
   pending() {
     const wake = this.wake;
     return wake ? { sessionId: wake.sessionId, personId: wake.personId, dueAtMs: wake.dueAtMs, reason: wake.reason } : null;

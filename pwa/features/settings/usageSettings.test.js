@@ -212,7 +212,8 @@ test('激活后读取报告并渲染统计卡、热力图、按模型与失败�
   assert.match(html, /智谱 · zhipu\/glm-5\.3-flash/u);
   assert.match(html, /思考 120/u);
   // 失败分类
-  assert.match(html, /provider_error × 1/u);
+  assert.match(html, /服务商异常 · provider_error × 1/u);
+  assert.match(html, /用量热力图/u);
   assert.match(html, /账本保留 30 天/u);
   // 只读：没有写请求的 API 面（apiClient 只有 get）
   assert.equal(typeof view.refresh, 'function');
@@ -288,10 +289,21 @@ test('隐藏时不请求，重复激活不重复拉取', async () => {
 });
 
 test('注册表不可用时用 provider id 显示，不猜名字', async () => {
-  const { dom, view } = setup({ providers: 'throw' });
+  const { dom, view } = setup({
+    providers: 'throw',
+    report: {
+      ...makeReport(),
+      byModel: [
+        ...makeReport().byModel,
+        { provider: '', model: 'local/qwen', calls: 2, outputTokens: 200, promptTokens: 0, reasoningTokens: 0 },
+      ],
+    },
+  });
   view.setActive(true);
   await settle();
   assert.match(dom.host.innerHTML, /prov-1 · deepseek\/deepseek-flash/u);
+  assert.match(dom.host.innerHTML, /未记录服务商 · local\/qwen/u);
+  assert.doesNotMatch(dom.host.innerHTML, /未记录 provider/u);
 });
 
 test('悬浮提示：指针移到某天格子/柱子上显示日期与 token，移开隐藏', async () => {

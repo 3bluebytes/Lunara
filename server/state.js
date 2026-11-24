@@ -1,9 +1,7 @@
 // state.js — STATE.DB
 // messages / plays / plan / prefs，全部 SQLite 单文件，跨重启持久。
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from './sqlite.js';
 import { resolveDatabasePath } from './runtimePaths.js';
 import { ensureDataRootReady } from './app/dataRootMigration.js';
 import { ensureRetiredRadioCleaned } from './app/retiredRadioCleanup.js';
@@ -16,10 +14,7 @@ ensureDataRootReady();
 ensureRetiredRadioCleaned();
 
 const DB_PATH = resolveDatabasePath();
-mkdirSync(dirname(DB_PATH), { recursive: true });
-
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
+const db = openSqliteDatabase(DB_PATH);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS messages (
@@ -109,29 +104,46 @@ const _stmts = {
   recentPlays: db.prepare(
     `SELECT ts, title, artist, album FROM plays ORDER BY ts DESC LIMIT ?`
   ),
-  // 推荐新鲜度：窗口内实播身份（只读；既有 recentPlays 契约不变）
+  // 推荐新鲜度：窗口内实播身份（只读；排除技术失败与未播被替代行，既有 recentPlays 契约不变）
   recentPlaysIdentitySince: db.prepare(
-    `SELECT ts, song_id, source, artist FROM plays WHERE ts >= ? AND song_id IS NOT NULL ORDER BY ts DESC LIMIT 5000`
+    `SELECT ts, song_id, source, title, artist FROM plays
+     WHERE ts >= ? AND song_id IS NOT NULL
+       AND (outcome IS NULL OR outcome NOT IN ('technical_failure', 'superseded'))
+     ORDER BY ts DESC LIMIT 5000`
   ),
   playsToday: db.prepare(
     `SELECT * FROM plays WHERE ts >= ? ORDER BY ts ASC`
   ),
-  // outcome 上报：找到该 song_id 在合理排队窗口内最近一行
+  playsInRange: db.prepare(
+    `SELECT id, ts, song_id, title, artist, album, source, outcome
+     FROM plays
+     WHERE ts >= ? AND ts < ?
+       AND (outcome IS NULL OR outcome NOT IN ('technical_failure', 'superseded'))
+     ORDER BY ts DESC LIMIT ?`
+  ),
+  // outcome 上报：找到该 song_id（按可选 canonical provider 过滤）在合理排队窗口内最近一行
   findRecentPlayBySong: db.prepare(
     `SELECT id, outcome, query, song_id, title, artist, album, duration, source
      FROM plays
      WHERE song_id = ? AND ts >= ?
      ORDER BY ts DESC LIMIT 1`
   ),
+  findRecentPlayBySongAndSource: db.prepare(
+    `SELECT id, outcome, query, song_id, title, artist, album, duration, source
+     FROM plays
+     WHERE song_id = ? AND ts >= ?
+       AND (lower(source) = ? OR lower(source) LIKE ? OR lower(source) LIKE ?)
+     ORDER BY ts DESC LIMIT 1`
+  ),
   updateOutcome: db.prepare(
     `UPDATE plays SET outcome = ?, played_seconds = ? WHERE id = ?`
   ),
-  // 推荐配额的「近 N 天实际占比」：只数真正听过的行，技术失败/跳过/拉黑不算
+  // 推荐配额的「近 N 天实际占比」：只数真正听过的行，技术失败/跳过/拉黑/被替代不算
   // 用户的选择，把它们算进占比会让一次网络故障看起来像「我更爱听另一个源」。
   sourceMixSince: db.prepare(
     `SELECT source AS provider, COUNT(*) AS n FROM plays
      WHERE ts >= ? AND source IS NOT NULL AND source != ''
-       AND (outcome IS NULL OR outcome NOT IN ('banned', 'technical_failure', 'skipped'))
+       AND (outcome IS NULL OR outcome NOT IN ('banned', 'technical_failure', 'skipped', 'superseded'))
      GROUP BY source`
   ),
   // 给 consolidation 用：自 ts 起所有 plays 行
@@ -229,15 +241,19 @@ export function playsToday() {
 // outcome 上报：找最近一段排队窗口内该 song_id 的 plays 行并更新。
 // 「先到先得」：已是 final outcome 不覆盖。
 const FINAL_OUTCOMES = new Set(['completed', 'banned']);
-const VALID_OUTCOMES = new Set(['completed', 'skipped', 'banned', 'partial']);
+const VALID_OUTCOMES = new Set(['completed', 'skipped', 'banned', 'partial', 'technical_failure', 'superseded']);
 const OUTCOME_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const normalizePlayProvider = value => String(value ?? '').split(/[:-]/)[0].trim().toLowerCase();
 
-export function recordOutcome({ song_id, outcome, played_seconds }) {
+export function recordOutcome({ song_id, provider = null, source = null, outcome, played_seconds }) {
   if (!song_id || !VALID_OUTCOMES.has(outcome)) {
     return { ok: false, error: 'invalid input' };
   }
   const since = Date.now() - OUTCOME_MATCH_WINDOW_MS;
-  const row = _stmts.findRecentPlayBySong.get(String(song_id), since);
+  const scopedProvider = normalizePlayProvider(provider ?? source);
+  const row = scopedProvider
+    ? _stmts.findRecentPlayBySongAndSource.get(String(song_id), since, scopedProvider, `${scopedProvider}:%`, `${scopedProvider}-%`)
+    : _stmts.findRecentPlayBySong.get(String(song_id), since);
   if (!row) return { ok: true, updated: 0, skipped: 'no-recent-play' };
   const play = {
     query: row.query,
@@ -268,6 +284,10 @@ export function playsWithOutcomeSince(ts) {
   return _stmts.playsWithOutcomeSince.all(ts);
 }
 
+export function playsForDateRange(startMs, endMs, limit = 50) {
+  return _stmts.playsInRange.all(Number(startMs) || 0, Number(endMs) || 0, Math.min(100, Math.max(1, Number(limit) || 50)));
+}
+
 export function playsCountSince(ts) {
   return _stmts.playsCountSince.get(ts).n;
 }
@@ -279,7 +299,7 @@ export function messagesSince(ts) {
 export function outcomeStats({ since } = {}) {
   const ts = since || (Date.now() - 14 * 24 * 3600 * 1000);
   const rows = _stmts.outcomeStatsSince.all(ts);
-  const out = { completed: 0, skipped: 0, banned: 0, partial: 0, none: 0 };
+  const out = { completed: 0, skipped: 0, banned: 0, partial: 0, technical_failure: 0, superseded: 0, none: 0 };
   for (const r of rows) {
     const k = r.outcome || 'none';
     out[k] = (out[k] || 0) + r.n;
@@ -338,7 +358,7 @@ export const ttsFailureLog = createSynthesisFailureLog({ db });
 export default {
   logMessage, recentMessages, messagesSince,
   logPlay, recentPlays, recentPlaysIdentitySince, playsToday,
-  recordOutcome, playsWithOutcomeSince, playsCountSince, outcomeStats, bannedSongIdsSince,
+  recordOutcome, playsWithOutcomeSince, playsForDateRange, playsCountSince, outcomeStats, bannedSongIdsSince,
   startConsolidation, finishConsolidation, recentConsolidations, lastConsolidation, lastConsolidationAt,
   savePlan, loadPlan, setPref, getPref,
   ttsFailureLog,

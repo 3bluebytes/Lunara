@@ -178,3 +178,23 @@ test('a failure on a remote or unknown media source does not touch local assets'
   assert.equal(traces[0].provider, null);
   assert.equal(JSON.stringify(traces[0]).includes('cdn.example.test'), false);
 });
+
+test('an accepted track failure also syncs technical_failure outcome with provider when available', async () => {
+  const outcomes = [];
+  const state = {
+    version: 12,
+    currentIndex: 0,
+    queue: [{ queueItemId: 'queue:item-1', songId: '000wcxQm0VLAtW', source: 'qq', url: '/audio/abc.mp3' }],
+  };
+  const service = new PlaybackOperationsService({
+    applyOutcome: async payload => { outcomes.push(payload); return { ok: true, updated: 1 }; },
+    playbackRuntime: { submit: async () => ({ accepted: true, state, commands: [], effects: [] }) },
+    mediaAssets: { quarantineByUrl: async () => ({ provider: 'qq', songId: '000wcxQm0VLAtW' }) },
+  });
+  const res = await service.dispatch({
+    type: PlaybackEventType.TRACK_FAILED, eventId: 'failed-sync', runtimeVersion: 12,
+    queueItemId: 'queue:item-1', songId: '000wcxQm0VLAtW', error: 'MEDIA_ERR_DECODE', positionSeconds: 12.6,
+  });
+  assert.equal(res.ok, true);
+  assert.deepEqual(outcomes, [{ song_id: '000wcxQm0VLAtW', source: 'qq', outcome: 'technical_failure', played_seconds: 12.6 }]);
+});

@@ -12,7 +12,7 @@ import * as llm from '../llm.js';
 import { MemoryType, MemorySource, createMemoryRecord } from '../memory/types.js';
 import { defaultPersonaPreset, getPersonaPreset } from '../persona/personaPresets.js';
 
-const PRODUCT_TONE = 'Lunara 是一个私人电台应用，风格温和、克制、深夜陪伴感强。伙伴不是助手，不是聊天机器人，而是一个安静的、有品味的深夜电台人声。';
+const PRODUCT_TONE = 'Lunara 是一个有温度的音乐与陪伴空间。每位伙伴都是鲜活、真实、有独立审美的同行者，说话风格、情绪温度与作息气质完全贴合各自的人设与用户期望。';
 
 const PERSONA_DRAFT_LIMITS = {
   name: 20, character: 100, speechHabit: 200, emotionalExpression: 150,
@@ -114,7 +114,7 @@ export function resolvePreset(value) {
  * 注意：本函数**不接受也不读任何音色信息**。这不是遗漏——把音色写进来会
  * 破坏“人设与声音自由搭配”这一目标（同一个人设配不同音色应产出相同人格）。
  */
-function buildPersonaPrompt(preset, personaHint) {
+export function buildPersonaPrompt(preset, personaHint) {
   const presetSection = `人设名称：${preset.displayName}
 人设定位：${preset.summary}
 性格底色：${preset.character}
@@ -127,39 +127,103 @@ function buildPersonaPrompt(preset, personaHint) {
 名字候选：${(preset.nameCandidates || []).join('、')}`;
 
   const hintSection = personaHint
-    ? `\n用户对这个人物的期望："""${personaHint}"""\n用户的期望优先于上面的预设；两者冲突时以用户为准，但保留预设中未被冲突的维度。`
-    : '\n用户没有额外期望，请以预设为准，把它展开成具体、有细节、有人味的内容，不要换一个人。';
+    ? `\n用户对这个人物的期望："""${personaHint}"""\n用户的期望优先于上面的预设；两者冲突时以用户为准，同时保留预设中未被冲突的维度。`
+    : '\n用户尚未填写额外期望，请顺着预设底色把它展开成具体、有细节、有人味的内容，保持同一个人物气质。';
 
-  return `你正在为一个私人电台应用 "Lunara" 完善一位电台伙伴的人格。
+  return `你正在为音乐与陪伴应用 "Lunara" 塑造一位伙伴的人格。
 
 ${presetSection}
 ${hintSection}
 
 产品调性：${PRODUCT_TONE}
 
-请将伙伴人格拆分为以下 6 个维度，每个维度给出具体、有故事感、有人味的内容，不要泛泛而谈。
+请将伙伴人格拆分为以下 6 个维度，每个维度都采用正面、具体、可感知的行为与细节描写。
+说话方式写性格和动机怎样让她在不同情境里说话不一样；不要发明固定的口头禅、尾音、语气词或标志性动作（用户期望里明确写了的照常保留）。
 名字从名字候选中选择，除非用户明确指定了名字。
 
-请输出严格的 JSON，不要前缀后缀和代码块：
+请输出严格的 JSON，仅输出 JSON 对象本身：
 {
   "name": "伙伴名，单个人名，2-4 个字",
-  "character": "性格底色（2-8 字）。如：俏皮可爱、话少踏实、幽默风趣、毒舌温柔、文艺敏感、松弛搞怪",
-  "speechHabit": "说话习惯描述（20-60 字）。如：短句、碎碎念、善用比喻、喜欢调侃、擅长讲故事、认真解释",
-  "emotionalExpression": "情感表达方式（15-40 字）。如：直接表达、含蓄暗示、陪伴式回应、玩笑式、冷静理性",
-	  "musicTaste": "音乐审美的多维度描述（20-60 字）。包含偏好的年代、流派、节奏、情绪、场景",
-	  "interpersonalDistance": "人际距离定位（10-30 字）。如：像朋友、像深夜电台伙伴、像陪伴者、像专业音乐编辑",
-	  "backgroundStory": "故事感设定（40-120 字）。给人一个有经历、有人味的故事背景",
-	  "boundaries": "边界设定（15-40 字）。说明这个伙伴不该越界的地方，例如不过度打扰、不替代用户判断、不打探隐私"
-	}`;
+  "character": "性格底色（4-20 字）。如：俏皮爽朗、沉静踏实、机敏风趣、嘴硬心软、文艺敏锐、松弛搞怪",
+  "speechHabit": "说话习惯描述（20-60 字）。写出说话方式在不同情境下怎么变，以及为什么这样说",
+  "emotionalExpression": "情感表达方式（15-40 字）。具体写出开心、关心或认真探讨时如何流露情绪",
+  "musicTaste": "音乐审美的多维度描述（20-60 字）。包含偏爱的年代、流派、编曲质感与听歌场景",
+  "interpersonalDistance": "人际距离定位（10-35 字）。具体写出像怎样的朋友、同行者或音乐搭档",
+  "backgroundStory": "故事感设定（40-120 字）。给人一个有生活细节与听歌经历的背景",
+  "boundaries": "相处分寸（15-45 字）。用正面语言写出如何尊重对方节奏、真诚交流并把握分寸"
+}`;
+}
+
+/**
+ * 构建显式「AI 扩写完善」提示词（适配 persona_generation 的 JSON 结构化输出契约）。
+ */
+export function buildPersonaExpandPrompt({ draft = '', displayName = '', preset = null } = {}) {
+  const cleanDraft = String(draft || '').trim();
+  const cleanName = String(displayName || '').trim();
+  const sections = [
+    '你正在帮用户把一段伙伴设定想法扩写为可直接编辑的四段式人格文档。',
+    `空间背景：${PRODUCT_TONE}`,
+  ];
+  if (cleanName) {
+    sections.push(`伙伴名字：${cleanName}（正文中无需写一级标题 # ${cleanName}）`);
+  }
+  if (preset) {
+    sections.push([
+      '可选灵感参考（仅在用户草稿未涉及或未冲突处辅助补足细节）：',
+      `- 方向：${preset.displayName}（${preset.summary}）`,
+      `- 性格与背景：${preset.character}；${preset.backgroundStory}`,
+      `- 说话与情感：${preset.speechHabit}；${preset.emotionalExpression}`,
+      `- 音乐偏好：${preset.musicTaste}`,
+      `- 相处态度：${preset.interpersonalDistance}；${preset.boundaries}`,
+    ].join('\n'));
+  }
+  if (cleanDraft) {
+    sections.push(`用户的原始设定草稿（最高优先级，其中的身份、背景、语气、口癖、喜好与关系定位必须完整保留并顺着它自然展开）：\n"""\n${cleanDraft}\n"""`);
+  } else {
+    sections.push('用户尚未写具体句子，请以所选灵感参考为骨架，写出鲜活具体、有生活细节的四段式人物设定。');
+  }
+  sections.push([
+    '写作要求：',
+    '1. 依次包含这四个二级标题：`## 我是谁`、`## 我说话的方式`、`## 我喜欢的音乐`、`## 我对这个用户的态度`，正文开头不写 `# 名字` 一级标题。',
+    '2. 全文采用正面、具体、可感知的行为与细节描写（遇到不同的事怎么反应、为什么这样说话、聊音乐在意什么、如何与对方相处），避免堆砌“不要…、禁止…、不是助手”等否定式禁令。',
+    '3. 「我说话的方式」写性格和动机怎样让说话随情境变化；不要发明固定的口头禅、尾音、语气词或标志性动作（草稿里写了的照常保留）。',
+    '4. 忠于用户期望的性格光谱：开朗、毒舌、理性、古风、二次元或沉静都照实刻画，仅在用户或参考方向明确需要时才使用夜间或电台意象。',
+    '5. 不写任何 TTS 音色编号、供应商名称或声线参数；全文控制在 300 至 900 字之间。',
+    '6. 请输出严格的 JSON 对象，格式固定为：{"personaDocument": "## 我是谁\\n...\\n\\n## 我说话的方式\\n...\\n\\n## 我喜欢的音乐\\n...\\n\\n## 我对这个用户的态度\\n..."}',
+  ].join('\n'));
+  return sections.join('\n\n');
+}
+
+/**
+ * 从模型响应中提取并清洗四段式 personaDocument 正文。
+ */
+export function extractExpandedPersonaDocument(rawText) {
+  const raw = String(rawText || '').trim();
+  if (!raw) return '';
+  const parsed = llm.extractJson(raw);
+  let doc = '';
+  if (parsed && typeof parsed === 'object' && typeof parsed.personaDocument === 'string') {
+    doc = parsed.personaDocument;
+  } else if (!raw.startsWith('{')) {
+    doc = raw;
+  }
+  doc = String(doc || '')
+    .replace(/^```(?:markdown|md)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+  doc = doc.replace(/^#\s+[^\n]+\n+/, '').trim();
+  return doc.slice(0, 4000);
 }
 
 /**
  * Rule-based fallback persona generation using the preset's 6 dimensions.
  *
- * 由预令直接构造，**不读任何音色字段**。
+ * 由预令直接构造，**不读任何音色字段**；完整保留用户的补充说明，不再截断为 60 字塞进说话习惯。
  */
 function generateFallbackPersona(preset, personaHint) {
-  const name = (personaHint ? extractName(personaHint) : null)
+  const cleanHint = String(personaHint || '').trim().slice(0, 4000);
+  const name = (cleanHint ? extractName(cleanHint) : null)
     || (preset.nameCandidates || [])[0]
     || preset.displayName
     || '小播';
@@ -169,12 +233,13 @@ function generateFallbackPersona(preset, personaHint) {
   return withCompatibilityFields({
     name: name.slice(0, 20),
     character: field(preset.character).slice(0, 100),
-    speechHabit: (personaHint ? `${personaHint.slice(0, 60)}，` : '') + field(preset.speechHabit).slice(0, 140),
+    speechHabit: field(preset.speechHabit).slice(0, 200),
     emotionalExpression: field(preset.emotionalExpression).slice(0, 150),
     musicTaste: field(preset.musicTaste).slice(0, 200),
     interpersonalDistance: field(preset.interpersonalDistance).slice(0, 150),
     backgroundStory: field(preset.backgroundStory).slice(0, 300),
     boundaries: field(preset.boundaries).slice(0, 150),
+    ...(cleanHint ? { supplement: cleanHint } : {}),
   });
 }
 
@@ -190,7 +255,7 @@ function extractName(hint) {
 }
 
 function withCompatibilityFields(persona) {
-  const boundaries = persona.boundaries || '不过度打扰，不打探隐私，不把一时情绪当成永久偏好';
+  const boundaries = persona.boundaries || '尊重对方的节奏与独处空间，真诚交流，就事论事地接住每一次对话';
   return {
     ...persona,
     boundaries,
@@ -311,6 +376,12 @@ export function personaToMarkdown(persona, displayName) {
   const name = displayName || persona.name || '伙伴';
   const lines = [`# ${name}`, ''];
 
+  if (persona.supplement && String(persona.supplement).trim()) {
+    lines.push('## 补充设定（优先于基础性格）');
+    lines.push(String(persona.supplement).trim());
+    lines.push('');
+  }
+
   // 一对一映射 6 维到 4 个固定 H2 section + 可选 我的故事
   if (persona.character) {
     lines.push('## 我是谁');
@@ -335,10 +406,14 @@ export function personaToMarkdown(persona, displayName) {
     lines.push(persona.musicTasteBias);
     lines.push('');
   }
-  if (persona.relationshipDistance || persona.userRelationshipNote) {
+  const distance = String(persona.interpersonalDistance || persona.relationshipDistance || '').trim();
+  const stanceNotes = [persona.boundaries, persona.userRelationshipNote]
+    .map(part => String(part || '').trim())
+    .filter(Boolean);
+  if (distance || stanceNotes.length) {
     lines.push('## 我对这个用户的态度');
-    if (persona.relationshipDistance) lines.push(`关系距离：${persona.relationshipDistance}`);
-    if (persona.userRelationshipNote) lines.push(persona.userRelationshipNote);
+    if (distance) lines.push(distance);
+    for (const note of stanceNotes) lines.push(note);
     lines.push('');
   }
   // 兜底：如果上面的字段都缺失，至少塞个最小化的人格描述

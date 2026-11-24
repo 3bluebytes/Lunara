@@ -20,7 +20,10 @@ export async function synthesizeWithin(synthesize, text, options = {}, { budgetM
   const outer = options.signal;
   outer?.throwIfAborted();
   if (typeof synthesize !== 'function') return result(null, 'not-configured');
-  const allowedMs = Math.min(Number(budgetMs) || 0, deadlineMs - startedAt);
+  const budgetLimitMs = Math.max(0, Number(budgetMs) || 0);
+  const remainingWindowMs = Number.isFinite(deadlineMs) ? deadlineMs - startedAt : Infinity;
+  const windowClipped = remainingWindowMs < budgetLimitMs;
+  const allowedMs = Math.min(budgetLimitMs, remainingWindowMs);
   if (allowedMs <= 0) return result(null, 'timeout');
   const controller = new AbortController();
   const forwardAbort = () => controller.abort(outer.reason);
@@ -29,7 +32,10 @@ export async function synthesizeWithin(synthesize, text, options = {}, { budgetM
   let onAbort;
   const timer = setTimeout(() => {
     expired = true;
-    controller.abort(new DOMException('synthesis budget expired', 'TimeoutError'));
+    // 歌剩下的开始窗口不足预算时，取消不是声音接口超时；用 AbortError + 封闭码区分，避免误报供应商故障。
+    controller.abort(windowClipped
+      ? Object.assign(new Error('narration window expired'), { name: 'AbortError', code: 'NARRATION_WINDOW_EXPIRED' })
+      : new DOMException('synthesis budget expired', 'TimeoutError'));
   }, allowedMs);
   try {
     const audio = await Promise.race([

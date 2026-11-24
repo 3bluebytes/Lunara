@@ -264,3 +264,70 @@ test('有推荐也不许说已经安排或在放', async () => {
   assert.equal(claim.ok, false);
   assert.equal(claim.facts.rejectedRule, 'playback_claim');
 });
+
+test('presence_respond schema physically isolates action: only solo roleplay exposes beats[].action', async () => {
+  const tools = registry();
+  const radioSchema = tools.definitions({ capabilities: [AMBIENT_CAPABILITY], interactionMode: 'radio', isGroup: false })
+    .find(item => item.function.name === AMBIENT_RESPOND_TOOL_NAME).function.parameters;
+  const groupRoleplaySchema = tools.definitions({ capabilities: [AMBIENT_CAPABILITY], interactionMode: 'roleplay', isGroup: true })
+    .find(item => item.function.name === AMBIENT_RESPOND_TOOL_NAME).function.parameters;
+  const soloRoleplaySchema = tools.definitions({ capabilities: [AMBIENT_CAPABILITY], interactionMode: 'roleplay', isGroup: false })
+    .find(item => item.function.name === AMBIENT_RESPOND_TOOL_NAME).function.parameters;
+
+  assert.equal(Object.hasOwn(radioSchema.properties.beats.items.properties, 'action'), false);
+  assert.equal(Object.hasOwn(groupRoleplaySchema.properties.beats.items.properties, 'action'), false);
+  assert.equal(Object.hasOwn(soloRoleplaySchema.properties.beats.items.properties, 'action'), true);
+  assert.equal(soloRoleplaySchema.properties.beats.minItems, 1);
+  assert.equal(soloRoleplaySchema.properties.beats.maxItems, 2);
+
+  // Radio rejects beats with action at schema level.
+  const rejected = await tools.execute(AMBIENT_RESPOND_TOOL_NAME, {
+    action: 'speak',
+    beats: [{ action: '轻轻叹气', say: '还在听吗？' }],
+  }, context({ interactionMode: 'radio', isGroup: false }));
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'INVALID_TOOL_ARGUMENTS');
+});
+
+test('presence_respond accepts 1..2 structured beats in solo roleplay, preserves parens titles, and validates staging', async () => {
+  const tools = registry();
+  const task = { contextText: '之前在放《明年今日（2007 Live）》。', recentLines: [] };
+  const outcome = await tools.execute(AMBIENT_RESPOND_TOOL_NAME, {
+    action: 'speak',
+    beats: [
+      { action: '收了手机抬头看你', say: '刚才话说到一半人就走了，这会儿忙完了吗？', pauseAfterMs: 700, voice: { pace: 'slow', direction: '声音放轻偏缓' } },
+      { say: '《明年今日（2007 Live）》我都听完了，你要是累了就先歇着。', pauseAfterMs: 0 },
+    ],
+  }, context({ interactionMode: 'roleplay', isGroup: false, ambientTask: task }));
+
+  assert.equal(outcome.ok, true, outcome.modelContext);
+  assert.equal(outcome.terminal, true);
+  assert.equal(outcome.code, 'AMBIENT_LINE_ACCEPTED');
+  assert.equal(outcome.facts.beats.length, 2);
+  assert.equal(outcome.facts.beats[0].action, '收了手机抬头看你');
+  assert.equal(outcome.facts.beats[0].pauseAfterMs, 700);
+  assert.equal(outcome.facts.beats[1].pauseAfterMs, 0);
+  assert.match(outcome.facts.text, /《明年今日（2007 Live）》/);
+
+  const tooMany = await tools.execute(AMBIENT_RESPOND_TOOL_NAME, {
+    action: 'speak',
+    beats: [{ say: '一' }, { say: '二' }, { say: '三' }],
+  }, context({ interactionMode: 'roleplay', isGroup: false, ambientTask: task }));
+  assert.equal(tooMany.ok, false);
+  assert.equal(tooMany.code, 'INVALID_TOOL_ARGUMENTS');
+
+  const h = recommendContext({ resolve: () => resolved });
+  await tools.execute(RECOMMEND_TRACK_TOOL_NAME, { title: '晚风', artist: '陈婧霏' }, h.ctx);
+  const missingTitle = await tools.execute(AMBIENT_RESPOND_TOOL_NAME, {
+    action: 'speak',
+    beats: [{ say: '刚才想到一首歌。' }],
+  }, h.ctx);
+  assert.equal(missingTitle.ok, false);
+  assert.equal(missingTitle.facts.rejectedRule, 'recommendation_not_mentioned');
+
+  const withTitle = await tools.execute(AMBIENT_RESPOND_TOOL_NAME, {
+    action: 'speak',
+    beats: [{ say: '这首完了想放《晚风》给你听。' }],
+  }, h.ctx);
+  assert.equal(withTitle.ok, true, withTitle.modelContext);
+});

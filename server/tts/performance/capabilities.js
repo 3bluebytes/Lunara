@@ -58,7 +58,7 @@ export const CAPABILITY_TABLE = Object.freeze([
   Object.freeze({
     id: 'breeze-tts-2',
     protocol: 'breeze',
-    model: /^breeze-tts-2(?:-multilingual)?$/,
+    model: /^breeze-tts-2(?:-[a-z0-9._-]+)?$/i,
     // Breeze 没有情绪枚举：所有风格都合成一句中文 instructions。
     emotions: Object.freeze({
       calm: '平静', warm: '温暖亲切', happy: '开心', playful: '俏皮轻快', sad: '低落伤感', surprised: '惊喜', serious: '认真',

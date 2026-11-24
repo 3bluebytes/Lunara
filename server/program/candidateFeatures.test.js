@@ -59,3 +59,23 @@ test('a broken tag store degrades to null tags instead of failing the offer', ()
   assert.equal(candidateTags({ getTags: () => { throw new Error('db closed'); } }, window[0]), null);
   assert.equal(candidateTags(null, window[0]), null);
 });
+
+test('likedTrackKeys marks canonical (provider, songId) as liked and candidateTags exposes optional texture tags', () => {
+  const richStore = {
+    getTags: (songId, provider) => (provider === 'qq' && songId === '10'
+      ? { language: 'zh', genre: '民谣', mood: '温柔', tempo: 'slow', energy: 0.25, valence: 0.72,
+        vocal_softness: 0.85, instruments: ['木吉他', '钢琴'], year: 2020, has_vocal: true, themes: ['夜晚'] }
+      : null),
+  };
+  const tracks = [
+    { songId: '10', title: '夜曲', artist: 'A', source: 'qq' },
+    { songId: '10', title: '同名不同源', artist: 'B', source: 'ncm' },
+  ];
+  const likedTrackKeys = new Set(['qq:10']);
+  const features = buildCandidateFeatures(tracks, { tagStore: richStore, likedTrackKeys, now: NOW });
+  assert.equal(features[0].origin, 'liked');
+  assert.equal(features[1].origin, 'library', '不得按 songId 跨源合并红心');
+  assert.deepEqual(features[0].tags.instruments, ['木吉他', '钢琴']);
+  assert.equal(features[0].tags.valence, 0.72);
+  assert.equal(features[0].tags.vocalSoftness, 0.85);
+});

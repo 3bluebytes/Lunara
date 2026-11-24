@@ -1,3 +1,4 @@
+import { publicRuntimeState } from '../../playback/playbackRuntimeTypes.js';
 import { asyncRoute, requireService } from './routeUtils.js';
 import { isCompanionModeId } from '../../playback/companionModes.js';
 
@@ -9,7 +10,7 @@ export function registerOperationsRoutes(app, services = {}) {
   app.get('/api/now', (_req, res) => {
     if (!requireService(res, services.playbackRuntime, 'playback runtime')) return;
     res.json({
-      runtime: services.playbackRuntime.snapshot(),
+      runtime: publicRuntimeState(services.playbackRuntime.snapshot()),
       ...services.queueService?.snapshot?.(),
       env: { now: services.environmentService?.getNow?.() || null },
     });
@@ -19,6 +20,13 @@ export function registerOperationsRoutes(app, services = {}) {
   app.get('/api/presence/status', (_req, res) => {
     const status = services.presence?.status?.();
     res.json(status ? { ok: true, ...status } : { ok: true, enabled: false, phase: 'off' });
+  });
+
+  // 生效话量：页头陪伴控件用它说明“为什么她现在不怎么开口”。只读；规则在 presenceTemperament 一处。
+  app.get('/api/presence/effective', (_req, res) => {
+    const effective = services.presence?.effective?.();
+    res.json(effective ? { ok: true, ...effective }
+      : { ok: true, sessionId: null, speakerId: null, modeId: null, temperament: 'balanced', level: 'silent', limitedBy: 'unavailable' });
   });
 
   // 「一起听歌时伙伴会主动说话」与「打开 app 时伙伴可以打招呼」开关：独立 prefs，只改给出的那个；
@@ -63,6 +71,8 @@ export function registerOperationsRoutes(app, services = {}) {
     }
     res.json(await playback.recordOutcome({
       song_id: String(songId),
+      ...(req.body?.provider != null ? { provider: String(req.body.provider) } : {}),
+      ...(req.body?.source != null ? { source: String(req.body.source) } : {}),
       outcome: String(outcome),
       played_seconds: Number(req.body?.played_seconds) || 0,
     }));
@@ -106,14 +116,14 @@ export function registerOperationsRoutes(app, services = {}) {
       ...(body.expectedRevision != null ? { expectedRevision: body.expectedRevision } : {}),
     });
     if (result.accepted) {
-      return res.json({ ok: true, snapshot: runtime.listeningSnapshot(sessionId), runtime: runtime.snapshot() });
+      return res.json({ ok: true, snapshot: publicRuntimeState(runtime.listeningSnapshot(sessionId)), runtime: publicRuntimeState(runtime.snapshot()) });
     }
     if (result.reason === 'duplicate event') {
-      return res.json({ ok: true, idempotent: true, snapshot: runtime.listeningSnapshot(sessionId), runtime: runtime.snapshot() });
+      return res.json({ ok: true, idempotent: true, snapshot: publicRuntimeState(runtime.listeningSnapshot(sessionId)), runtime: publicRuntimeState(runtime.snapshot()) });
     }
     if (result.reason === 'stale mode revision') {
       return res.status(409).json({ ok: false, error: '模式刚被更新过，请以当前状态重试。', code: 'stale_mode_revision',
-        snapshot: runtime.listeningSnapshot(sessionId), runtime: runtime.snapshot() });
+        snapshot: publicRuntimeState(runtime.listeningSnapshot(sessionId)), runtime: publicRuntimeState(runtime.snapshot()) });
     }
     return res.status(409).json({ ok: false, error: result.reason || 'companion mode change rejected', code: 'companion_mode_rejected' });
   }));

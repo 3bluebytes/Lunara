@@ -361,36 +361,39 @@ test('shell pages share the session page header and surface vocabulary', async (
     '.shell-primary must consume the shared primary tokens');
   assert.match(ruleBody(styles, '.boot-go'), /background: var\(--studio-primary-bg\)/,
     'settings save button must use the session primary treatment');
-  assert.match(ruleBody(todayCss, '.today-panel .today-btn-primary'), /background: var\(--studio-primary-bg\)/);
+  assert.match(ruleBody(todayCss, '.today-panel .today-btn-primary'), /background: var\(--ln-accent-fill\)/,
+    'today primary action must use consolidated liner-notes accent token');
 
-  // 页面标记使用共享页眉；会话页没有的全大写眉标不得回来。
+  // 页面标记使用共享页眉；会话页没有的全大写眉标不得回来；手帐采用方案 B 极简双栏，不再堆叠重页眉。
   assert.match(html, /settings-head shell-page-head/);
-  assert.match(todayView, /today-header today-workspace-header shell-page-head/);
-  // 写作优先：标题是正文级字号（stage 骨架与 today.css 的默认值都不再是展示级大字）。
-  assert.match(todayCss, /input\.today-input-seamless-title \{[^}]*font-size: 18px;/);
+  assert.doesNotMatch(todayView, /today-workspace-header/);
+  // 同页拾光方案 B：22px 合一首行标题、780px 跨页、三轨可拖动分隔线，三套主题收口在 today.css（modernist 对比度兜底 --ln-accent-ink）。
+  assert.match(todayCss, /\.today-panel \.today-sheet-firstline \{[^}]*font-size: 22px;/);
+  assert.match(todayCss, /:root\[data-theme="modernist"\]:not\(\[data-modernist-base="indigo"\]\) #app\.today-open \.today-panel \{[^}]*--ln-accent-ink: #9e1c11;/);
   assert.match(todayCss, /\.today-panel \.today-split \{[^}]*cursor: col-resize;/);
   // 三轨布局：列表宽度由 --today-list-width 驱动，min() 给编辑器留保底宽度。
-  assert.match(todayCss, /grid-template-columns: min\(var\(--today-list-width, 344px\), calc\(100% - 380px\)\) 12px minmax\(0, 1fr\);/);
+  assert.match(todayCss, /grid-template-columns: min\(var\(--today-list-width, 280px\), calc\(100% - 420px\)\) 12px minmax\(0, 1fr\);/);
   assert.match(todayView, /class="today-split" role="separator"/);
-  // 时间轴：无时间的条目不再预留空时间列；快速添加是单行字段（高度容得下一行，不露滚动条）。
+  // stage.css 不得再残余旧版 8a 隐藏头栏或双时间轴样式覆盖，样式由 today.css 独占。
   const stageCss = await readFile(resolve(pwaRoot, 'features/shell/stage.css'), 'utf8');
-  assert.match(stageCss, /\.today-entry\.is-untimed \.today-entry-main \{ grid-template-columns: 20px minmax\(0,1fr\); \}/);
-  assert.match(stageCss, /\.today-entry\.is-untimed \.today-timeline-time \{ display: none; \}/);
-  assert.match(stageCss, /\.today-quick-add textarea \{[^}]*height: 44px; min-height: 44px;/);
+  assert.doesNotMatch(stageCss, /\.today-header-actions,\s*\.today-filter-tabs/, 'stage.css must not hide journal header controls');
   for (const [name, text] of [['index.html', html], ['todayView.js', todayView],
     ['conversations.css', conversations], ['today.css', todayCss], ['styles.css', styles]]) {
     assert.doesNotMatch(text, /today-eyebrow/, `${name} must not bring back the shell eyebrow`);
   }
 
-  // 页面卡统一 studio 表面。
+  // 页面卡统一表面；手帐纸页去除了多层嵌套卡片盒，只留发丝线分割与零渐变底。
   for (const [name, css, selector] of [
     ['settings card', styles, '.settings-card'],
-    ['today card', conversations, '.today-panel .today-fieldset'],
-    ['today editor card', todayCss, '.today-panel .today-editor-card'],
+    ['today spread', todayCss, '.today-panel .today-spread'],
   ]) {
     const body = ruleBody(css, selector);
-    assert.match(body, /background: var\(--studio-panel\)/, `${name} must use the studio panel surface`);
-    assert.match(body, /border-radius: var\(--studio-card-radius\)/, `${name} must use the shared card radius`);
+    if (name === 'settings card') {
+      assert.match(body, /background: var\(--studio-panel\)/, `${name} must use the studio panel surface`);
+      assert.match(body, /border-radius: var\(--studio-card-radius\)/, `${name} must use the shared card radius`);
+    } else {
+      assert.match(body, /max-width: 780px/, `${name} must enforce 780px balanced co-page width`);
+    }
     assert.doesNotMatch(body, /linear-gradient/, `${name} must not reintroduce an opaque gradient card`);
   }
 });

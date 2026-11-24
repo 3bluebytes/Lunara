@@ -415,8 +415,12 @@ export function createTimelineView({ store, controller, runtimeClient, documentL
     cleanups.push(store.subscribe?.((next, previous) => { if (next.runtimeState !== previous?.runtimeState) render(); }) || (() => {}));
     cleanups.push(controller.subscribe?.(() => render()) || (() => {}));
     // 每秒重算一次：待播时刻依赖媒体进度与本机时间（切歌瞬间进度条可能还停在上一首、暂停时时刻要往后推），
-    // 文本没变时 render 不碰 DOM。
-    ticker = setInterval(() => { if (isTimeline()) render(); }, 1000);
+    // 文本没变时 render 不碰 DOM；手帐或设置全屏覆盖时间线时跳过计算与渲染。
+    const isTimelineCovered = () => {
+      const classes = $('#app')?.classList;
+      return Boolean(classes?.contains?.('today-open') || classes?.contains?.('settings-open'));
+    };
+    ticker = setInterval(() => { if (isTimeline() && !isTimelineCovered()) render(); }, 1000);
     render();
     return api;
   }

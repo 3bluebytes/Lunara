@@ -1,7 +1,5 @@
 import { policyFromUserText } from '../memory/memoryPolicy.js';
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -29,9 +27,7 @@ export class ReflectionObservationStore {
 
   initialize() {
     if (!this.db) {
-      mkdirSync(dirname(this.dbPath), { recursive: true });
-      this.db = new Database(this.dbPath);
-      this.db.pragma('journal_mode = WAL');
+      this.db = openSqliteDatabase(this.dbPath);
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS reflection_publications (
@@ -156,16 +152,67 @@ export class ReflectionObservationStore {
     return Boolean(this.db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_requests'`).get());
   }
 
+  /** 判断会话是否处于私语（roleplay）模式；缺表/缺列时按普通会话处理。 */
+  isRoleplaySession(sessionId) {
+    if (!this.db || !sessionId) return false;
+    const table = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_sessions'").get();
+    if (!table) return false;
+    const hasCol = this.db.prepare('PRAGMA table_info(conversation_sessions)').all().some(row => row.name === 'interaction_mode');
+    if (!hasCol) return false;
+    return this.db.prepare('SELECT interaction_mode FROM conversation_sessions WHERE session_id = ?')
+      .get(String(sessionId))?.interaction_mode === 'roleplay';
+  }
+
+  /** 私语会话里的观察默认标为私密，防止流向跨角色共享层。 */
+  sessionPolicy(basePolicy = {}, sessionId = '') {
+    return this.isRoleplaySession(sessionId)
+      ? { ...basePolicy, disclosure: 'private', originScene: 'roleplay' }
+      : basePolicy;
+  }
+
+  /** 将反思判定为敏感的回合（连同 paired 回复与分叉副本）在观察策略上记 sensitive。 */
+  markSensitiveTurns(turnIds = []) {
+    if (!this.db) return;
+    const hasObs = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_observations'").get();
+    if (!hasObs) return;
+    const keys = new Set(turnIds.filter(Boolean).map(String));
+    if (!keys.size) return;
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_requests'").get()) {
+      const pair = this.db.prepare('SELECT assistant_turn_id FROM conversation_requests WHERE user_turn_id = ?');
+      for (const turnId of [...keys]) {
+        for (const row of pair.all(turnId)) if (row.assistant_turn_id) keys.add(row.assistant_turn_id);
+      }
+    }
+    let allIds = [...keys];
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turn_lineage'").get()) {
+      const origin = this.db.prepare('SELECT origin_turn_id FROM conversation_turn_lineage WHERE turn_id = ?');
+      const copies = this.db.prepare('SELECT turn_id FROM conversation_turn_lineage WHERE origin_turn_id = ?');
+      const expanded = new Set();
+      for (const id of keys) {
+        const root = origin.get(id)?.origin_turn_id || id;
+        expanded.add(id);
+        expanded.add(root);
+        for (const row of copies.all(root)) expanded.add(row.turn_id);
+      }
+      allIds = [...expanded];
+    }
+    const update = this.db.prepare("UPDATE conversation_observations SET policy_json = json_set(policy_json, '$.sensitive', json('true')) WHERE turn_id = ?");
+    this.db.transaction(() => {
+      for (const turnId of allIds) update.run(turnId);
+    })();
+  }
+
   committedTurn(requestId) {
     if (!this.hasConversationLedger()) return null;
     const row = this.db.prepare(`SELECT r.request_id, r.session_id, r.virtual_person_id,
         r.user_turn_id, r.assistant_turn_id, r.completed_at, r.result_json,
-        u.visible_text AS user_text, a.visible_text AS assistant_text
+        u.visible_text AS user_text, u.created_at AS user_created_at, a.visible_text AS assistant_text
       FROM conversation_requests r
       JOIN conversation_turns u ON u.turn_id = r.user_turn_id AND u.role = 'user' AND u.visibility = 'visible'
       JOIN conversation_turns a ON a.turn_id = r.assistant_turn_id AND a.role = 'assistant' AND a.visibility = 'visible'
       WHERE r.request_id = ? AND r.state = 'completed'
         AND u.session_id = r.session_id AND a.session_id = r.session_id
+        ${this.hasSupersededColumn() ? 'AND u.superseded_at IS NULL AND a.superseded_at IS NULL' : ''}
         AND a.speaker_virtual_person_id = r.virtual_person_id`).get(requestId);
     if (!row || this.sourceRevoked(row.virtual_person_id, row.user_turn_id)) return null;
     let result = {};
@@ -174,12 +221,18 @@ export class ReflectionObservationStore {
       eventKey: `turn:${row.assistant_turn_id}`, personId: row.virtual_person_id,
       sessionId: row.session_id, kind: 'turn', createdAt: row.completed_at,
       data: {
-        policy: policyFromUserText(row.user_text, row.session_id),
+        // 「今天只…」的期限从用户说这句话时算，不从导入反思的时间算（重启后补导入不能拉长期限）。
+        policy: this.sessionPolicy(policyFromUserText(row.user_text, row.session_id, row.user_created_at || row.completed_at), row.session_id),
         requestId: row.request_id, userTurnId: row.user_turn_id, assistantTurnId: row.assistant_turn_id,
         userText: reflectionText(row.user_text), assistantText: reflectionText(row.assistant_text),
         outcomeCodes: (Array.isArray(result?.outcomeCodes) ? result.outcomeCodes : []).slice(0, 32).map(code => reflectionText(code, 80)),
       },
     };
+  }
+
+  /** 被编辑掉（superseded）的消息不再进入反思；旧账本还没有这一列时视为都未改写。 */
+  hasSupersededColumn() {
+    return this.db.prepare('PRAGMA table_info(conversation_turns)').all().some(row => row.name === 'superseded_at');
   }
 
   observationAllowed(row) {
@@ -192,23 +245,45 @@ export class ReflectionObservationStore {
     return Boolean(table && this.db.prepare('SELECT 1 FROM conversation_observations WHERE person_id = ? AND turn_id = ? AND revoked_at IS NOT NULL').get(personId, sourceKey));
   }
 
+  /**
+   * 发布洞察给 Station 晋升。合并进旧洞察的新证据会改变 payload：此时覆盖发布记录并清掉"已处理"标记，
+   * 让晋升重新读一遍（证据按原话去重，重读不会重复计数）；payload 没变（崩溃重放）则什么也不做。
+   */
   publishInsight(memoryId, personId, payload) {
-    this.db.prepare('INSERT OR IGNORE INTO reflection_publications VALUES (?, ?, ?, ?)')
-      .run(memoryId, personId, JSON.stringify(payload), this.now());
+    const json = JSON.stringify(payload);
+    const prior = this.db.prepare('SELECT payload_json FROM reflection_publications WHERE memory_id = ?').get(memoryId);
+    if (prior?.payload_json === json) return;
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO reflection_publications VALUES (?, ?, ?, ?)
+        ON CONFLICT(memory_id) DO UPDATE SET payload_json = excluded.payload_json`).run(memoryId, personId, json, this.now());
+      if (prior && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_processed_insights'").get()) {
+        this.db.prepare('DELETE FROM station_processed_insights WHERE memory_id = ?').run(memoryId);
+      }
+    })();
   }
 
-  recoverEncounterTurns() {
+  /**
+   * 旁听补录：别的角色主持的回合里，观察到它的角色也把用户原话记作反思输入。
+   * 给 userTurnId 时只补这一回合（每次提交都会调用，不扫全表）；不给时补近 7 天全部（sweep 与启动）。
+   * 分叉复制出的回合不是新发生的事：原回合已经导入过，副本不再作为新的旁听事件补录。
+   */
+  recoverEncounterTurns({ userTurnId = null } = {}) {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_observations'").get()) return;
-    const rows = this.db.prepare(`SELECT o.person_id, o.policy_json, t.* FROM conversation_observations o
-      JOIN conversation_turns t ON t.turn_id = o.turn_id
+    const hasLineage = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turn_lineage'").get();
+    // CROSS JOIN 固定从近期回合出发（按 created_at 索引），观察表按 turn_id 索引逐条找观察者。
+    const rows = this.db.prepare(`SELECT o.person_id, o.policy_json, t.* FROM conversation_turns t
+      CROSS JOIN conversation_observations o ON o.turn_id = t.turn_id
       WHERE o.revoked_at IS NULL AND t.role = 'user' AND t.created_at >= ?
+        ${userTurnId ? 'AND t.turn_id = ?' : ''}
+        ${this.hasSupersededColumn() ? 'AND t.superseded_at IS NULL' : ''}
+        ${hasLineage ? 'AND NOT EXISTS (SELECT 1 FROM conversation_turn_lineage l WHERE l.turn_id = t.turn_id)' : ''}
         AND NOT EXISTS (SELECT 1 FROM reflection_import_receipts r WHERE r.event_key = 'encounter:' || o.person_id || ':' || t.turn_id)
         AND NOT EXISTS (SELECT 1 FROM conversation_requests r WHERE r.user_turn_id = t.turn_id AND r.virtual_person_id = o.person_id)
-      ORDER BY t.created_at LIMIT 200`).all(this.now() - RETENTION_MS);
+      ORDER BY t.created_at LIMIT 200`).all(this.now() - RETENTION_MS, ...(userTurnId ? [String(userTurnId)] : []));
     for (const row of rows) this.append({ eventKey: `encounter:${row.person_id}:${row.turn_id}`,
       personId: row.person_id, sessionId: row.session_id, kind: 'turn', createdAt: row.created_at,
       data: { userTurnId: row.turn_id, userText: reflectionText(row.visible_text), assistantText: '',
-        policy: JSON.parse(row.policy_json), observedSilently: true } });
+        policy: this.sessionPolicy(JSON.parse(row.policy_json || '{}'), row.session_id), observedSilently: true } });
   }
 
   recoverCommittedTurns() {
@@ -296,6 +371,14 @@ export class ReflectionObservationStore {
       bytes += size;
     }
     return selected;
+  }
+
+  /** 批次里仍在、来源未撤回的观察（反思模型调用期间可能删除聊天、编辑消息或忘记来源）。 */
+  liveBatchRows(personId, rows) {
+    if (!rows.length) return [];
+    return this.db.prepare(`SELECT * FROM reflection_observations
+      WHERE person_id = ? AND id IN (${rows.map(() => '?').join(',')}) ORDER BY id`).all(personId, ...rows.map(row => row.id))
+      .map(observationRow).filter(row => this.observationAllowed(row));
   }
 
   expireBatch(personId, window, remaining) {

@@ -15,11 +15,13 @@ import { WarmPoolService } from '../agents/WarmPoolService.js';
 import { RadioRequestService } from '../requests/RadioRequestService.js';
 import { saveFamiliarArtistFeedback } from './familiarArtistCadence.js';
 import { offerWindowSize, normalizeOfferIndexes } from './musicSelectionOffers.js';
+import { createLineCollector } from './trackLinePass.js';
 
 const library = [1, 2, 3, 4].map(id => ({ song_id: String(id), title: `歌${id}`, artist: '歌手', source: 'qq', album: id === 4 ? 'Live' : '录音室' }));
 // `legacyChat` 刻意保留：构造器已不再接收模型句柄，传进去也只是证明它不会被使用。
 function fixture(t, { continuationCandidates = null, userCandidates = null, getMemoryService = undefined, getTags = null,
-  getFamiliarArtists = () => [], getRecentPlays = null, legacyChat = null, searchArtistCatalog = null, now = Date.now,
+  getFamiliarArtists = () => [], getRecentPlays = null, getLikedTracks = () => [], getLikesRevision = () => null,
+  getSessionPresence = () => null, legacyChat = null, searchArtistCatalog = null, now = Date.now,
   preResolveConcurrency = 0, albums = null, tagStore = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'lunara-music-contract-'));
   const dbPath = join(dir, 'state.db');
@@ -47,7 +49,8 @@ function fixture(t, { continuationCandidates = null, userCandidates = null, getM
     getMemoryService,
     getCandidates: async ({ reason } = {}) => (reason === 'auto_continue'
       ? (continuationCandidates || library) : (userCandidates || library)),
-    getSongTagStore: () => tags, getFamiliarArtists, getRecentPlays, chat: legacyChat, searchArtistCatalog, now,
+    getSongTagStore: () => tags, getFamiliarArtists, getRecentPlays, getLikedTracks, getLikesRevision, getSessionPresence,
+    chat: legacyChat, searchArtistCatalog, now,
     getAlbumTracks: albums ? async ({ source, albumId, limit = 200, offset = 0 }) => {
       const rows = (albums[`${source}:${albumId}`] || []).slice(offset, offset + limit);
       if (!rows.length) return { ok: false, data: { reason: 'album_unavailable', source, albumId } };
@@ -155,6 +158,39 @@ test('a two-step select→commit plays only the numbered candidates the Agent ch
   assert.equal(again.ok, false);
   assert.equal(again.code, 'SELECTION_OFFER_UNAVAILABLE');
   assert.deepEqual(h.playbackRuntime.snapshot().queue.map(track => track.songId), ['1', '3']);
+});
+
+test('选歌理由跟着这一轮的串词目标走：没选中的序号不算，队列和 runtime 里看不到', async t => {
+  const candidates = candidatesOf(1, 2, 3);
+  const h = fixture(t, { userCandidates: candidates, continuationCandidates: candidates });
+  const offered = await h.service.execute({ mode: 'discovery', delivery: 'replace_now', count: 3 }, context('notes'));
+  const linePass = createLineCollector();
+  const committed = await h.service.commitSelection({ offerId: offered.offerId, indexes: [3, 1],
+    notes: [{ index: 3, note: '  下雨天想放点慢的  ' }, { index: 2, note: '没选中的这条不算' }, { index: 1, note: '' }] },
+  { ...context('notes'), linePass });
+  assert.equal(committed.ok, true, committed.code);
+  const bySong = Object.fromEntries(linePass.targets.map(target => [target.track.songId, target.note ?? null]));
+  assert.deepEqual(bySong, { 1: null, 3: '下雨天想放点慢的' });
+  assert.doesNotMatch(JSON.stringify(h.playbackRuntime.snapshot()), /下雨天|没选中/u, '理由不进 runtime');
+});
+
+test('预热批次的串词目标也带上选歌理由', async t => {
+  const h = fixture(t);
+  await activateSession(h);
+  const request = normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 2 });
+  const generation = runtimeGeneration(h);
+  const preparedFor = { listeningSessionId: 'room', outputGeneration: generation, boundaryKey: null };
+  const task = { request, reason: 'auto_continue', sessionId: 'room', outputGeneration: generation,
+    isCurrent: () => true, mode: 'preparation', resolveOnly: true, preparedFor };
+  const input = { sessionId: 'room', virtualPersonId: 'a', requestId: 'prep-notes', outputGeneration: generation, musicTaskRequest: task };
+  const offered = await h.service.execute({}, input);
+  const [first, second] = offered.offer.candidates.map(candidate => candidate.index);
+  const held = await h.service.commitSelection({ offerId: offered.offerId, indexes: [first, second],
+    notes: [{ index: second, note: '想换个口味' }] }, input);
+  assert.equal(held.prepared, true);
+  const saved = h.service.savePreparedBatch({ offerId: offered.offerId, indexes: held.indexes, sessionId: 'room', personId: 'a' });
+  const targets = await h.service.preparedLineTargets(saved, { sessionId: 'room' });
+  assert.deepEqual(targets.map(target => target.note ?? null), [null, '想换个口味']);
 });
 
 test('a same-round replay returns the stored commit result instead of playing twice', async t => {
@@ -325,7 +361,7 @@ test('a failed pre-resolution falls back to normal resolution at commit', async 
   assert.equal(calls.filter(id => id === '2').length, 2);
 });
 
-test('prewarm offers that only pick indexes are not pre-resolved', async t => {
+test('prewarm offers are pre-resolved too: their lines need the lyrics, and adoption reuses the result', async t => {
   const h = fixture(t, { preResolveConcurrency: 2 });
   const calls = [];
   h.service.programCommitService.resolveTrack = async (_query, options) => { calls.push(options.candidate.sourceSongId); return { ok: false }; };
@@ -333,7 +369,7 @@ test('prewarm offers that only pick indexes are not pre-resolved', async t => {
   const offered = await h.service.execute(request, { ...context('prewarm-offer'), musicTaskRequest: { request, resolveOnly: true } });
   assert.equal(offered.code, 'MUSIC_CANDIDATES_OFFERED');
   await drain();
-  assert.deepEqual(calls, []);
+  assert.ok(calls.length > 0);
 });
 
 /**
@@ -650,7 +686,7 @@ test('a music request in another room switches immediately only when its deliver
 test('a legacy final track continues through selection and commit; turning continuation off then stops generation', async t => {
   const h = fixture(t);
   const radio = new RadioRequestService({ musicService: h.service, playbackRuntime: h.playbackRuntime,
-    conversationStore: h.conversationStore, getMusicSelectionAgent: () => agentRunnerStub(h.service) });
+    conversationStore: h.conversationStore, getHostMusicRunner: () => agentRunnerStub(h.service) });
   const tasks = [];
   h.playbackRuntime.effectSink = effect => {
     if (effect.type === 'REQUEST_CONTINUATION') tasks.push(radio.handleContinue({
@@ -859,7 +895,8 @@ test('one group round combines canonical proposals once, with no speech until th
   assert.deepEqual(h.playbackRuntime.snapshot().queue.map(track => track.virtualPersonId), ['c', 'c', 'c']);
   assert.deepEqual(h.playbackRuntime.snapshot().queue.map(track => track.recommendedBy), ['a', 'b', null]);
   assert.equal(h.playbackRuntime.snapshot().phase, 'loading');
-  assert.equal(h.effects[0].type, 'PREPARE_TRACK_NARRATION');
+  assert.equal(h.playbackRuntime.snapshot().queue[0].narration.status, 'absent', '这一轮没有 line pass：安静播放，没有隐藏的模型调用');
+  assert.equal(h.effects.some(effect => effect.type === 'RESOLVE_TRACK_NARRATION_ASSET'), false);
   assert.equal(h.tts.length, 0);
   const replay = await h.service.execute(exact(4), { ...context('c1'), virtualPersonId: 'c', roundId: 'round', groupAction });
   assert.equal(replay.replayed, true);
@@ -985,7 +1022,7 @@ test('a finished exact set continues with a soft preference while keeping user c
   const continuationCandidates = [{ song_id: '9', title: '库内歌', artist: '别的艺人', source: 'qq' }];
   const h = fixture(t, { continuationCandidates, userCandidates: [] });
   const radio = new RadioRequestService({ musicService: h.service, playbackRuntime: h.playbackRuntime,
-    conversationStore: h.conversationStore, getMusicSelectionAgent: () => agentRunnerStub(h.service) });
+    conversationStore: h.conversationStore, getHostMusicRunner: () => agentRunnerStub(h.service) });
   const constraints = { excludeVersions: ['live'], excludedSongIds: ['3'] };
   const committed = await h.service.execute({ ...exact(1), constraints }, context('anchor-exact'));
   assert.equal(committed.ok, true);
@@ -1108,9 +1145,11 @@ test('music selection context surfaces the taste schema and drops it after revok
   process.env.LUNARA_DB_PATH = join(dir, 'memory.db');
   const mem = new MemoryService('radiohost:a');
   await mem.initialize();
+  const contributor = mem.addMemory({ namespace: 'radiohost:a', type: 'semantic', source: 'user_explicit_feedback',
+    content: '用户说自己一直喜欢 R&B', tags: 'person-relationship', evidence: JSON.stringify({ writeKey: 'k-rnb', policy: { disclosure: 'normal' } }) });
   mem.addMemory({ namespace: 'radiohost:a', type: 'semantic', source: 'agent_reflection',
     content: '用户长期偏爱 R&B', tags: 'taste-schema', confidence: 0.7, importance: 8,
-    evidence: JSON.stringify({ writeKey: 'taste-schema:radiohost:a', revision: 1 }) });
+    evidence: JSON.stringify({ writeKey: 'taste-schema:radiohost:a', revision: 1, scope: 'widest-audience', contributorIds: [contributor.id] }) });
   const h = fixture(t, { getMemoryService: () => mem });
   t.after(() => mem.shutdown());
   const ctx = h.service.context({ sessionId: 'room', virtualPersonId: 'a', requestId: 'ctx-schema' });
@@ -1286,6 +1325,72 @@ test('a held preparation batch is adopted at the boundary with canonical resolut
   assert.equal(h.playbackRuntime.snapshot().queue.length, 3);
 });
 
+test('预热批次写好的串词随采用进入队列：零模型调用，文字到点才念', async t => {
+  const h = fixture(t);
+  await activateSession(h);
+  const held = await holdBatch(h);
+  const targets = await h.service.preparedLineTargets(held.saved, { sessionId: 'room' });
+  assert.equal(targets.length, 2);
+  assert.equal(await targets[0].save({ text: `《${targets[0].track.title}》这首先放着。`, writtenAt: 1000, membershipRevision: 0 }), true);
+  const before = h.playbackRuntime.snapshot().queue.length;
+  assert.equal(h.playbackRuntime.snapshot().queue.length, before, '写串词不碰队列');
+
+  const adopted = await adoptPrepared(h, held.offered.request);
+  assert.equal(adopted.ok, true, adopted.result?.code);
+  const queued = h.playbackRuntime.snapshot().queue;
+  const written = queued.find(track => track.title === targets[0].track.title);
+  const quiet = queued.find(track => track.title === targets[1].track.title);
+  assert.equal(written.narration.status, 'ready');
+  assert.equal(written.narration.assetStatus, 'missing', '声音到点才合成');
+  assert.equal(written.narration.text, `《${targets[0].track.title}》这首先放着。`);
+  assert.equal(quiet.narration.status, 'absent', '没写到的这首安静放，不补模板');
+  assert.equal(quiet.narration.text.includes('这首先放着'), false);
+});
+
+test('预热串词作废：丢弃已写的，还在写的那一轮也存不进来，批次照常可用', async t => {
+  const h = fixture(t);
+  await activateSession(h);
+  const held = await holdBatch(h);
+  const [first, second] = await h.service.preparedLineTargets(held.saved, { sessionId: 'room' });
+  assert.equal(await first.save({ text: '《甲》旧的说法。' }), true);
+  assert.equal(h.service.dropPreparedLines('room'), 1);
+  assert.equal(await second.save({ text: '《乙》迟到的说法。' }), false, '作废前开始写的不算数');
+  const adopted = await adoptPrepared(h, held.offered.request);
+  assert.equal(adopted.ok, true, adopted.result?.code);
+  const queue = h.playbackRuntime.snapshot().queue;
+  assert.doesNotMatch(JSON.stringify(queue), /旧的说法|迟到的说法/u);
+  assert.equal(queue.at(-1).narration.status, 'absent');
+});
+
+test('预热串词拿得到预解析的歌词；music_only 不写', async t => {
+  const h = fixture(t, { preResolveConcurrency: 4 });
+  await activateSession(h);
+  const inner = h.service.programCommitService.resolveTrack;
+  h.service.programCommitService.resolveTrack = async (...args) => ({ ...await inner(...args), lyric: { lrc: '[00:01.00] 预解析的歌词' } });
+  const held = await holdBatch(h);
+  const targets = await h.service.preparedLineTargets(held.saved, { sessionId: 'room' });
+  assert.deepEqual(targets[0].track.lyric, { lrc: '[00:01.00] 预解析的歌词' }, '键要和预解析对得上');
+  await h.playbackRuntime.submit({ type: 'COMPANION_MODE_CHANGED', eventId: 'mode-quiet', listeningSessionId: 'room', modeId: 'music_only', requestId: 'mode' });
+  assert.deepEqual(await h.service.preparedLineTargets(held.saved, { sessionId: 'room' }), []);
+});
+
+test('解析失败的歌不把话留给别的歌：串词绑在歌上，不绑序号', async t => {
+  const h = fixture(t);
+  await activateSession(h);
+  const held = await holdBatch(h);
+  const [first, second] = await h.service.preparedLineTargets(held.saved, { sessionId: 'room' });
+  await first.save({ text: '只属于第一首的话。' });
+  await second.save({ text: '只属于第二首的话。' });
+  const inner = h.service.programCommitService.resolveTrack;
+  h.service.programCommitService.resolveTrack = async (query, options) => (
+    String(options?.candidate?.sourceSongId) === String(first.track.songId) ? { ok: false } : inner(query, options));
+  const adopted = await adoptPrepared(h, held.offered.request);
+  assert.equal(adopted.ok, true, adopted.result?.code);
+  const queued = h.playbackRuntime.snapshot().queue;
+  assert.doesNotMatch(JSON.stringify(queued), /只属于第一首的话/u);
+  assert.equal(queued.find(track => track.title === second.track.title).narration.text, '只属于第二首的话。');
+});
+
 test('a prepared ref that no longer resolves fails closed without substitution or playback', async t => {
   const h = fixture(t);
   await activateSession(h);
@@ -1353,7 +1458,7 @@ test('a canonical resolution failure carries a per-source reason while the user 
   assert.match(failed.message, /当前无法播放，队列没有变化。/, '模型/用户可见的文案保持通用，不含端点或凭据');
   assert.equal(/https?:/.test(JSON.stringify(failed)), false, '失败结果不含 URL');
   assert.equal(h.service.musicActionStatus({ requestId: 'reason' }), 'failed', '无副作用失败允许同轮修正');
-  // 失败原因随工具 outcome 进入 facts/modelContext（见 MusicSelectionAgent.test.js 的端到端用例）。
+  // 失败原因随工具 outcome 进入 facts/modelContext（见 hostMusicRunner.test.js 的端到端用例）。
 });
 
 test('expired and invalidated prepared batches are discarded and counted', async t => {
@@ -1592,6 +1697,8 @@ test('后台预解析确认放不了：写入冷却，提交时同一序号直�
   assert.equal(rejected.ok, false);
   assert.equal(rejected.code, 'SELECTION_INDEXES_UNPLAYABLE');
   assert.deepEqual(rejected.unplayableIndexes, [index('2')]);
+  assert.deepEqual(rejected.resourceReadyIndexes, ['1', '3', '4'].map(index).sort((a, b) => a - b),
+    '纠正时告诉 host 同一组里哪些候选已经拿到音源');
   assert.match(rejected.message, new RegExp(`${index('2')}`));
   assert.equal(calls.length, before, '已知放不了的不再请求音乐源');
   assert.equal(h.playbackRuntime.snapshot().queue.length, 0);
@@ -1668,6 +1775,66 @@ test('退回时列出整组候选里所有已知放不了的序号，模型一�
   assert.match(rejected.message, new RegExp(known.join('、')));
   const committed = await h.service.commitSelection({ offerId: offered.offerId, indexes: [index('3')] }, input);
   assert.equal(committed.ok, true, committed.code);
+});
+
+test('零可播提交失败也带上其他已经拿到音源的序号，不自动替歌', async t => {
+  const h = fixture(t, { preResolveConcurrency: 4 });
+  failSongs(h, { 2: { ...notPlayable, code: 'timeout' }, 3: notPlayable, 4: notPlayable });
+  const input = context('ready-after-resolution-failure');
+  const offered = await h.service.execute({ mode: 'discovery', delivery: 'append', count: 3 }, input);
+  await drain();
+  const index = id => offered.offer.candidates.findIndex(c => c.songId === id) + 1;
+  const failed = await h.service.commitSelection({ offerId: offered.offerId, indexes: [index('2')] }, input);
+  assert.equal(failed.code, 'MUSIC_NOT_COMMITTED');
+  assert.deepEqual(failed.resourceReadyIndexes, [index('1')]);
+  assert.equal(h.playbackRuntime.snapshot().queue.length, 0, '资源就绪不代表模型已经选择或提交');
+  assert.doesNotMatch(JSON.stringify(failed), /\/audio\//, '提示只带序号、不带 URL');
+  let validations = 0;
+  h.service.programCommitService.validateResolvedTrack = () => {
+    validations++;
+    return { ok: false, reason: 'constraint-mismatch' };
+  };
+  const rejected = await h.service.commitSelection({ offerId: offered.offerId, indexes: failed.resourceReadyIndexes }, input);
+  assert.equal(rejected.ok, false, '资源就绪仍须通过硬约束校验');
+  assert.ok(validations > 0);
+  assert.equal(h.playbackRuntime.snapshot().queue.length, 0);
+});
+
+test('资源就绪提示不包括 pending、过期、无资源、身份不符或其他 offer 的结果', async t => {
+  let clock = 1_000_000;
+  const rows = candidatesOf(1, 2, 3, 4, 5, 6);
+  const h = fixture(t, { userCandidates: rows, preResolveConcurrency: 6, now: () => clock });
+  let finishPending;
+  h.service.programCommitService.resolveTrack = async (_query, { candidate }) => {
+    const id = candidate.sourceSongId;
+    const result = { ...rows.find(row => row.song_id === id), source: 'qq', ok: true, url: `/audio/${id}.mp3` };
+    if (id === '2') return { ...notPlayable };
+    if (id === '3') return new Promise(resolve => { finishPending = () => resolve(result); });
+    if (id === '4') return { ...result, source: 'ncm' };
+    if (id === '5') return { ...result, song_id: 'foreign-song' };
+    if (id === '6') return { ...result, url: '' };
+    return result;
+  };
+  const input = context('ready-scope');
+  const offered = await h.service.execute({ mode: 'discovery', delivery: 'append', count: 1 }, input);
+  await drain();
+  const index = id => offered.offer.candidates.findIndex(c => c.songId === id) + 1;
+  const reject = () => h.service.commitSelection({ offerId: offered.offerId, indexes: [index('2')] }, input);
+  const ready = await reject();
+  assert.deepEqual(ready.resourceReadyIndexes, [index('1')]);
+  assert.equal(h.playbackRuntime.snapshot().queue.length, 0);
+  const otherInput = context('ready-other');
+  h.service.preResolveConcurrency = 0;
+  const other = await h.service.execute({ mode: 'discovery', delivery: 'append', count: 1 }, otherInput);
+  h.service._unplayable.mark('qq', '4');
+  const otherRejected = await h.service.commitSelection({ offerId: other.offerId,
+    indexes: [other.offer.candidates.findIndex(c => c.songId === '4') + 1] }, otherInput);
+  assert.deepEqual(otherRejected.resourceReadyIndexes, [], '同曲在另一个 offer 的成功不能借用');
+  clock += 30_000;
+  assert.deepEqual((await reject()).resourceReadyIndexes, [], '缓存到期不再提示资源就绪');
+  finishPending();
+  await drain();
+  assert.deepEqual((await reject()).resourceReadyIndexes, [], '过期后的迟到成功不复活提示');
 });
 
 // ===== add-ambient-music-recommendation：ambient 推荐与确认入队 =====
@@ -1950,7 +2117,7 @@ test('decision ledger: auto-continue commits write one row per adopted index wit
   const h = fixture(t);
   attachLedger(h);
   const radio = new RadioRequestService({ musicService: h.service, playbackRuntime: h.playbackRuntime,
-    conversationStore: h.conversationStore, getMusicSelectionAgent: () => agentRunnerStub(h.service) });
+    conversationStore: h.conversationStore, getHostMusicRunner: () => agentRunnerStub(h.service) });
   const tasks = [];
   h.playbackRuntime.effectSink = effect => {
     if (effect.type === 'REQUEST_CONTINUATION') tasks.push(radio.handleContinue({
@@ -2105,7 +2272,7 @@ async function briefFixture(t, { memories = [], fixtureOptions = {}, history = n
 const feedbackMemory = (content, policy = {}, extra = {}) => ({ type: 'semantic', source: 'user_explicit_feedback', content,
   tags: 'person-relationship,music-feedback', evidence: JSON.stringify({ quote: content, policy }), ...extra });
 
-test('brief privacy: group chats drop one-to-one feedback; revoked and expired feedback never appear（3.2）', async t => {
+test('brief privacy: private feedback stays usable in group chats with its label; revoked and expired feedback never appear（3.2）', async t => {
   const { h } = await briefFixture(t, { memories: [
     feedbackMemory('公开反馈：喜欢慢歌'),
     feedbackMemory('私下反馈：只告诉你我喜欢某歌手', { disclosure: 'private' }),
@@ -2115,7 +2282,9 @@ test('brief privacy: group chats drop one-to-one feedback; revoked and expired f
   h.registry.update('a', { personaDocument: '# a\n\n## 我喜欢的音乐\n偏好 city pop\n' });
   const group = await h.service.select({ mode: 'discovery', delivery: 'recommend_only', count: 2 }, context('brief-group'));
   assert.match(group.brief, /公开反馈：喜欢慢歌/);
-  for (const hidden of ['私下反馈', '撤回的反馈', '过期的反馈']) assert.equal(group.brief.includes(hidden), false, hidden);
+  // 私下说的口味在群聊里照样用来选歌，带标签：说不说出口是伙伴的分寸。
+  assert.match(group.brief, /私下反馈：只告诉你我喜欢某歌手（[^）]*对方私下跟你说的/);
+  for (const hidden of ['撤回的反馈', '过期的反馈']) assert.equal(group.brief.includes(hidden), false, hidden);
   assert.match(group.brief, /【伙伴自己的审美（这是伙伴自己的审美，不是用户口味）】\n偏好 city pop/);
 
   h.conversationStore.createRoom({ sessionId: 'solo', memberIds: ['a'] });
@@ -2126,7 +2295,7 @@ test('brief privacy: group chats drop one-to-one feedback; revoked and expired f
   const traced = h.events.filter(event => event.event === 'music-selection-brief');
   assert.equal(traced.length, 2);
   assert.deepEqual(Object.keys(traced[0]).sort(), ['event', 'length', 'offerId', 'personId', 'requestId', 'sections', 'sessionId', 'truncated']);
-  assert.equal(traced[0].sections.feedback, 1);
+  assert.equal(traced[0].sections.feedback, 2);
   assert.equal(traced[0].length, group.brief.length);
   const leaked = JSON.stringify(h.events);
   for (const text of ['公开反馈', 'city pop', '私下反馈']) assert.equal(leaked.includes(text), false, `trace 不含 ${text}`);
@@ -2272,6 +2441,18 @@ const withEnv = async (vars, fn) => {
   }
 };
 
+test('另一个供应商刚放过同名同歌手：这首退到冷却组，近期播放要带歌名才认得出', async t => {
+  const now = Date.now();
+  const h = fixture(t, { userCandidates: scoredSongs([1, 2, 3]) });
+  h.service.getRecentPlays = since => [
+    { ts: now - 23 * 60_000, song_id: '26353080', source: 'ncm', title: '歌1', artist: '歌手1' },
+  ].filter(row => row.ts >= since);
+  const selection = await h.service.select({ mode: 'discovery', delivery: 'recommend_only', count: 3 }, context('same-title-artist'));
+  assert.deepEqual(ordered(selection), ['2', '3', '1']);
+  const at = songId => selection.offer.features[selection.offer.candidates.findIndex(item => item.songId === songId)];
+  assert.deepEqual(at('1').scoreParts, { cooldown: 1, sameTitleArtist: 1 });
+});
+
 test('冷却窗口是 24 小时：23 小时前放过的垫底、25 小时前的回到打分；推荐排除同口径，环境变量仍可覆盖（6.1a）', async t => {
   const now = Date.now();
   const h = fixture(t, { userCandidates: scoredSongs([1, 2, 3, 4]) });
@@ -2373,4 +2554,183 @@ test('歌手模式只在该歌手的歌之间打分重排；小曲库全部在�
   ];
   const cycled = await small.service.select({ mode: 'discovery', delivery: 'recommend_only', count: 3 }, context('small-cycle'));
   assert.deepEqual(ordered(cycled), ['2', '3', '1']);
+});
+
+test('preparation pre-resolution bounds the head to four, aborts timed-out candidates, and adoption reuses pre-resolved cache with full revalidation', async t => {
+  const rows = wideRows(12);
+  const h = fixture(t, { userCandidates: rows, continuationCandidates: rows, preResolveConcurrency: 2 });
+  h.service.preResolveTimeoutMs = 25;
+  await activateSession(h);
+  const calls = [];
+  const signals = [];
+  const resolveTrack = h.service.programCommitService.resolveTrack;
+  h.service.programCommitService.resolveTrack = async (query, options) => {
+    const id = options.candidate.sourceSongId;
+    calls.push({ id, preResolve: Boolean(options.preResolve) });
+    if (options.preResolve && id === rows[2].song_id) {
+      signals.push(options.signal);
+      return new Promise(resolve => {
+        options.signal?.addEventListener('abort', () => resolve({ ok: false }), { once: true });
+      });
+    }
+    return resolveTrack(query, options);
+  };
+  const { offered } = await holdBatch(h, {
+    request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 2 }),
+    indexes: [1, 2],
+  });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const preResolveIds = calls.filter(c => c.preResolve).map(c => c.id);
+  assert.equal(preResolveIds.length, 4, 'preparation 预解析至多覆盖前 4 首');
+  assert.deepEqual(preResolveIds.sort(), offered.offer.candidates.slice(0, 4).map(c => c.songId).sort());
+  assert.equal(signals[0]?.aborted, true, '预解析超时必须真正 abort 子信号');
+
+  const beforeAdoptCalls = calls.length;
+  let validations = 0;
+  const origValidate = h.service.programCommitService.validateResolvedTrack;
+  h.service.programCommitService.validateResolvedTrack = (...args) => { validations += 1; return origValidate(...args); };
+  const adopted = await adoptPrepared(h, offered.request);
+  assert.equal(adopted.ok, true, adopted.result?.code);
+  assert.equal(calls.length, beforeAdoptCalls, '采用预热批次复用预解析结果，不重复请求音乐源');
+  assert.equal(validations, 2, '复用预解析结果后仍逐项执行硬约束重验');
+});
+
+test('prepared adoption still rejects if constraint validation fails even when pre-resolved cache hits', async t => {
+  const rows = wideRows(6);
+  const h = fixture(t, { userCandidates: rows, continuationCandidates: rows, preResolveConcurrency: 2 });
+  await activateSession(h);
+  const { offered } = await holdBatch(h, {
+    request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 2 }),
+    indexes: [1, 2],
+  });
+  await drain();
+  h.service.programCommitService.validateResolvedTrack = () => ({ ok: false, reason: 'constraint-mismatch' });
+  const adopted = await adoptPrepared(h, offered.request);
+  assert.equal(adopted.matched, true);
+  assert.equal(adopted.ok, false);
+  assert.equal(h.playbackRuntime.snapshot().queue.length, 1, '约束失败不得入队');
+});
+
+test('song_likes 红心事实提升 originLiked 与熟悉度节奏，不跨源合并且随 likesRevision 同步预热', async t => {
+  const candidates = [
+    { song_id: '10', title: '网易云同ID', artist: '歌手A', source: 'ncm' },
+    { song_id: '10', title: 'QQ红心曲', artist: '歌手B', source: 'qq' },
+    { song_id: '20', title: '陌生曲', artist: '歌手C', source: 'qq' },
+  ];
+  let liked = [{ provider: 'qq', songId: '10' }];
+  let rev = 'like-1';
+  const h = fixture(t, { userCandidates: candidates, continuationCandidates: candidates,
+    getLikedTracks: () => liked, getLikesRevision: () => rev });
+  saveFamiliarArtistFeedback(h.conversationStore.db, { personId: 'a', sourceTurnId: 't-like-cadence',
+    userText: '熟人优先', mode: 'familiar_first' });
+  const offered = await h.service.select({ mode: 'discovery', delivery: 'append', count: 2 }, context('likes-origin'));
+  assert.equal(offered.offer.candidates[0].source, 'qq');
+  assert.equal(offered.offer.candidates[0].songId, '10');
+  const pos = (source, id) => offered.offer.candidates.findIndex(c => c.source === source && c.songId === id);
+  assert.equal(offered.offer.features[pos('qq', '10')].origin, 'liked');
+  assert.equal(offered.offer.features[pos('qq', '10')].familiarity, 'familiar');
+  assert.equal(offered.offer.features[pos('ncm', '10')].origin, 'library', '同 ID 跨源不共享红心');
+  assert.equal(offered.offer.features[pos('ncm', '10')].familiarity, 'unfamiliar');
+
+  await activateSession(h);
+  const { offered: prepOffer } = await holdBatch(h, {
+    request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 1 }),
+    indexes: [1],
+  });
+  rev = 'like-2';
+  const mismatch = await adoptPrepared(h, prepOffer.request);
+  assert.equal(mismatch.matched, false, '显式红心版本变化必须让旧预热批失配回落');
+});
+
+test('softPreferences 在 select() 确定性排序生效；连跳 >= 2 降权且改变预热桶（单跳不失效）', async t => {
+  const tracks = [
+    { song_id: 's-calm', title: '温柔慢歌', artist: '陈词', source: 'qq' },
+    { song_id: 's-calm-2', title: '同情绪歌', artist: '路人Z', source: 'qq' },
+    { song_id: 's-loud', title: '快歌', artist: '歌手X', source: 'qq' },
+    { song_id: 's-other', title: '轻快', artist: '新人Y', source: 'qq' },
+  ];
+  const tagMap = {
+    's-calm': { genres: ['民谣'], mood: 'calm', tempo: 'slow', energy: 0.25, valence: 0.65, vocal_softness: 0.85, instruments: ['钢琴'], has_vocal: true },
+    's-calm-2': { genres: ['民谣'], mood: 'calm', tempo: 'slow', energy: 0.28, valence: 0.55, has_vocal: true },
+    's-loud': { genres: ['摇滚'], mood: 'energetic', tempo: 'fast', energy: 0.9, valence: 0.5, instruments: ['鼓点'], has_vocal: true },
+    's-other': { genres: ['流行'], mood: 'happy', tempo: 'mid', energy: 0.6, valence: 0.8, has_vocal: true },
+  };
+  let presenceState = { consecutiveSkips: 0, recentSkippedTracks: [] };
+  const h = fixture(t, { userCandidates: tracks, continuationCandidates: tracks,
+    getTags: songId => tagMap[songId] || null, getSessionPresence: () => presenceState });
+
+  const softRes = await h.service.select({ mode: 'discovery', delivery: 'append', count: 1, softPreferences: '温柔安静的钢琴歌，少一点鼓点' }, context('soft-1'));
+  assert.equal(softRes.offer.candidates[0].songId, 's-calm', 'softPreferences 直接提升匹配质地到窗口首位');
+
+  await activateSession(h);
+  const loudIndex = (await h.service.select({ mode: 'discovery', delivery: 'append', count: 1 }, context('prep-check')))
+    .offer.candidates.findIndex(c => c.songId === 's-loud') + 1;
+  const { offered } = await holdBatch(h, {
+    request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 1 }),
+    indexes: [loudIndex],
+  });
+  presenceState = { consecutiveSkips: 1, recentSkippedTracks: [{ provider: 'qq', songId: 's-calm', artist: '陈词' }] };
+  const singleSkipRes = await h.service.select({ mode: 'discovery', delivery: 'append', count: 1, softPreferences: '温柔安静的钢琴歌' }, context('skip-1'));
+  assert.equal(singleSkipRes.offer.candidates[0].songId, 's-calm', '单次跳过不触发惩罚');
+
+  // consecutiveSkips = 1 仍与 0 落入同一个 skipMomentumBucket (0)
+  const stillHits = await adoptPrepared(h, offered.request);
+  assert.equal(stillHits.matched, true, '单次跳过不使预热批失配');
+
+  // 再连跳一首后进入 bucket=1：既触发即时降权（同歌手陈词与同 mood=calm 的 s-calm-2 一起退后），也挡下此前 bucket=0 的预热批次
+  const { offered: heldAgain } = await holdBatch(h, {
+    request: normalizeMusicSelection({ mode: 'discovery', delivery: 'append', count: 1 }),
+    indexes: [1],
+  });
+  presenceState = { consecutiveSkips: 2, recentSkippedTracks: [
+    { provider: 'qq', songId: 's-calm', artist: '陈词' },
+    { provider: 'qq', songId: 's-calm-2', artist: '另一艺人' },
+  ] };
+  const twoSkipRes = await h.service.select({ mode: 'discovery', delivery: 'append', count: 1 }, context('skip-2'));
+  assert.equal(twoSkipRes.offer.candidates[0].songId, 's-other', '连跳 >= 2 立即压低同歌手与同情绪曲目');
+  const blockedStale = await adoptPrepared(h, heldAgain.request);
+  assert.equal(blockedStale.matched, false, '连跳达到 2 次后 bucket 切换，旧预热批不得再被采用');
+});
+
+test('two-track eligible pool fails closed on auto_continue instead of ping-ponging A ↔ B', async t => {
+  const twoTracks = [1, 2].map(id => ({ song_id: String(id), title: `慢歌${id}`, artist: `歌手${id}`, source: 'qq', album: `专辑${id}` }));
+  const h = fixture(t, { userCandidates: twoTracks, continuationCandidates: twoTracks });
+  const seeded = await h.service.execute({
+    mode: 'exact',
+    delivery: 'replace_now',
+    count: 2,
+    targets: twoTracks.map(row => ({ songId: row.song_id, source: 'qq', title: row.title, artist: row.artist })),
+  }, context('two-seed'));
+  assert.equal(seeded.ok, true, seeded.code);
+  await playCurrentThrough(h, 'two-1');
+  assert.equal(h.playbackRuntime.snapshot().currentSongId, '2');
+
+  const selection = await h.service.select({ mode: 'discovery', delivery: 'append', count: 3 }, {
+    ...context('two-pingpong'),
+    reason: 'auto_continue',
+  });
+  assert.equal(selection.ok, false, '仅剩 2 首合格曲目时禁止回流，避免 A ↔ B 无限乒乓');
+  assert.equal(selection.code, 'NO_MATCHING_CANDIDATES');
+});
+
+test('small library recirculation at queue tail avoids the immediately preceding track when enough older tracks exist', async t => {
+  const fiveTracks = [1, 2, 3, 4, 5].map(id => ({ song_id: String(id), title: `歌${id}`, artist: `歌手${id}`, source: 'qq', album: `专辑${id}` }));
+  const h = fixture(t, { userCandidates: fiveTracks, continuationCandidates: fiveTracks });
+  const seeded = await h.service.execute({
+    mode: 'exact',
+    delivery: 'replace_now',
+    count: 5,
+    targets: fiveTracks.map(row => ({ songId: row.song_id, source: 'qq', title: row.title, artist: row.artist })),
+  }, context('five-seed'));
+  assert.equal(seeded.ok, true, seeded.code);
+  for (let i = 1; i <= 4; i += 1) await playCurrentThrough(h, `five-${i}`);
+  assert.equal(h.playbackRuntime.snapshot().currentSongId, '5');
+
+  const selection = await h.service.select({ mode: 'discovery', delivery: 'append', count: 3 }, {
+    ...context('five-tail'),
+    reason: 'auto_continue',
+  });
+  assert.equal(selection.ok, true, selection.code);
+  const offeredSongIds = selection.offer.candidates.map(candidate => candidate.songId);
+  assert.deepEqual(offeredSongIds.sort(), ['1', '2', '3'], '队尾其余老歌够用时应排除刚播完的上一首与当前曲目');
 });

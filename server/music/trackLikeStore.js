@@ -13,9 +13,7 @@
 //    不做任何合并或回退查找。
 // 3. 状态取值封闭。拼错的状态名会让 UI 显示错的东西，宁可在写入时拒绝。
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 /** `remote_state` 的封闭取值，见 design.md D2。 */
@@ -79,14 +77,13 @@ export class TrackLikeStore {
     this._ownsDb = !db;
     this.dbPath = dbPath;
     this.now = now;
+    this._userIntentRevision = 0;
   }
 
   initialize() {
     if (!this.db) {
       const path = this.dbPath || resolveDatabasePath();
-      if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-      this.db = new Database(path);
-      this.db.pragma('journal_mode = WAL');
+      this.db = openSqliteDatabase(path);
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS song_likes (
@@ -144,6 +141,7 @@ export class TrackLikeStore {
     const state = assertRemoteState(remoteState);
     const source = normalizeOrigin(origin);
     const existing = this.get(normalizedProvider, normalizedSongId);
+    const changed = !existing || existing.desired !== (want === 1);
     // `desired` 在读出时是 boolean，比较前先归一，否则「重复同一意图」会被误判
     // 成意图变化而清零重试预算。
     const attempts = existing && existing.desired === (want === 1) ? existing.attempts : 0;
@@ -169,6 +167,7 @@ export class TrackLikeStore {
       origin: source,
       updated_at: now,
     });
+    if (source === 'user' && changed) this._userIntentRevision += 1;
     return this.get(normalizedProvider, normalizedSongId);
   }
 
@@ -231,6 +230,36 @@ export class TrackLikeStore {
        LIMIT ?
     `).all(MAX_AUTO_ATTEMPTS, Math.max(1, Math.trunc(Number(limit) || 50)));
     return rows.map(row => this._toLike(row));
+  }
+
+  /** 按 canonical `(provider, songId)` 返回全部当前标为红心的曲目（含用户点心与云端采纳）。 */
+  listLikedTracks() {
+    const rows = this.db.prepare(`
+      SELECT provider, song_id, updated_at
+        FROM song_likes
+       WHERE desired = 1
+       ORDER BY updated_at DESC
+    `).all();
+    return rows.map(row => Object.freeze({
+      provider: row.provider,
+      songId: row.song_id,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  /**
+   * 用户显式红心修订号：只统计 `origin = 'user'` 的显式点赞变化。
+   * 后台远端水合（`origin = 'adopted'`）不扰动它，避免刚落完排歌水合就把预热批次误作废。
+   */
+  likesRevision() {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count,
+             COALESCE(MAX(updated_at), 0) AS latest,
+             COALESCE(SUM(CASE WHEN desired = 1 THEN 1 ELSE 0 END), 0) AS liked
+        FROM song_likes
+       WHERE origin = 'user'
+    `).get();
+    return `${this._userIntentRevision}:${row?.count || 0}:${row?.liked || 0}:${row?.latest || 0}`;
   }
 
   _toLike(row) {

@@ -37,10 +37,11 @@ export function classifyPlaybackTransition(next, event, previous) {
     outcome = 'completed';
   } else if (event.type === P.TRACK_FAILED && sameIdentity && next.phase === PlaybackPhase.ERROR) {
     outcome = 'technical_failure';
-  } else if ([P.NEXT_REQUESTED, P.CARD_SELECTED, P.TRACK_DISMISS_REQUESTED].includes(event.type)
+  } else if ([P.NEXT_REQUESTED, P.TRACK_DISMISS_REQUESTED].includes(event.type)
     && ACTIVE.includes(previous.phase) && advanced) {
     outcome = 'skipped';
-  } else if (event.type === P.PROGRAM_COMMITTED && event.delivery === 'replace_now'
+  } else if ((event.type === P.CARD_SELECTED
+    || (event.type === P.PROGRAM_COMMITTED && event.delivery === 'replace_now'))
     && advanced && ACTIVE.includes(previous.phase)) {
     outcome = 'partial';
   }

@@ -19,7 +19,14 @@
 import { createToolOutcome, ToolOutcomeKind } from '../virtual-person/VirtualPersonTypes.js';
 import { stripPeerMarkers } from '../virtual-person/peerMessage.js';
 import { NOTE_LIMITS, noteIdOf } from '../virtual-person/companionNotes.js';
+import {
+  beatsToVisibleText,
+  buildBeatsArraySchema,
+  prepareBeatsArgs,
+  validateReplyBeats,
+} from '../virtual-person/replyBeats.js';
 import { AMBIENT_LINE_MAX_CHARS, ambientLineDefect, ambientRuleFeedback } from './ambientLine.js';
+import { PRESENCE_SIMILARITY_LIMIT, PLAYBACK_CLAIMS, URL_LIKE, bigramSimilarity } from './presenceLine.js';
 
 export const AMBIENT_CAPABILITY = 'presence.ambient';
 export const INNER_NOTES_CAPABILITY = 'presence.notes';
@@ -69,21 +76,40 @@ export function registerAmbientTools(registry) {
   if (registered.has(AMBIENT_RESPOND_TOOL_NAME)) return registry;
   registerNoteTools(registry);
   registerRecommendTool(registry);
+  const allowActionFor = ({ interactionMode = 'radio', isGroup = false } = {}) =>
+    interactionMode === 'roleplay' && !isGroup;
   registry.register(AMBIENT_RESPOND_TOOL_NAME, {
     capability: AMBIENT_CAPABILITY,
-    definition: {
-      description: '给出这一轮的结果：action=speak 时写下你要说的一两句话（能直接念出来的纯文本）；action=quiet 表示这次安静陪着、不开口。说出口的话会被机械校验，被拒绝时按提示修改或改为 quiet；接受即结束这一轮，不代表已经出声。',
-      parameters: {
-        type: 'object', additionalProperties: false, required: ['action'],
-        properties: {
-          action: { type: 'string', enum: ['speak', 'quiet'] },
-          text: { type: 'string', maxLength: AMBIENT_LINE_MAX_CHARS * 2, description: '一两句话；action=quiet 时不填。' },
-          noteIds: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 4 },
-            description: '这句话接的是你心里记着的哪几条（n 编号）；没有就不填。' },
-          invite: { type: 'string', maxLength: 4,
-            description: '群聊里 action=speak 时可选：点名一位伙伴接你的话（m 编号，见情境说明）；没有就不填。' },
+    resolveDefinition: ({ interactionMode = 'radio', isGroup = false } = {}) => {
+      const allowAction = allowActionFor({ interactionMode, isGroup });
+      return {
+        description: allowAction
+          ? '给出这一轮的结果：action=speak 时优先用 beats（1..2 拍结构化分拍，action 放简短神态/动作、say 放台词），或写 text 一两句话；action=quiet 表示这次安静陪着、不开口。说出口的话会被机械校验，被拒绝时按提示修改或改为 quiet；接受即结束这一轮，不代表已经出声。'
+          : '给出这一轮的结果：action=speak 时写下你要说的一两句话（支持 beats 1..2 拍结构化台词，不含动作描写，或直接写 text）；action=quiet 表示这次安静陪着、不开口。说出口的话会被机械校验，被拒绝时按提示修改或改为 quiet；接受即结束这一轮，不代表已经出声。',
+        parameters: {
+          type: 'object', additionalProperties: false, required: ['action'],
+          properties: {
+            action: { type: 'string', enum: ['speak', 'quiet'] },
+            beats: buildBeatsArraySchema({ allowAction, minItems: 1, maxItems: 2 }),
+            text: { type: 'string', maxLength: AMBIENT_LINE_MAX_CHARS * 2, description: '一两句话；传了 beats 时不必填，action=quiet 时不填。' },
+            noteIds: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 4 },
+              description: '这句话接的是你心里记着的哪几条（n 编号）；没有就不填。' },
+            invite: { type: 'string', maxLength: 4,
+              description: '群聊里 action=speak 时可选：点名一位伙伴接你的话（m 编号，见情境说明）；没有就不填。' },
+          },
         },
-      },
+      };
+    },
+    prepareArgs: (args, { interactionMode = 'radio', isGroup = false } = {}) => {
+      const prepared = prepareBeatsArgs(args, {
+        allowAction: allowActionFor({ interactionMode, isGroup }),
+        optionalBeats: true,
+      });
+      if (!prepared || typeof prepared !== 'object' || Array.isArray(prepared)) return prepared;
+      if (prepared.text === null) delete prepared.text;
+      if (prepared.noteIds === null) delete prepared.noteIds;
+      if (prepared.invite === null) delete prepared.invite;
+      return prepared;
     },
     handler: (args, context = {}) => {
       const task = context.ambientTask;
@@ -97,17 +123,68 @@ export function registerAmbientTools(registry) {
       if (args.action !== 'speak') {
         return failure('AMBIENT_INVALID_ACTION', 'action 只能是 speak 或 quiet。', context, { retryable: true });
       }
-      const text = stripPeerMarkers(String(args.text || '')).text;
       const noteIds = [...new Set(Array.isArray(args.noteIds) ? args.noteIds.map(String) : [])];
       const notes = context.innerNotes;
       const unknown = noteIds.find(id => !notes?.map?.has(id));
       // 暂存了推荐：这句话就是推荐本身，必须点到同一首 canonical 歌名。
       const staged = context.ambientRecommendation?.stage;
-      const rule = ambientLineDefect(text, task) || (unknown ? 'unknown_note' : null)
-        || (staged && !mentionsTitle(text, staged.title) ? 'recommendation_not_mentioned' : null);
-      if (rule) {
-        return failure('AMBIENT_LINE_REJECTED', `${ambientRuleFeedback(rule)}\n修改后重新提交一次，或者提交 action=quiet。`,
-          context, { retryable: true, facts: { rejectedRule: rule } });
+
+      let text = '';
+      let beats = null;
+      if (args.beats !== undefined) {
+        const isGroup = context.isGroup !== undefined
+          ? Boolean(context.isGroup)
+          : (Array.isArray(context.memberIds) && context.memberIds.length > 1);
+        const allowAction = allowActionFor({ interactionMode: context.interactionMode, isGroup });
+        const validated = validateReplyBeats(args.beats, {
+          allowAction,
+          minItems: 1,
+          maxItems: 2,
+          allowMusicClaims: false,
+        });
+        if (!validated.ok) {
+          return failure('AMBIENT_LINE_REJECTED', `${validated.modelContext}\n修改后重新提交一次，或者提交 action=quiet。`,
+            context, { retryable: true, facts: { rejectedRule: validated.reason } });
+        }
+        beats = validated.beats;
+        const combinedSay = beats.map(beat => beat.say).join(' ');
+        text = stripPeerMarkers(beatsToVisibleText(beats)).text;
+        let rule = null;
+        for (const beat of beats) {
+          const defect = ambientLineDefect(beat.say, { contextText: task.contextText, recentLines: [] });
+          if (defect === 'too_many_sentences') {
+            const sentenceCount = beat.say.split(/[。！？!?\r\n]+/u).map(part => part.trim()).filter(Boolean).length;
+            if (sentenceCount > 4) { rule = defect; break; }
+          } else if (defect === 'too_long') {
+            if ([...beat.say].length > AMBIENT_LINE_MAX_CHARS * 2) { rule = defect; break; }
+          } else if (defect) {
+            rule = defect;
+            break;
+          }
+          if (beat.action) {
+            if (URL_LIKE.test(beat.action)) { rule = 'url'; break; }
+            if (PLAYBACK_CLAIMS.test(beat.action)) { rule = 'playback_claim'; break; }
+          }
+        }
+        if (!rule && (task?.recentLines || []).some(prev =>
+          bigramSimilarity(combinedSay, prev) >= PRESENCE_SIMILARITY_LIMIT
+          || bigramSimilarity(text, prev) >= PRESENCE_SIMILARITY_LIMIT)) {
+          rule = 'repeats_recent';
+        }
+        if (!rule && unknown) rule = 'unknown_note';
+        if (!rule && staged && !mentionsTitle(combinedSay, staged.title)) rule = 'recommendation_not_mentioned';
+        if (rule) {
+          return failure('AMBIENT_LINE_REJECTED', `${ambientRuleFeedback(rule)}\n修改后重新提交一次，或者提交 action=quiet。`,
+            context, { retryable: true, facts: { rejectedRule: rule } });
+        }
+      } else {
+        text = stripPeerMarkers(String(args.text || '')).text;
+        const rule = ambientLineDefect(text, task) || (unknown ? 'unknown_note' : null)
+          || (staged && !mentionsTitle(text, staged.title) ? 'recommendation_not_mentioned' : null);
+        if (rule) {
+          return failure('AMBIENT_LINE_REJECTED', `${ambientRuleFeedback(rule)}\n修改后重新提交一次，或者提交 action=quiet。`,
+            context, { retryable: true, facts: { rejectedRule: rule } });
+        }
       }
       // 点名：短编号由 runtime 映射成成员；预算（每拍一次 + 至多一次回传、句数上限）由 FloorRunner 裁定。
       // 邀请者这句真正入账后邀请才生效；被拒绝时什么也不登记，可以改掉 invite 再交。
@@ -131,7 +208,9 @@ export function registerAmbientTools(registry) {
       }
       // 说出口才算提过：入账时与这句话同一事务把这些 note 记为 raised。
       if (noteIds.length && notes?.stage) notes.stage.raises.push(...noteIds.map(id => notes.map.get(id)));
-      return accepted('AMBIENT_LINE_ACCEPTED', { action: 'speak', text, ...(noteIds.length ? { noteIds } : {}),
+      return accepted('AMBIENT_LINE_ACCEPTED', { action: 'speak', text,
+        ...(beats ? { beats } : {}),
+        ...(noteIds.length ? { noteIds } : {}),
         ...(invitedPersonId ? { invitedPersonId } : {}) },
         '这句话已被接受，这一轮结束；不要再提交，也不要声称已经出声。', context);
     },

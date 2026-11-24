@@ -67,7 +67,7 @@ const SELECTORS = `
 #room-cancel #room-history #room-invite #room-list #room-listen #room-member-settings #room-members #room-menu
 #room-name #room-options #room-options-after #room-person-choices #room-picker #room-picker-error
 #room-picker-submit #room-picker-title #room-rename #room-title #sb-queue #source-mismatch #source-mismatch-copy
-#person-detail #person-detail-name #person-detail-state #person-detail-memories
+#person-detail #person-detail-back #person-detail-name #person-detail-state #person-detail-memories
 #person-detail-name-input #person-detail-persona-input #person-detail-voice-select #person-detail-voice-hint
 #person-detail-presence-select #person-detail-presence-style
 #person-profile-form #person-detail-save #person-detail-save-msg #person-detail-listen #person-detail-preview
@@ -348,6 +348,19 @@ test('当前声音回落时，选择器与提示行如实说明', async t => {
   assert.equal(h.nodes.get('#person-detail-voice-select').value, 'v1');
 });
 
+test('Edge 预选尚未启用时展示来源与同意入口，不谎称已经换声', async () => {
+  const h = harness({ voices: [{ id: 'v1', displayName: '晓晓', sourceProvider: 'free-edge', unavailable: true, isFallback: true }] });
+  await h.view.openPerson('radiohost-a');
+  const select = h.nodes.get('#person-detail-voice-select');
+  assert.match(select.innerHTML, /晓晓.*免费声音（Edge）.*未启用/);
+  assert.equal(select.value, 'v1', '预选身份不变');
+  const hint = h.nodes.get('#person-detail-voice-hint').textContent;
+  assert.match(hint, /设置.*声音.*启用免费声音/);
+  assert.match(hint, /确认.*微软/);
+  assert.doesNotMatch(hint, /音色已变化|正在用另一把/);
+  assert.equal(h.calls.filter(call => call[0] !== 'GET').length, 0, '查看预选不写配置也不试听');
+});
+
 test('主题未要求时人物表单始终可编辑（旧四套主题行为不变）', async () => {
   const h = harness();
   await h.view.openPerson('radiohost-a');
@@ -372,7 +385,11 @@ test('--person-edit: toggle 时先只读，点编辑才能改，保存后回到�
   assert.equal(persona.readOnly, false);
   persona.value = '改到一半';
   await toggle.trigger('click');
-  assert.equal(form.classList.contains('is-editing'), false, '取消编辑回到只读');
+  assert.equal(form.classList.contains('is-editing'), true, '首次点取消编辑拦截并提示未保存改动');
+  assert.match(h.nodes.get('#person-detail-save-msg').textContent, /未保存/);
+  assert.equal(persona.value, '改到一半');
+  await toggle.trigger('click');
+  assert.equal(form.classList.contains('is-editing'), false, '二次点击确认取消回到只读');
   assert.equal(persona.value, '夜航的人格', '取消编辑还原为已保存的人格');
 
   // 换声音直接进入编辑，好让「保存修改」出现。
@@ -419,4 +436,46 @@ test('人物页：过期的 close 事件不会拿掉 person-page，离开时按�
   assert.equal(dialog.open, false, '回聊天时关闭人物页');
   await dialog.trigger('close');
   assert.equal(app.classList.contains('person-page'), false);
+});
+
+test('原绑定声音不在当前可选列表时保留当前声音选项，不静默篡改为列表第一项；改选不可用声音时拦截保存', async () => {
+  const h = harness({
+    persons: [{ id: 'radiohost-a', displayName: '夜航', kind: 'radiohost', personaDocument: '夜航的人格', voiceProfileId: 'v-missing' }],
+    voices: [
+      { id: 'v1', displayName: '第一把声音', unavailable: false },
+      { id: 'v-bad', displayName: '失效声音', unavailable: true },
+    ],
+  });
+  await h.view.openPerson('radiohost-a');
+  const select = h.nodes.get('#person-detail-voice-select');
+  assert.equal(select.value, 'v-missing');
+  assert.match(select.innerHTML, /value="v-missing" selected>当前声音（暂不可用）/);
+  assert.match(select.innerHTML, /value="v-bad" disabled/);
+
+  h.nodes.get('#person-detail-name-input').value = '夜航改名';
+  await h.nodes.get('#person-profile-form').trigger('submit');
+  const patch = h.calls.find(call => call[0] === 'PATCH');
+  assert.equal(patch[2].voiceProfileId, 'v-missing', '只改名字保存不得静默篡改原声音');
+
+  select.value = 'v-bad';
+  await select.trigger('change');
+  await h.nodes.get('#person-profile-form').trigger('submit');
+  assert.equal(h.calls.filter(call => call[0] === 'PATCH').length, 1, '主动改选不可用声音应被拦截');
+  assert.match(h.nodes.get('#person-detail-save-msg').textContent, /不可用/);
+});
+
+test('--person-edit: toggle 编辑态未保存时点返回或按 Esc 先提示，二次确认才关闭', async () => {
+  const h = harness({ tokens: { '--person-edit': 'toggle' } });
+  const dialog = h.nodes.get('#person-detail');
+  dialog.open = true;
+  await h.view.openPerson('radiohost-a');
+  await h.nodes.get('#person-detail-edit').trigger('click');
+  h.nodes.get('#person-detail-persona-input').value = '手写了一大段新人格';
+
+  await h.nodes.get('#person-detail-back').trigger('click');
+  assert.equal(dialog.open, true, '首次点返回先提示未保存');
+  assert.match(h.nodes.get('#person-detail-save-msg').textContent, /未保存/);
+
+  await h.nodes.get('#person-detail-back').trigger('click');
+  assert.equal(dialog.open, false, '二次点击确认关闭');
 });

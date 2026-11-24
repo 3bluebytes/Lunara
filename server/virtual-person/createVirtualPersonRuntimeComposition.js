@@ -1,5 +1,8 @@
+import { publicRuntimeState } from '../playback/playbackRuntimeTypes.js';
+import { modelPlaybackView } from './modelPlaybackView.js';
 import { sanitizeFacts, sanitizeExternalText } from './toolFacts.js';
-import { PERSON_MEMORY_CAPABILITY, registerPersonMemoryTools, retrievePersonMemories } from './personMemory.js';
+import { PERSON_MEMORY_CAPABILITY, registerPersonMemoryTools, relationshipFacts, retrievePersonMemories } from './personMemory.js';
+import { retireSettledLifeNotes } from '../memory/reflectionInsights.js';
 import { PRESENCE_PREFERENCE_CAPABILITY } from '../presence/presencePreferenceTool.js';
 import { AgentLoop } from './AgentLoop.js';
 import { registerWebAccessTools } from '../web-access/webTools.js';
@@ -7,6 +10,7 @@ import { WEB_CAPABILITY } from '../web-access/policy.js';
 import { IntentRouter } from './IntentRouter.js';
 import { tryBasicPlaybackFallback } from './basicPlaybackFallback.js';
 import { ContextBudgeter } from './ContextBudgeter.js';
+import { registerConversationRecallTool } from './conversationRecall.js';
 import { ConversationStore } from './ConversationStore.js';
 import { PresentationService } from './PresentationService.js';
 import { PromptAssembler } from './PromptAssembler.js';
@@ -18,11 +22,13 @@ import { createToolOutcome, ToolOutcomeKind } from './VirtualPersonTypes.js';
 
 import { registerMusicTools } from './musicTools.js';
 import { registerFloorTools } from './floorTools.js';
+import { REPLY_CAPABILITY, registerDeliverReplyTool } from './replyBeats.js';
 import { createContextualResponsePlanner } from './responseRouting.js';
 import { registerAmbientTools } from '../presence/ambientTools.js';
 import { createAmbientRecommendations } from '../presence/ambientRecommendations.js';
 import { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY } from '../program/musicSelectionRequest.js';
 import { describeCompanionMode } from '../playback/companionModes.js';
+import { describePlaybackIssue } from '../playback/playbackIssue.js';
 const PERSONA_CREATE_CAPABILITY = 'persona.create';
 const PERSONA_SWITCH_CAPABILITY = 'persona.switch';
 
@@ -52,8 +58,33 @@ function personFacts(entity) {
   };
 }
 
+/** 库的写入标记：本连接的累计改动数 + 其他连接提交时变化的 data_version；两者都没变说明这期间没有写入。 */
+function writeMarker(db) {
+  try {
+    return `${db.pragma('data_version', { simple: true })}:${db.prepare('SELECT total_changes() AS n').get().n}`;
+  } catch { return null; }
+}
+
 function retrieveMemories(getMemoryService, input, conversationStore = null) {
   return retrievePersonMemories(getMemoryService?.(), conversationStore, input);
+}
+
+/**
+ * 带语义召回的检索（add-local-semantic-memory-recall）：只有关系事实超出字节预算时才问本地 embedding，
+ * 拿到提名的 id 后交给同步的 retrievePersonMemories；召回失败/不可用时 semanticRecall 为空，结果与按原话检索一致。
+ */
+async function retrieveMemoriesWithRecall(getMemoryService, semanticMemory, input, conversationStore = null) {
+  const service = getMemoryService?.();
+  let semanticRecall = [];
+  let relationships;
+  if (semanticMemory?.available() && service?.store) {
+    const before = writeMarker(service.store.db);
+    const facts = relationshipFacts(service, input);
+    if (facts.overflow.length) semanticRecall = await semanticMemory.recall({ store: service.store, rows: facts.overflow, query: input.query });
+    // 召回要等 embedding，期间撤回的事实必须在注入前重新过滤掉：库在这段时间没有任何写入才复用上面的结果。
+    if (before && before === writeMarker(service.store.db)) relationships = facts;
+  }
+  return retrievePersonMemories(service, conversationStore, { ...input, semanticRecall, relationships });
 }
 
 export function createVirtualPersonRuntimeComposition({
@@ -65,31 +96,57 @@ export function createVirtualPersonRuntimeComposition({
   playbackRuntime,
   getMemoryService = () => null,
   isSharedMemoryActive = () => true,
+  semanticMemory = null,
   getMusicService = null,
   getEnvironment = null,
   getLifeContext = null,
+  isLifeContextCurrent = null,
   personaGateway = null,
   observeCommittedTurn = null,
   sessionTrace = null,
   webAccess = null,
+  getDreaming = () => null,
   logger = console,
 } = {}) {
   const registry = new VirtualPersonRegistry({ dbPath });
-  const conversationStore = new ConversationStore({ dbPath });
+  const conversationStore = new ConversationStore({
+    dbPath,
+    onNoteSettled: note => {
+      if (note?.kind !== 'open_loop') return;
+      const memoryService = getMemoryService?.();
+      const namespace = registry.get(note.personId)?.memoryNamespace;
+      if (!memoryService?.store || !namespace) return;
+      const turnIds = new Set((note.sourceRefs || []).filter(ref => ref.startsWith('turn:')).map(ref => ref.slice(5)));
+      retireSettledLifeNotes(memoryService, {
+        namespace,
+        lifeWriteKey: note.policy?.lifeWriteKey || null,
+        sessionId: note.sessionId,
+        text: note.text,
+        turnIds,
+        status: note.status,
+        now: conversationStore.now(),
+      });
+    },
+  });
   const toolRegistry = new VirtualPersonToolRegistry({ logger });
   if (webAccess) registerWebAccessTools(toolRegistry, webAccess);
-  // 表达偏好（影响串词该怎么说话）的写入/撤销会让已备好未播的串词失效；关系事实、
-  // 歌曲反馈与逐歌观察不进入串词语境，不触发重备。候选池失效保持对所有记忆变更生效。
-  registerPersonMemoryTools(toolRegistry, { getMemoryService, conversationStore, registry,
+  // 表达偏好的写入/撤销和记忆的遗忘/纠正，会让没说出口的串词作废（不重写，这些歌安静播放）；
+  // 普通关系事实和歌曲反馈不触发。候选池失效保持对所有记忆变更生效。
+  registerConversationRecallTool(toolRegistry, { conversationStore, getMemoryService, registry });
+  registerPersonMemoryTools(toolRegistry, { getMemoryService, conversationStore, registry, getDreaming,
     onMemoryChanged: ({ sessionId, affectsNarration = false } = {}) => {
       getMusicService?.()?.pool?.invalidate();
-      if (affectsNarration && sessionId && typeof playbackRuntime?.invalidatePreparedNarrations === 'function') {
+      if (!affectsNarration || !sessionId) return;
+      try { getMusicService?.()?.dropPreparedLines?.(sessionId); } catch { /* 批次里的串词到开口前还会再核对 */ }
+      if (typeof playbackRuntime?.invalidatePreparedNarrations === 'function') {
         Promise.resolve(playbackRuntime.invalidatePreparedNarrations(sessionId)).catch(() => {});
       }
     } });
   if (getMusicService) registerMusicTools(toolRegistry, getMusicService);
   // 群聊交接工具只在 runtime 按发言角色授予能力时可见；单聊永远拿不到。
   registerFloorTools(toolRegistry);
+  // 结构化分拍表达工具：普通聊天回合默认开放，按房间模式与群聊状态动态裁剪 action 字段。
+  registerDeliverReplyTool(toolRegistry);
   // 心跳叫醒的一轮（ambient turn）只拿 presence.ambient 能力；普通回合的能力里没有它。
   registerAmbientTools(toolRegistry);
   if (personaGateway) {
@@ -250,7 +307,8 @@ export function createVirtualPersonRuntimeComposition({
   const contextBudgeter = new ContextBudgeter({
     // 默认按现行 128K–1M 窗口模型定（约 8.7 万汉字）；小窗口或费用敏感场景用环境变量调回。
     maxBytes: Number.parseInt(process.env.CONVERSATION_CONTEXT_MAX_BYTES || '262144', 10),
-    maxMessages: Number.parseInt(process.env.CONVERSATION_CONTEXT_MAX_MESSAGES || '128', 10),
+    // 历史在两次压缩之间只追加：到这两个上限之一才成批压缩到一半，并把被裁部分并入较早对话摘要。
+    maxMessages: Number.parseInt(process.env.CONVERSATION_CONTEXT_MAX_MESSAGES || '400', 10),
     maxToolResultBytes: Number.parseInt(process.env.CONVERSATION_TOOL_RESULT_MAX_BYTES || '4000', 10),
   });
   const presentationService = new PresentationService({ synthesize, publish });
@@ -273,7 +331,8 @@ export function createVirtualPersonRuntimeComposition({
     agentLoop,
     responsePlanner: createContextualResponsePlanner({ agentLoop, toolRegistry }),
     presentationService,
-    retrieveMemories: input => retrieveMemories(getMemoryService, { ...input, isSharedMemoryActive }, conversationStore),
+    retrieveMemories: input => retrieveMemoriesWithRecall(getMemoryService, semanticMemory,
+      { ...input, isSharedMemoryActive }, conversationStore),
     getEnvironment,
     getLifeContext: getLifeContext
       ? ({ sessionId, entity, participants }) => {
@@ -284,9 +343,18 @@ export function createVirtualPersonRuntimeComposition({
         }
       }
       : null,
+    isLifeContextCurrent: isLifeContextCurrent
+      ? snapshot => {
+        try {
+          return isLifeContextCurrent(snapshot);
+        } catch {
+          return false;
+        }
+      }
+      : null,
     capabilityResolver: (entity, { musicOwnerId }) => {
       // 「多说点 / 安静点」的 typed tool 由 presence 装配注册；没注册时这个能力不对应任何工具。
-      const capabilities = [PERSON_MEMORY_CAPABILITY, PRESENCE_PREFERENCE_CAPABILITY];
+      const capabilities = [REPLY_CAPABILITY, PERSON_MEMORY_CAPABILITY, PRESENCE_PREFERENCE_CAPABILITY];
       if (webAccess?.policy.snapshot().enabled) capabilities.push(WEB_CAPABILITY);
       if (getMusicService) {
         capabilities.push(MUSIC_CAPABILITY);
@@ -297,10 +365,15 @@ export function createVirtualPersonRuntimeComposition({
       return capabilities;
     },
     getRuntimeState: ({ sessionId }) => {
-      const snapshot = playbackRuntime.listeningSnapshot?.(sessionId) || playbackRuntime.snapshot();
+      // 没说出口的串词不进模型上下文：host 到时候才"想起来"，否则会提前把它说出来。
+      const snapshot = publicRuntimeState(playbackRuntime.listeningSnapshot?.(sessionId) || playbackRuntime.snapshot());
+      const playbackIssue = describePlaybackIssue(snapshot);
       return sanitizeFacts({
-        playback: snapshot,
+        // 队列只截当前这首附近一段：整条队列会被有界清洗截成前 20 项，长队列里就看不到在放什么。
+        playback: modelPlaybackView(snapshot),
         companionMode: describeCompanionMode(snapshot.companionModeId),
+        // lastError 会被清洗按键名丢掉；模型看的是固定说法加歌名，不是原始异常。
+        ...(playbackIssue ? { playbackIssue } : {}),
         ...(playbackRuntime.listeningSnapshot ? {} : { queue: queueService.snapshot() }),
       });
     },
@@ -318,7 +391,14 @@ export function createVirtualPersonRuntimeComposition({
     ambientRecommendations,
     logger,
   });
-  const chatService = new VirtualPersonChatService({ runtime, presentationService, queueService, sessionTrace, logger });
+  const chatService = new VirtualPersonChatService({
+    runtime,
+    presentationService,
+    conversationStore,
+    queueService,
+    sessionTrace,
+    logger,
+  });
   return Object.freeze({ runtime, chatService, registry, conversationStore, toolRegistry, presentationService, agentLoop, contextBudgeter,
     ambientRecommendations });
 }
@@ -327,5 +407,6 @@ export {
   PERSONA_CREATE_CAPABILITY,
   PERSONA_SWITCH_CAPABILITY,
   retrieveMemories,
+  retrieveMemoriesWithRecall,
 };
 export default createVirtualPersonRuntimeComposition;

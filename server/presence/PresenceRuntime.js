@@ -72,7 +72,7 @@ export class PresenceRuntime {
       // 没有可说的就不开口，也不花一次模型调用。
       if (!hasPresenceHook(moment, grounding, cadence)) return silent('no-hook');
       const task = buildPresenceTask(moment, {
-        recentLines: this.conversationStore.recentSpokenLines?.(sessionId, personId, { limit: 3 }) || [],
+        recentLines: this.conversationStore.recentSpokenLines?.(sessionId, personId, { limit: 3, excludeTrackIntros: true }) || [],
         dayPart: dayPartOf(this.now(), this.timeZone), personName: person.displayName,
         grounding, temperament: { hint: cadence?.hint, style: temperament.style },
       });

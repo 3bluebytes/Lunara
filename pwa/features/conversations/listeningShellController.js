@@ -112,6 +112,9 @@ export function createListeningShellController({
     appElement.classList.toggle('mobile-chat-pane', mobilePane === 'chat');
     appElement.classList.toggle('focus-mode', focusMode);
     appElement.classList.toggle('chat-focus', chatFocusActive());
+    const playerArtwork = $('#player-artwork');
+    playerArtwork?.setAttribute?.('aria-label', focusMode ? '退出全屏聆听' : '打开全屏聆听');
+    playerArtwork?.setAttribute?.('title', focusMode ? '点击回到聊天' : '点击进入全屏聆听');
     syncHandleOwner();
     const chatToggle = $('#chat-focus-toggle');
     chatToggle?.setAttribute('aria-pressed', String(chatFocusActive()));
@@ -201,13 +204,13 @@ export function createListeningShellController({
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     if (closeMixer({ restoreFocus: true })) {
       event.preventDefault?.();
-      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
       return;
     }
     if (queuePopOpen()) {
       event.preventDefault?.();
-      event.stopPropagation?.();
-      setQueuePop(false);
+      event.stopImmediatePropagation?.();
+      setQueuePop(false, { restoreFocus: true });
       return;
     }
     if (!focusMode) {
@@ -215,7 +218,7 @@ export function createListeningShellController({
       return;
     }
     event.preventDefault?.();
-    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
     exitFocusMode();
   }
 
@@ -241,12 +244,14 @@ export function createListeningShellController({
     return Boolean(pop && !pop.hidden);
   }
 
-  function setQueuePop(next) {
+  function setQueuePop(next, { restoreFocus = false } = {}) {
     const pop = $('#queue-pop');
     const toggle = $('#queue-toggle');
     if (!pop) return;
+    const focusedInside = Boolean(pop.contains?.(documentLike.activeElement));
     pop.hidden = !next;
     toggle?.setAttribute?.('aria-expanded', String(Boolean(next)));
+    if (!next && (restoreFocus || focusedInside)) toggle?.focus?.({ preventScroll: true });
   }
 
   function onDocumentPointerDown(event) {

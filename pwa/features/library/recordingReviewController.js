@@ -26,7 +26,9 @@ export function createRecordingReviewController({ apiClient, requestIdFactory = 
       const previous = view;
       view = result;
       page = Math.min(page, Math.max(0, Math.ceil(view.proposals.length / PAGE_SIZE) - 1));
-      selected = new Set(rows().filter(row => keepSelection && previous ? selected.has(row.id) : true).map(row => row.id));
+      selected = new Set(rows()
+        .filter(row => (keepSelection && previous ? selected.has(row.id) : row?.evidence === 'fingerprint'))
+        .map(row => row.id));
       pending = null; stale = false; readFailed = false; error = '';
     } catch {
       if (disposed || ticket !== generation) return;
@@ -74,7 +76,9 @@ export function createRecordingReviewController({ apiClient, requestIdFactory = 
     selectAll(checked) { if (allowed()) { selected = new Set(checked ? rows().map(row => row.id) : []); emit('selection'); } },
     setPage(next) {
       if (!allowed() || !Number.isInteger(next) || next < 0 || next >= getSnapshot().pages) return;
-      page = next; selected = new Set(rows().map(row => row.id)); emit();
+      page = next;
+      selected = new Set(rows().filter(row => row?.evidence === 'fingerprint').map(row => row.id));
+      emit();
     },
     async confirm() {
       if (!allowed() || !selected.size || selected.size > PAGE_SIZE) return;

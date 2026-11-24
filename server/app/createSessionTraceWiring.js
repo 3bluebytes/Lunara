@@ -67,7 +67,7 @@ export function recordTrackIntroTurn({ sessionTrace = null, conversationStore, q
     source: track.source, text: track.narration.text });
   const turn = conversationStore.recordTrackIntro({ sessionId: snapshot.activeListeningSessionId,
     personId: track.virtualPersonId || 'lunara', correlationId: event.correlationId,
-    queueItemId: event.queueItemId, text: track.narration.text, track });
+    queueItemId: event.queueItemId, text: track.narration.text, track, about: track.narration.about || null });
   if (!turn) return null;
   publish({ type: 'queue-update', ...queueService.snapshot(), conversationId: turn.sessionId,
     messages: [{ say: turn.visibleText, sourceTurnId: turn.turnId, virtualPersonId: turn.speakerVirtualPersonId,

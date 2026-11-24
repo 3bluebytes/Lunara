@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  defaultLunaraHome,
+  isTestProcess,
   resolveDatabasePath,
   resolveDataRoot,
   resolveImageCacheDir,
@@ -95,9 +97,19 @@ function withWarnCapture(fn) {
   return warnings;
 }
 
-test('resolveDataRoot 默认锚 ~/.lunara', () => {
+test('产品进程的默认主目录是 ~/.lunara', () => {
+  assert.equal(defaultLunaraHome(['node', '/app/server/index.js']), join(homedir(), '.lunara'));
+  assert.equal(isTestProcess(['node', '/app/server/index.js']), false);
+});
+
+test('直接运行的测试进程没有显式数据根时落到临时目录，不碰真实 ~/.lunara', () => {
+  assert.equal(isTestProcess(['node', '/app/server/memory/Memory.integration.test.js']), true);
   withEnv({ LUNARA_DATA_DIR: undefined }, () => {
-    assert.equal(resolveDataRoot(), resolve(homedir(), '.lunara'));
+    const root = resolveDataRoot();
+    assert.notEqual(root, resolve(homedir(), '.lunara'));
+    assert.ok(root.startsWith(resolve(tmpdir())), `应在系统临时目录下: ${root}`);
+    assert.equal(resolveDataRoot(), root, '同一进程内保持稳定');
+    assert.equal(resolveDatabasePath(), resolve(root, 'data/state.db'));
   });
 });
 

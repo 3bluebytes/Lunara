@@ -24,15 +24,21 @@ function harness({ stored, desktop = true, parentWidth } = {}) {
   const props = new Map();
   const classes = new Set();
   const values = new Map(stored == null ? [] : [[STORAGE_KEYS.sidebarWidth, stored]]);
+  const winListeners = new Map();
   const root = {
     style: { setProperty: (k, v) => props.set(k, v), removeProperty: k => props.delete(k) },
     classList: { add: c => classes.add(c), remove: c => classes.delete(c) },
   };
   const storage = { getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) };
-  const windowLike = { matchMedia: () => ({ matches: desktop }) };
+  const windowLike = {
+    matchMedia: () => ({ matches: desktop }),
+    addEventListener(type, fn) { winListeners.set(type, fn); },
+    removeEventListener(type) { winListeners.delete(type); },
+    fire(type, event = {}) { winListeners.get(type)?.(event); },
+  };
   const handle = fakeHandle(parentWidth);
   const resize = createSidebarResize({ handle, root, storage, windowLike }).init();
-  return { resize, handle, props, classes, values };
+  return { resize, handle, props, classes, values, windowLike };
 }
 
 test('widths are clamped to 200–320 and garbage is rejected', () => {
@@ -100,4 +106,21 @@ test('narrow screens ignore drags and keys; destroy removes listeners', () => {
   assert.equal(h.props.has('--sidebar-user-width'), false);
   h.resize.destroy();
   assert.equal(h.handle.listenerCount(), 0);
+});
+
+test('lostpointercapture and window blur cancel active drag safely', () => {
+  const h = harness({ parentWidth: 220 });
+  h.handle.fire('pointerdown', { button: 0, pointerId: 3, clientX: 220 });
+  h.handle.fire('pointermove', { pointerId: 3, clientX: 250 });
+  assert.ok(h.classes.has('sidebar-resizing'));
+  h.handle.fire('lostpointercapture', { pointerId: 3 });
+  assert.equal(h.classes.has('sidebar-resizing'), false);
+  assert.equal(h.values.get(STORAGE_KEYS.sidebarWidth), '250');
+
+  h.handle.fire('pointerdown', { button: 0, pointerId: 5, clientX: 220 });
+  h.handle.fire('pointermove', { pointerId: 5, clientX: 290 });
+  h.windowLike.fire('blur');
+  assert.equal(h.classes.has('sidebar-resizing'), false);
+  assert.equal(h.values.get(STORAGE_KEYS.sidebarWidth), '290');
+  h.resize.destroy();
 });

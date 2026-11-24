@@ -44,12 +44,15 @@ export function createReceptionSignals({ now = () => Date.now(), trace = null, o
   const config = { ...RECEPTION_LIMITS, ...limits };
   const signals = [];
   const lastLine = new Map();
+  const replyMeta = new WeakMap();
   let quiet = null;
 
   const emit = change => { try { onChange(change); } catch { /* 观察者失败不影响信号 */ } };
-  const record = (kind, sessionId) => {
+  const record = (kind, sessionId, meta = null) => {
     const atMs = now();
-    signals.push(Object.freeze({ kind, weight: RECEPTION_WEIGHTS[kind], atMs, sessionId }));
+    const entry = Object.freeze({ kind, weight: RECEPTION_WEIGHTS[kind], atMs, sessionId });
+    if (meta) replyMeta.set(entry, meta);
+    signals.push(entry);
     // 足够老的信号已衰减到可以忽略；只保留最近若干条。
     while (signals.length > config.maxSignals) signals.shift();
     // trace 只放信号类别与系数，不放用户原话。
@@ -69,11 +72,27 @@ export function createReceptionSignals({ now = () => Date.now(), trace = null, o
     },
 
     /** 已接受的用户回合。她上一句入账后 5 分钟内 → replied（每句一次）。 */
-    noteUserTurn(sessionId) {
+    noteUserTurn(sessionId, { roundId = null } = {}) {
       const line = lastLine.get(sessionId);
       if (!line || line.replied || now() - line.atMs > config.replyWindowMs) return null;
       line.replied = true;
-      return record('replied', sessionId);
+      return record('replied', sessionId, roundId ? { roundId } : null);
+    },
+
+    /** 撤销同轮（如要求安静、纯静默控制或未提交回合）产生的一次性 replied 正向加分。 */
+    revertUserTurn({ sessionId = null, roundId = null } = {}) {
+      for (let index = signals.length - 1; index >= 0; index -= 1) {
+        const entry = signals[index];
+        if (entry.kind !== 'replied') continue;
+        const meta = replyMeta.get(entry);
+        const matches = roundId
+          ? meta?.roundId === roundId
+          : (!meta?.roundId && (!sessionId || entry.sessionId === sessionId));
+        if (!matches) continue;
+        signals.splice(index, 1);
+        return true;
+      }
+      return false;
     },
 
     /** 用户跳过当前歌（observer 的 track_skipped，技术失败不在其中）。她出声后 30 秒内 → 弱负信号。 */
@@ -88,9 +107,10 @@ export function createReceptionSignals({ now = () => Date.now(), trace = null, o
       return record('asked_more', sessionId);
     },
 
-    /** 本次一起听不再主动开口。返回读回的状态。 */
-    askQuiet(listeningSessionId) {
+    /** 本次一起听不再主动开口。同时撤销同轮触发的 replied 正向加分；返回读回的状态。 */
+    askQuiet(listeningSessionId, { sessionId = null, roundId = null } = {}) {
       if (!listeningSessionId) return null;
+      api.revertUserTurn({ sessionId: sessionId || listeningSessionId, roundId });
       const changed = quiet?.sessionId !== listeningSessionId;
       quiet = Object.freeze({ sessionId: listeningSessionId, sinceMs: now() });
       if (changed) {

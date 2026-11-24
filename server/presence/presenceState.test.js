@@ -153,3 +153,35 @@ test('moments carry the request that queued the track and the plan direction she
   const [bare] = run([[loading(1, { queue }), { type: 'TRACK_STARTED' }, playing(1, 10, { queue }), 10]], base).moments;
   assert.equal(bare.evidence.planDirection, null);
 });
+
+test('CARD_SELECTED is partial navigation: emits no track_skipped and resets skip streak', () => {
+  const { entry, moments } = run([
+    [loading(0), { type: 'TRACK_STARTED' }, playing(0, 0), 0],
+    [playing(0, 0), { type: 'NEXT_REQUESTED', positionSeconds: 5 }, loading(1), 5_000],
+    [loading(1), { type: 'TRACK_STARTED' }, playing(1, 6_000), 6_000],
+    [playing(1, 6_000), { type: 'CARD_SELECTED', positionSeconds: 4 }, loading(2), 10_000],
+  ]);
+  assert.equal(entry.skipCount, 1, '只有 NEXT_REQUESTED 计跳过');
+  assert.equal(entry.consecutiveSkips, 0, '手动点列表卡片重置连跳计数');
+  assert.deepEqual(entry.recentSkippedTracks, []);
+  assert.equal(moments.filter(m => m.kind === 'track_skipped').length, 1);
+});
+
+test('recentSkippedTracks accumulates bounded consecutive NEXT_REQUESTED skips and clears on completion', () => {
+  const { entry: twoSkips } = run([
+    [loading(0), { type: 'TRACK_STARTED' }, playing(0, 0), 0],
+    [playing(0, 0), { type: 'NEXT_REQUESTED', positionSeconds: 5 }, loading(1), 5_000],
+    [loading(1), { type: 'TRACK_STARTED' }, playing(1, 6_000), 6_000],
+    [playing(1, 6_000), { type: 'NEXT_REQUESTED', positionSeconds: 5 }, loading(2), 11_000],
+  ]);
+  assert.equal(twoSkips.consecutiveSkips, 2);
+  assert.deepEqual(twoSkips.recentSkippedTracks.map(t => t.songId), ['s1', 's2']);
+
+  const { entry: recovered } = run([
+    [loading(2), { type: 'TRACK_STARTED' }, playing(2, 12_000), 12_000],
+    [snap({ currentIndex: 2, positionSeconds: 185, txn: { correlationId: 'c2', queueItemId: 'q3', startedAtMs: 12_000, startedPositionSeconds: 0 } }),
+      { type: 'TRACK_ENDED', natural: true, songId: 's3', correlationId: 'c2', playedSeconds: 185 }, loading(0), 197_000],
+  ], twoSkips);
+  assert.equal(recovered.consecutiveSkips, 0);
+  assert.deepEqual(recovered.recentSkippedTracks, []);
+});

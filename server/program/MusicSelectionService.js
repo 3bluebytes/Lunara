@@ -1,5 +1,5 @@
 import { sourceAllowed } from '../music/sourcePolicy.js';
-import { isMemoryRevoked } from '../memory/memoryProvenance.js';
+import { isMemoryRevoked, schemaContributorsStillApply } from '../memory/memoryProvenance.js';
 import { createHash } from 'node:crypto';
 import { createCandidateProgram } from './programTypes.js';
 import { MUSIC_SELECTION_PARAMETERS, normalizeMusicSelection, selectionSignature, artistMatchesRequest } from './musicSelectionRequest.js';
@@ -7,7 +7,7 @@ import { matchesTags, hasAnyTagFilter } from '../songtags/songTagRetrieval.js';
 import { validateSelectionConstraints } from './programConstraintValidation.js';
 import { memoryApplies, parseEvidence } from '../memory/memoryPolicy.js';
 import { tasteSignalFromInsight, tasteBiasForTrack, trackMatchesSignal, tasteSignalsDisabled } from './tasteSignals.js';
-import { scoreCandidates, orderScored, scoreWeights, scoringDisabled, playIndex, songHistoryIndex, artistSkipIndex,
+import { scoreCandidates, orderScored, scoreWeights, scoringDisabled, playIndex, sameTitleArtistIndex, songHistoryIndex, artistSkipIndex,
   ARTIST_SKIP_WINDOW_MS } from './selectionScoring.js';
 import { chooseFamiliarArtistClasses, getFamiliarArtistCadence,
   orderFamiliarArtistPool } from './familiarArtistCadence.js';
@@ -16,7 +16,9 @@ import { MusicSelectionOfferStore, MusicSelectionPreparedStore, normalizeOfferIn
 import { createSelectionIdentity } from './selectionIdentity.js';
 import { createTagLookup } from '../songtags/tagLookup.js';
 import { UnplayableTrackMemory, isConfirmedUnplayable } from './unplayableTrackMemory.js';
-import { RecommendationDecisionStore, RecommendationOutcomeBridge, buildDecisionRows, decisionPath } from './recommendationDecisions.js';
+import { RecommendationDecisionStore, RecommendationOutcomeBridge, buildDecisionRows, decisionPath, occurrencesForProgram } from './recommendationDecisions.js';
+import { trackNarrationKey } from './ProgramCommitService.js';
+import { resolveCompanionModePolicy } from '../playback/companionModes.js';
 import { buildSelectionBrief, personaMusicTaste, selectionBriefDisabled } from './selectionBrief.js';
 import { buildCandidateFeatures } from './candidateFeatures.js';
 
@@ -77,6 +79,9 @@ const boundedText = (value, max = 160) => String(value || '').trim().slice(0, ma
 const planConstraints = listening => listening?.listeningPlan?.request?.constraints || undefined;
 // A process that dies mid-action leaves its receipt `running`; only a live attempt may
 // block a retry. Selection plus commit is bounded well below this window.
+// 选歌理由：每首一句，最多留最近这么多组 offer 的。
+const SELECTION_NOTE_MAX_CHARS = 120;
+const SELECTION_NOTE_OFFERS = 64;
 const RUNNING_RECEIPT_TTL_MS = Math.max(30_000, Number(process.env.MUSIC_ACTION_RUNNING_TTL_MS) || 5 * 60_000);
 // Recommendation freshness: only ordering changes, never membership. A correction like
 // "stop always starting with the same songs" is about the recommendation habit, not a ban.
@@ -86,6 +91,8 @@ const FRESHNESS_WINDOW_MS = Math.max(60_000, Number(process.env.MUSIC_FRESHNESS_
 const FRESHNESS_COOLDOWN_DEFAULT_MS = 24 * 60 * 60 * 1000;
 const freshnessCooldownMs = () => Math.max(60_000, Number(process.env.MUSIC_FRESHNESS_COOLDOWN_MS) || FRESHNESS_COOLDOWN_DEFAULT_MS);
 const FRESHNESS_MAX_PER_ARTIST = Math.max(1, Number(process.env.MUSIC_FRESHNESS_MAX_PER_ARTIST) || 3);
+// 合格池不足 3 首时，无相邻重复的无限续播按抽屉原理必然退化为单曲复读或 A↔B 乒乓，因此禁止回流。
+const MIN_RECIRCULATION_POOL = 3;
 /** 单歌手封顶：同一歌手超过上限的歌退到后面，不删除；排序之后执行，只重排。 */
 function capPerArtist(tracks) {
   const perArtist = new Map();
@@ -127,6 +134,7 @@ const PRE_RESOLVE_TIMEOUT_MS = 8_000;
 const PRE_RESOLVE_MAX_OFFERS = 20;
 // 预解析只覆盖窗口头部：窗口变大后供应商解析流量不随之翻倍，靠后的序号提交时走常规解析。
 const PRE_RESOLVE_HEAD_DEFAULT = 20;
+const PRE_RESOLVE_PREPARATION_HEAD_DEFAULT = 4;
 const preResolveHead = () => {
   const raw = Number(process.env.MUSIC_PRE_RESOLVE_HEAD);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : PRE_RESOLVE_HEAD_DEFAULT;
@@ -145,6 +153,36 @@ const PRE_RESOLVE_CHUNK = MUSIC_SELECTION_PARAMETERS.properties.count.maximum;
 // 冷却记录按 canonical 供应商（去掉 `qq:library` 这类来源后缀）+ songId 索引。
 const unplayableRef = candidate => [String(candidate?.evidence?.source || '').split(/[:-]/)[0], candidate?.sourceSongId];
 const preResolveKey = candidate => `${candidate.evidence?.source || ''}:${candidate.sourceSongId || ''}`;
+
+/** 针对本聊天当前适用且未撤回的单曲明确反馈（按最新条判），兼容原方法直接调用。 */
+function latestMusicFeedbackBySong(service, context, { songId = null } = {}) {
+  const memory = service?.getMemoryService?.();
+  if (!memory) return new Map();
+  const rows = songId
+    ? (memory.searchMemory?.(undefined, { namespace: context.entity.memoryNamespace, tags: `song:${songId}`, limit: 20 }) || [])
+    : (memory.store?.search?.({ namespace: context.entity.memoryNamespace, tags: 'music-feedback', limit: 200 })
+      ?? memory.searchMemory?.(undefined, { namespace: context.entity.memoryNamespace, tags: 'music-feedback', limit: 200 })
+      ?? []);
+  let room = null;
+  try { room = context.sessionId ? service.conversationStore?.getSession?.(context.sessionId) : null; } catch { room = null; }
+  const now = typeof service?.now === 'function' ? service.now() : Date.now();
+  const scope = { sessionId: context.sessionId, isGroup: (room?.memberIds?.length || 1) > 1, now };
+  const sorted = (Array.isArray(rows) ? rows : []).filter(row => {
+    if (isMemoryRevoked(memory.store, row) || (row.expiresAt && row.expiresAt <= now)) return false;
+    return memoryApplies(row, scope);
+  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || (b.id || 0) - (a.id || 0));
+  const latestByKey = new Map();
+  for (const row of sorted) {
+    const evidence = parseEvidence(row);
+    const id = evidence?.songId == null ? '' : String(evidence.songId);
+    if (!id || !['like', 'dislike', 'neutral'].includes(evidence.sentiment)) continue;
+    if (songId && id !== String(songId)) continue;
+    const src = evidence.source ? String(evidence.source).split(/[:-]/)[0] : '';
+    const key = `${src}:${id}`;
+    if (!latestByKey.has(key)) latestByKey.set(key, evidence.sentiment);
+  }
+  return latestByKey;
+}
 
 /**
  * Shared selector.
@@ -174,12 +212,15 @@ export class MusicSelectionService {
   constructor({ programCommitService, playbackRuntime, registry, conversationStore, getMemoryService = () => null,
     getCandidates, getPlaylistTracks, getAlbumTracks = null, getUserPlaylists, getSongTagStore, getLibraryRevision = () => 0,
     getFamiliarArtists = () => [], searchArtistCatalog = null, getSourcePolicy = () => null, getSourceFailures = () => [],
-    getRecentPlays = null, getListeningHistory = null, isSharedMemoryActive = () => true, pool = null, now = Date.now, trace = () => {},
+    getRecentPlays = null, getListeningHistory = null, getLikedTracks = () => [], getLikesRevision = () => null,
+    getSessionPresence = () => null, isSharedMemoryActive = () => true, pool = null, now = Date.now, trace = () => {},
     offerTtlMs = null, preparedTtlMs = null, getRecordingStore = null, preResolveConcurrency = 0,
+    preResolveTimeoutMs = PRE_RESOLVE_TIMEOUT_MS,
     unplayableMemory = null } = {}) {
     Object.assign(this, { programCommitService, playbackRuntime, registry, conversationStore, getMemoryService,
       getCandidates, getPlaylistTracks, getAlbumTracks, getUserPlaylists, getSongTagStore, getLibraryRevision, getRecentPlays,
       getFamiliarArtists, searchArtistCatalog, getSourcePolicy, getSourceFailures, getListeningHistory,
+      getLikedTracks, getLikesRevision, getSessionPresence,
       isSharedMemoryActive, now, trace, offerTtlMs, preparedTtlMs });
     // 预热统计：prepared/consumed/expired/mismatch/fallback/failed/无效化，全部只在
     // 真实边界事件上累加，供 WarmPoolAdminService 的既有 status 接口读取。
@@ -190,7 +231,11 @@ export class MusicSelectionService {
     // Media resources live only here, never in offers, receipts, tool facts or traces.
     this._resolutionCache = new Map();
     // offerId → { stop, expiresAt, entries: Map<(provider,songId), Promise<result|null>> }；0 表示不预解析。
+    this._lineEpochs = new Map();
+    // host 提交时给每首写的选歌理由：只给紧接着的 line pass 看，进程内、有界，不进 runtime、账本或日志。
+    this._selectionNotes = new Map();
     this.preResolveConcurrency = Math.max(0, Math.floor(Number(preResolveConcurrency) || 0));
+    this.preResolveTimeoutMs = Math.max(1, Math.floor(Number(preResolveTimeoutMs) || PRE_RESOLVE_TIMEOUT_MS));
     this._preResolutions = new Map();
     // 「拿不到音源」的短期冷却（skip-known-unplayable-candidates）：只影响开放式选歌，不是口味信号。
     this._unplayable = unplayableMemory || new UnplayableTrackMemory({ now: this.now });
@@ -253,11 +298,20 @@ export class MusicSelectionService {
     const service = this.getMemoryService();
     const applies = row => !isMemoryRevoked(service.store, row)
       && memoryApplies(row, { sessionId: room.sessionId, isGroup: room.memberIds.length > 1 });
+    // 图式是派生副本：与聊天注入同一道门槛，逐条重验贡献来源（被忘、收窄、过期的来源都让它不再出现）。
+    const isSchema = row => /(?:^|,)taste-schema(?:,|$)/.test(row.tags || '');
     const schemaRow = service?.searchMemory(undefined, { namespace: entity.memoryNamespace, type: 'semantic', tags: 'taste-schema', limit: 1 })
-      ?.find(row => !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '') && applies(row)) || null;
-    const baseMemories = service?.searchMemory(undefined, { namespace: entity.memoryNamespace, type: 'semantic', limit: 30 })
-      ?.filter(row => (row.namespace === 'station' ? ['user_explicit_feedback', 'manual_seed', 'station_seed'].includes(row.source) : row.source !== 'station_seed') && applies(row)) || [];
-    const memories = [schemaRow, ...baseMemories]
+      ?.find(row => !/(?:^|,)(?:revoked|superseded)(?:,|$)/.test(row.tags || '') && applies(row)
+        && schemaContributorsStillApply(service, row)) || null;
+    // 用户亲口说的先取（在库里先过滤来源与撤回/取代标签再截取），其余近期记忆补足名额：
+    // 更新的反思、近况再多，也不会把显式口味挤出选歌说明。
+    const excludeTags = ['revoked', 'superseded', 'taste-schema', 'relationship-digest'];
+    const explicitMemories = service?.store?.search({ namespace: entity.memoryNamespace, type: 'semantic',
+      sources: ['user_explicit_feedback', 'manual_seed'], excludeTags, orderBy: 'updated_at_desc', limit: 500 })
+      ?.reduce((picked, row) => (picked.length < 5 && applies(row) ? [...picked, row] : picked), []) || [];
+    const recentMemories = service?.store?.search({ namespace: entity.memoryNamespace, type: 'semantic', excludeTags, limit: 30 })
+      ?.filter(row => !isSchema(row) && row.source !== 'station_seed' && applies(row)) || [];
+    const memories = [schemaRow, ...explicitMemories, ...recentMemories]
       .filter(Boolean)
       .filter((row, index, all) => all.findIndex(other => other.id === row.id) === index)
       .slice(0, 8);
@@ -268,7 +322,21 @@ export class MusicSelectionService {
       ?.filter(row => (!row.expiresAt || row.expiresAt > this.now()) && applies(row))
       .map(row => tasteSignalFromInsight(row)).filter(Boolean) || [];
     const revision = rows => rows.reduce((sum, row) => sum + Number(row.id) * Number(row.version || 1) + Number(row.updatedAt || 0), 0);
+    let likedTracks = [];
+    try { likedTracks = this.getLikedTracks?.() || []; } catch { likedTracks = []; }
+    const likedTrackKeys = new Set((Array.isArray(likedTracks) ? likedTracks : [])
+      .map(item => `${String(item?.provider || item?.source || '').split(/[:-]/)[0]}:${String(item?.songId ?? item?.song_id ?? '')}`)
+      .filter(key => !key.endsWith(':')));
+    let likesRevision = null;
+    try { likesRevision = this.getLikesRevision?.() ?? null; } catch { likesRevision = null; }
+    let presenceEntry = null;
+    try { presenceEntry = this.getSessionPresence?.(input.sessionId) || null; } catch { presenceEntry = null; }
+    const consecutiveSkips = Number(presenceEntry?.consecutiveSkips) || 0;
+    const skipMomentumBucket = consecutiveSkips >= 2 ? 1 : 0;
+    const skippedTracks = skipMomentumBucket && Array.isArray(presenceEntry?.recentSkippedTracks)
+      ? presenceEntry.recentSkippedTracks : [];
     return { ...input, entity, memories, shared, tasteSignals,
+      likedTrackKeys, likesRevision, skipMomentumBucket, consecutiveSkips, skippedTracks,
       familiarArtistCadence: getFamiliarArtistCadence(this.conversationStore.db, entity.id),
       libraryRevision: this.getLibraryRevision(), membershipRevision: room.membershipRevision,
       memoryRevision: revision(memories), sharedRevision: revision(shared),
@@ -359,7 +427,8 @@ export class MusicSelectionService {
    * 综合打分排序（D5）：冷却期整体垫底，其余按新鲜度 + 口味 + 软歌手 + 来源 + 听完率 − 歌手跳过的和排序，
    * 再做单歌手封顶。只重排、不删候选；返回每首的分数分项，供候选特征与决策账本快照。
    */
-  rankByScore(pool, { signals = [], preferredArtists = [], tagStore = this.getSongTagStore(), personId = null } = {}) {
+  rankByScore(pool, { signals = [], preferredArtists = [], tagStore = this.getSongTagStore(), personId = null,
+    likedTrackKeys = null, softPreferences = '', sessionSkips = null } = {}) {
     const now = this.now();
     let recent = [];
     try { recent = this.getRecentPlays?.(now - FRESHNESS_WINDOW_MS) || []; } catch { recent = []; }
@@ -369,9 +438,11 @@ export class MusicSelectionService {
     } catch { listening = {}; }
     const preferred = Array.isArray(preferredArtists) && preferredArtists.length
       ? track => preferredArtists.some(artist => artistMatchesRequest(track.artist, artist)) : null;
-    const entries = scoreCandidates(pool, { plays: playIndex(recent), now, cooldownMs: freshnessCooldownMs(),
+    const entries = scoreCandidates(pool, { plays: playIndex(recent), sameTitleArtist: sameTitleArtistIndex(recent), now,
+      cooldownMs: freshnessCooldownMs(),
       signals: tasteSignalsDisabled() ? [] : signals, tagStore, preferredArtist: preferred,
       songHistory: songHistoryIndex(listening.songStats), artistSkips: artistSkipIndex(listening.observations, { now }),
+      likedTrackKeys, softPreferences, sessionSkips,
       weights: scoreWeights() });
     const ordered = orderScored(entries);
     const scores = new Map(ordered.map(entry => [trackKey(entry.track), entry]));
@@ -385,7 +456,11 @@ export class MusicSelectionService {
       return { pool: this.rankByTasteSignals(pool, context.tasteSignals, options), scores: null };
     }
     return this.rankByScore(pool, { ...options, signals: context.tasteSignals,
-      personId: context.entity?.id || context.virtualPersonId || null });
+      personId: context.entity?.id || context.virtualPersonId || null,
+      likedTrackKeys: context.likedTrackKeys || null,
+      softPreferences: request.softPreferences || '',
+      sessionSkips: context.skipMomentumBucket
+        ? { consecutiveSkips: context.consecutiveSkips, tracks: context.skippedTracks } : null });
   }
 
   /**
@@ -462,6 +537,8 @@ export class MusicSelectionService {
     const tagStore = createTagLookup(this.getSongTagStore());
     tagStore?.prefetch(sourceTracks);
     const excluded = new Set(request.constraints.excludedSongIds);
+    const disliked = ['discovery', 'constrained', 'artist'].includes(request.mode)
+      ? this._dislikedTrackKeys(context) : { keys: new Set(), wildcardSongIds: new Set() };
     // 确证登录失效的来源暂不参与开放式补选；不改用户保存的来源策略，
     // exact 已在上面返回，不能把指定歌曲静默换成另一源。同源重新登录后自动恢复。
     const authUnavailable = new Set(this.getSourceFailures()
@@ -474,6 +551,8 @@ export class MusicSelectionService {
         .filter(track => sourceAllowed(sourcePolicy, track.source) && !authUnavailable.has(track.source)
           && track.songId && track.title && track.artist
           && !excluded.has(track.songId)
+          && !disliked.keys.has(`${track.source}:${track.songId}`)
+          && !disliked.wildcardSongIds.has(track.songId)
           && (!request.artist || artistMatchesRequest(track.artist, request.artist)));
       // 标签库不可用（null）≠ 无标签约束：前者让该级约束无匹配（交由调用方的放宽链降级），
       // 不能在 matchesTags 里炸出 TypeError 把整个 select 打崩。
@@ -497,14 +576,23 @@ export class MusicSelectionService {
       const existing = new Set(context.listening.queue.map(track => this._identity.keyOfTrack(cleanTrack(track))));
       const available = rows.filter(track => !existing.has(this._identity.keyOfTrack(track)));
       if (available.length || context.reason !== 'auto_continue') return available;
+      if (rows.length < MIN_RECIRCULATION_POOL) return [];
       // A small imported library eventually appears entirely in the played queue. At that
-      // boundary allow older songs back into circulation, but never re-add an occurrence that
-      // is still current or upcoming: that would queue the same song for a second play instead
-      // of continuing the radio. If nothing is left, report it honestly below.
+      // boundary allow older songs back into circulation when at least 3 eligible tracks exist,
+      // excluding current/upcoming occurrences and (at the tail with enough older tracks) the
+      // immediately preceding track so continuation cannot oscillate A ↔ B or X → Y → X.
       const queue = context.listening.queue;
       const index = Number.isInteger(context.listening.currentIndex) ? context.listening.currentIndex : 0;
       const pending = new Set(queue.slice(Math.max(0, index)).map(track => this._identity.keyOfTrack(cleanTrack(track))));
-      return rows.filter(track => !pending.has(this._identity.keyOfTrack(track)));
+      const recirculated = rows.filter(track => !pending.has(this._identity.keyOfTrack(track)));
+      if (!recirculated.length) return [];
+      const hasUpcoming = index + 1 < queue.length;
+      const justFinishedKey = !hasUpcoming && index > 0 ? this._identity.keyOfTrack(cleanTrack(queue[index - 1])) : null;
+      if (!justFinishedKey) return recirculated;
+      const older = recirculated.filter(track => this._identity.keyOfTrack(track) !== justFinishedKey);
+      if (older.length >= request.count) return older;
+      const justFinished = recirculated.filter(track => this._identity.keyOfTrack(track) === justFinishedKey);
+      return [...older, ...justFinished];
     };
     let eligible = eligibleFrom(sourceTracks);
     let pool = availableFrom(eligible);
@@ -526,7 +614,7 @@ export class MusicSelectionService {
       try {
         cadencePlan = chooseFamiliarArtistClasses({ pool,
           recentPlays: this.getRecentPlays?.(this.now() - FRESHNESS_WINDOW_MS) || [],
-          likedArtists: this.getFamiliarArtists(), count: request.count });
+          likedArtists: this.getFamiliarArtists(), likedTrackKeys: context.likedTrackKeys || null, count: request.count });
         pool = orderFamiliarArtistPool(pool, cadencePlan);
       } catch { cadencePlan = null; }
     }
@@ -617,7 +705,7 @@ export class MusicSelectionService {
     let recentPlays = [];
     try { recentPlays = this.getRecentPlays?.(this.now() - FEATURE_PLAYS_WINDOW_MS) || []; } catch { recentPlays = []; }
     const features = buildCandidateFeatures(window, { tagStore, signals: tasteSignalsDisabled() ? [] : context.tasteSignals,
-      recentPlays, now: this.now(), cadencePlan, probeTrack });
+      recentPlays, now: this.now(), cadencePlan, probeTrack, likedTrackKeys: context.likedTrackKeys || null });
     if (!scores) return features;
     // 打分分项进 offer 与决策账本快照（只有数字）；冷却期歌曲没有分数，只标 cooldown。
     return features.map((feature, index) => {
@@ -721,10 +809,12 @@ export class MusicSelectionService {
     }
     if (request.mode !== 'exact') {
       const selected = await this.select(request, context);
-      // 只给会真正提交的 offer 预解析；预热任务（resolveOnly）只挑序号，采用时才解析。
-      if (selected?.offerId && task?.resolveOnly !== true) {
+      // 预热任务也预解析：写串词要用这份结果里的歌词，边界采用时也能直接复用；
+      // 但预热只取极小窗口（至多 4 首）避免无谓全窗下载。
+      if (selected?.offerId) {
+        const isPreparation = Boolean(task?.mode === 'preparation' || task?.resolveOnly === true || context.preparedFor);
         // 预解析只是提速：任何异常都留在这里，提交时自然回落到常规解析。
-        try { this._preResolveOffer(selected.offer, context); } catch (error) {
+        try { this._preResolveOffer(selected.offer, context, { isPreparation }); } catch (error) {
           this.trace({ event: 'music-selection-pre-resolve-skipped', sessionId: context.sessionId,
             offerId: selected.offerId, reason: error?.name || 'Error' });
         }
@@ -767,6 +857,18 @@ export class MusicSelectionService {
     return { ok: true, code: 'RECOMMENDATION_RESOLVED', selectionId: result.selectionId, track };
   }
 
+  _dislikedTrackKeys(context) {
+    const latest = latestMusicFeedbackBySong(this, context);
+    const keys = new Set();
+    const wildcardSongIds = new Set();
+    for (const [key, sentiment] of latest) {
+      if (sentiment !== 'dislike') continue;
+      if (key.startsWith(':')) wildcardSongIds.add(key.slice(1));
+      else keys.add(key);
+    }
+    return { keys, wildcardSongIds };
+  }
+
   /** 推荐的排除项：已在当前或待播队列、冷却期内放过（provider + songId）、这位伙伴记着你不喜欢。 */
   _recommendationExclusion(track, context) {
     const key = `${track.source}:${track.songId}`;
@@ -776,15 +878,9 @@ export class MusicSelectionService {
     let recent = [];
     try { recent = this.getRecentPlays?.(this.now() - freshnessCooldownMs()) || []; } catch { recent = []; }
     if (recent.some(row => `${String(row.source || '').split(/[:-]/)[0]}:${row.songId || row.song_id}` === key)) return 'recent';
-    const memory = this.getMemoryService();
-    const rows = memory?.searchMemory?.(undefined, { namespace: context.entity.memoryNamespace, tags: `song:${track.songId}`, limit: 20 }) || [];
-    const disliked = rows.some(row => {
-      if (isMemoryRevoked(memory.store, row) || (row.expiresAt && row.expiresAt <= this.now())) return false;
-      const evidence = parseEvidence(row);
-      return evidence.sentiment === 'dislike' && String(evidence.songId) === track.songId
-        && (!evidence.source || String(evidence.source).split(/[:-]/)[0] === track.source);
-    });
-    return disliked ? 'disliked' : null;
+    const latest = latestMusicFeedbackBySong(this, context, { songId: track.songId });
+    const sentiment = latest.get(key) ?? latest.get(`:${track.songId}`) ?? null;
+    return sentiment === 'dislike' ? 'disliked' : null;
   }
 
   /**
@@ -870,6 +966,7 @@ export class MusicSelectionService {
         this.trace({ event: 'music-selection-unplayable-rejected', sessionId: context.sessionId, offerId,
           unplayableIndexes, knownUnplayableIndexes });
         return { ok: false, code: 'SELECTION_INDEXES_UNPLAYABLE', offerId, unplayableIndexes, knownUnplayableIndexes,
+          resourceReadyIndexes: this._resourceReadyIndexes(offer),
           message: `序号 ${unplayableIndexes.join('、')} 已经确认拿不到音源，这次放不了。这组候选里目前已知放不了的序号是 ${knownUnplayableIndexes.join('、')}，请从其余序号里选，或少交几首；不要再提交这些序号。`,
           userMessage: '有几首现在放不了，队列没有变化。' };
       }
@@ -877,6 +974,7 @@ export class MusicSelectionService {
         return { ok: false, code: 'SELECTION_OFFER_UNAVAILABLE',
           message: '这组候选已经被使用，请重新调用 select_music。', userMessage: OFFER_UNAVAILABLE_COPY };
       }
+      if (!preparedConsumption) this._rememberNotes(offerId, indexes, args?.notes);
       try {
         if (resolveOnly) {
           const chosen = indexes.map(index => offer.candidates[index - 1]);
@@ -908,12 +1006,12 @@ export class MusicSelectionService {
         };
         const result = await this._commit(request, { ...input, context: { ...context, isCurrent }, selection },
           { commitAttempt: markCommitAttempt, terminalLine: !registersRecommendation && request.delivery !== 'recommend_only',
-            resolutionCache: preparedConsumption ? null : this._offerResolutionCache(offer, context, input),
+            resolutionCache: preparedConsumption ? this._preparedResolutionCache(offer) : this._offerResolutionCache(offer, context, input),
             offer, indexes,
             decisionPath: decisionPath({ proposal: registersRecommendation, delivery: request.delivery,
               prepared: preparedConsumption, reason: task?.reason ?? input.reason ?? null, task: Boolean(task) }),
-            // 预热采用保留边界当时推导出的请求（软锚点跟得上当前边界），其余仍以存储请求为准。
-            planRequest: normalizeMusicSelection(context.preparedAccept?.planRequest || offer.request) });
+            // 存回 runtime 的计划：边界/续播任务给的计划（不带这一轮的软锚点）优先，其余仍以存储请求为准。
+            planRequest: normalizeMusicSelection(context.preparedAccept?.planRequest || task?.planRequest || offer.request) });
         if (result.ok) {
           this._dropOfferResolutionCache(offerId);
           this.offers.consume(offerId, { ok: true, code: result.code, delivery: result.delivery, selectionId: result.selectionId });
@@ -921,6 +1019,7 @@ export class MusicSelectionService {
             code: result.code, delivery: result.delivery, prepared: preparedConsumption });
         } else if (preparedConsumption) {
           // 预热采用的 canonical 失败：批次作废（单次使用），不换序号、不替歌；重试回落实时选歌。
+          this._dropOfferResolutionCache(offerId);
           this.offers.consume(offerId, { ok: false, code: result.code });
           this.trace({ event: 'music-preparation-adopt-failed', sessionId: context.sessionId, offerId, indexes, code: result.code });
         } else {
@@ -978,9 +1077,22 @@ export class MusicSelectionService {
     };
   }
 
+  /** 预热采用的只读解析缓存：跨回合复用同 offer 预解析结果与冷却状态，仍走完整 canonical 与硬约束重验。 */
+  _preparedResolutionCache(offer) {
+    return {
+      get: () => null,
+      pending: candidate => this._preResolved(offer.offerId, candidate),
+      knownUnplayable: candidate => this._unplayable.has(...unplayableRef(candidate)),
+      markUnplayable: candidate => this._unplayable.mark(...unplayableRef(candidate)),
+      set: () => {},
+    };
+  }
+
   _dropOfferResolutionCache(offerId) {
     for (const [key, entry] of this._resolutionCache) if (entry.offerId === offerId) this._resolutionCache.delete(key);
-    this._preResolutions.get(offerId)?.stop();
+    const entry = this._preResolutions.get(offerId);
+    entry?.abort?.();
+    entry?.stop?.();
     this._preResolutions.delete(offerId);
   }
 
@@ -989,7 +1101,7 @@ export class MusicSelectionService {
    * 结果只留在进程内存，按 offer 与 `(provider, songId)` 索引；提交时仍重新做约束校验，
    * 失败或未命中就走原解析路径。媒体资源不进 offer、回执、工具结果或 trace。
    */
-  _preResolveOffer(offer, context) {
+  _preResolveOffer(offer, context, { isPreparation = false } = {}) {
     const resolveTrack = this.programCommitService?.resolveTrack;
     if (!this.preResolveConcurrency || typeof resolveTrack !== 'function' || !offer?.candidates?.length) return;
     for (const [offerId, entry] of this._preResolutions) {
@@ -999,8 +1111,10 @@ export class MusicSelectionService {
       this._dropOfferResolutionCache(this._preResolutions.keys().next().value);
     }
     // exact 请求有数量上限，按块重建，保证大 offer 的每个候选都与提交时同形。
-    // 只取窗口前 MUSIC_PRE_RESOLVE_HEAD 首；其余序号被选中时由提交路径常规解析。
-    const head = Math.min(offer.candidates.length, preResolveHead());
+    // 只取窗口前 MUSIC_PRE_RESOLVE_HEAD 首（预热模式进一步收敛到至多 4 首）；其余序号被选中时由提交路径常规解析。
+    const configuredHead = preResolveHead();
+    const effectiveHead = isPreparation ? Math.min(configuredHead, PRE_RESOLVE_PREPARATION_HEAD_DEFAULT) : configuredHead;
+    const head = Math.min(offer.candidates.length, effectiveHead);
     if (!head) return;
     const candidates = [];
     for (let start = 0; start < head; start += PRE_RESOLVE_CHUNK) {
@@ -1011,21 +1125,41 @@ export class MusicSelectionService {
     const signal = context.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
     let stopped = false;
     const entries = new Map();
-    this._preResolutions.set(offer.offerId, { entries,
+    const readyResources = new Set();
+    this._preResolutions.set(offer.offerId, { entries, readyResources,
       expiresAt: Math.min(Number(offer.expiresAt) || Infinity, this.now() + RESOLUTION_CACHE_TTL_MS),
-      stop: () => { stopped = true; } });
+      stop: () => { stopped = true; },
+      abort: () => { stopped = true; controller.abort(new DOMException('Offer pre-resolution dropped', 'AbortError')); } });
     let next = 0;
+    const timeoutMs = this.preResolveTimeoutMs;
     const worker = async () => {
       while (!stopped && !signal.aborted && next < candidates.length) {
         const candidate = candidates[next++];
+        const candidateController = new AbortController();
+        const candidateSignal = AbortSignal.any([signal, candidateController.signal]);
         let timer;
+        let timedOut = false;
+        const timeoutPromise = new Promise(resolve => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            candidateController.abort(new DOMException('Pre-resolution timed out', 'TimeoutError'));
+            resolve(null);
+          }, timeoutMs);
+          timer?.unref?.();
+        });
         const pending = Promise.race([
           Promise.resolve().then(() => resolveTrack.call(this.programCommitService, candidate.query, {
-            requestId: context.requestId || null, candidate, attempt: 1, signal, preResolve: true })),
-          new Promise(resolve => { timer = setTimeout(() => resolve(null), PRE_RESOLVE_TIMEOUT_MS); }),
+            requestId: context.requestId || null, candidate, attempt: 1, signal: candidateSignal, preResolve: true })),
+          timeoutPromise,
         ]).then(result => {
+          if (timedOut || candidateSignal.aborted) return null;
           // 失败结果不交给提交复用，但「拿不到音源」要留下：下一次选歌与提交前检查都用得上。
           if (isConfirmedUnplayable(result)) this._unplayable.mark(...unplayableRef(candidate));
+          // 只提示已完成且身份一致的取流成功；这不是约束/提交结论，不暴露 URL。
+          if (result?.ok && typeof result.url === 'string' && result.url.trim()
+            && trackKey(cleanTrack(result)) === preResolveKey(candidate)) {
+            readyResources.add(preResolveKey(candidate));
+          }
           return result?.ok ? result : null;
         }, () => null).finally(() => clearTimeout(timer));
         entries.set(preResolveKey(candidate), pending);
@@ -1035,6 +1169,14 @@ export class MusicSelectionService {
     for (let index = 0; index < Math.min(this.preResolveConcurrency, candidates.length); index++) worker();
     this.trace({ event: 'music-selection-pre-resolve', sessionId: context.sessionId, offerId: offer.offerId,
       candidates: candidates.length, windowSize: offer.candidates.length, concurrency: this.preResolveConcurrency });
+  }
+
+  /** 不等待预解析、不借其他 offer 的结果；资源就绪仍须经普通提交校验。 */
+  _resourceReadyIndexes(offer) {
+    const entry = this._preResolutions.get(offer.offerId);
+    if (!entry || entry.expiresAt <= this.now()) return [];
+    return offer.candidates.flatMap((track, index) => entry.readyResources.has(trackKey(track))
+      && !this._unplayable.has(track.source, track.songId) ? [index + 1] : []);
   }
 
   _preResolved(offerId, candidate) {
@@ -1124,11 +1266,16 @@ export class MusicSelectionService {
     if (!normalized) return { ok: false, code: 'INVALID_SELECTION_INDEXES' };
     const request = normalizeMusicSelection(offer.request || {});
     const preparedFor = offer.preparedFor;
+    let likesRevision = null;
+    try { likesRevision = this.getLikesRevision?.() ?? null; } catch { likesRevision = null; }
+    let skipMomentumBucket = 0;
+    try { skipMomentumBucket = (Number(this.getSessionPresence?.(offer.sessionId)?.consecutiveSkips) || 0) >= 2 ? 1 : 0; } catch { skipMomentumBucket = 0; }
     const prepared = this.prepared.create({
       sessionId: offer.sessionId, personId: offer.virtualPersonId,
       outputGeneration: preparedFor.outputGeneration ?? null, boundaryKey: preparedFor.boundaryKey ?? null,
       offerId: offer.offerId, indexes: normalized, request, position,
-      prewarmKey: prewarmBatchKey({ request, sessionId: offer.sessionId, personId: offer.virtualPersonId }),
+      prewarmKey: prewarmBatchKey({ request, sessionId: offer.sessionId, personId: offer.virtualPersonId,
+        likesRevision, skipMomentumBucket }),
       membershipToken: offer.membershipToken, membershipRevision: offer.membershipRevision,
     });
     // 批次要活过“当前这首还在播”的等待窗口，引用的 offer 至少同步到批次 TTL。
@@ -1209,7 +1356,8 @@ export class MusicSelectionService {
     const token = typeof this.conversationStore.membershipToken === 'function'
       ? this.conversationStore.membershipToken(context.sessionId, context.virtualPersonId) : null;
     if (entry.membershipToken != null && token != null && Number(entry.membershipToken) !== Number(token)) return 'membership';
-    const liveKey = prewarmBatchKey({ request: liveRequest, sessionId: context.sessionId, personId: context.virtualPersonId });
+    const liveKey = prewarmBatchKey({ request: liveRequest, sessionId: context.sessionId, personId: context.virtualPersonId,
+      likesRevision: context.likesRevision ?? null, skipMomentumBucket: context.skipMomentumBucket || 0 });
     if (entry.prewarmKey !== liveKey) return 'request';
     const offer = this.offers.get(entry.offerId);
     if (!offer) return 'offer-missing';
@@ -1229,6 +1377,7 @@ export class MusicSelectionService {
         virtualPersonId: context.virtualPersonId,
         outputGeneration: context.outputGeneration,
         preparedAccept: accept,
+        preparedLines: entry.lines,
       });
       if (result?.ok === true) {
         this.prepared.markConsumed(entry.preparedId, { ok: true, code: result.code, delivery: result.delivery,
@@ -1256,10 +1405,102 @@ export class MusicSelectionService {
     }
   }
 
-  /** 记忆/标签/曲库/会话变化：未采用的预热批次全部作废（单次使用，不可复活）。 */
-  invalidatePrepared({ sessionId = null } = {}) {
+  /**
+   * occurrence 上正在写的那段串词的去处。身份和代次对不上时 runtime 会拒绝，
+   * save 返回 false，这段话作废：写好的话不会落到别的歌或后来的代次上。
+   */
+  lineTargetFor(item, listeningSessionId) {
+    const identity = { queueItemId: item.queueItemId, generationRevision: item.narration.generationRevision,
+      listeningSessionId, songId: item.songId, programId: item.programId };
+    const eventId = type => `narration:${type}:${identity.queueItemId}:${identity.generationRevision}`;
+    return {
+      track: item,
+      save: async line => (await this.playbackRuntime.submit({ type: 'TRACK_NARRATION_READY',
+        eventId: eventId('TRACK_NARRATION_READY'), ...identity, ...line })).accepted === true,
+      fail: reason => this.playbackRuntime.submit({ type: 'TRACK_NARRATION_FAILED',
+        eventId: eventId('TRACK_NARRATION_FAILED'), ...identity, reason }),
+    };
+  }
+
+  /**
+   * 预热批次写串词用的 target：不多发请求，歌词只取预解析已经拿到的。
+   * 模式不说话时不写；串词作废（dropPreparedLines）之后还在写的那一轮存不进来。
+   */
+  async preparedLineTargets(saved, { sessionId = null } = {}) {
     this.initialize();
-    const changes = this.prepared.invalidate({ sessionId });
+    const offer = saved?.offerId ? this.offers.get(saved.offerId) : null;
+    if (!offer || !saved.preparedId || !Array.isArray(saved.indexes)) return [];
+    const listening = this.playbackRuntime.listeningSnapshot?.(sessionId || offer.sessionId);
+    if (resolveCompanionModePolicy(listening?.companionModeId)?.automaticNarration === false) return [];
+    const epoch = this._lineEpochs.get(offer.sessionId) || 0;
+    const pending = this._preResolutions.get(offer.offerId)?.entries;
+    return Promise.all(saved.indexes.map(async index => {
+      const candidate = offer.candidates[index - 1] || {};
+      const track = cleanTrack(candidate);
+      const resolved = await pending?.get(`${track.source || ''}:${track.songId ?? ''}`);
+      return this._withNote({
+        track: { ...track, lyric: resolved?.lyric || null },
+        save: line => (this._lineEpochs.get(offer.sessionId) || 0) === epoch
+          && this.prepared.saveLine({ preparedId: saved.preparedId, index, line }),
+        fail: () => {},
+      }, this._selectionNotes.get(offer.offerId)?.get(index) || null);
+    }));
+  }
+
+  /** 只记这次真的选中的序号；理由是可选的，格式不对就当没写，不影响提交。 */
+  _rememberNotes(offerId, indexes, notes) {
+    if (!Array.isArray(notes) || !notes.length) return;
+    const chosen = new Set(indexes);
+    const kept = new Map();
+    for (const entry of notes) {
+      const index = Number(entry?.index);
+      const note = String(entry?.note ?? '').replace(/\s+/gu, ' ').trim().slice(0, SELECTION_NOTE_MAX_CHARS);
+      if (chosen.has(index) && note && !kept.has(index)) kept.set(index, note);
+    }
+    if (!kept.size) return;
+    this._selectionNotes.set(offerId, kept);
+    while (this._selectionNotes.size > SELECTION_NOTE_OFFERS) this._selectionNotes.delete(this._selectionNotes.keys().next().value);
+  }
+
+  /** 提交后的 occurrence 按 (provider, songId) 对回 offer 里的序号，取那一首的理由。 */
+  _noteFor(offer, indexes, item) {
+    const notes = offer?.offerId ? this._selectionNotes.get(offer.offerId) : null;
+    if (!notes || !Array.isArray(indexes)) return null;
+    const key = trackKey(cleanTrack(item));
+    const index = indexes.find(candidate => trackKey(cleanTrack(offer.candidates[candidate - 1] || {})) === key);
+    return index ? notes.get(index) || null : null;
+  }
+
+  _withNote(target, note) {
+    return note ? { ...target, note } : target;
+  }
+
+  /** 批次里写好的串词换算成提交用的 narration；串词绑在歌上，解析失败的歌不会把话留给别的歌。 */
+  _preparedNarrations(lines, offer, indexes, context) {
+    if (!lines) return null;
+    const narrations = new Map();
+    for (const index of indexes) {
+      const line = lines[String(index)];
+      if (!line?.text) continue;
+      narrations.set(trackNarrationKey(cleanTrack(offer.candidates[index - 1] || {})), {
+        status: 'ready', assetStatus: 'missing', generationRevision: 1, ttsUrl: null, contentHash: null,
+        ...line, voiceProfileId: line.voiceProfileId || context.entity.voiceProfileId || null,
+      });
+    }
+    return narrations;
+  }
+
+  /** 还没说出口的预热串词作废，批次本身不受影响。 */
+  dropPreparedLines(sessionId) {
+    this.initialize();
+    this._lineEpochs.set(String(sessionId), (this._lineEpochs.get(String(sessionId)) || 0) + 1);
+    return this.prepared.clearLines({ sessionId });
+  }
+
+  /** 记忆/标签/曲库/红心或会话变化：未采用的预热批次作废（单次使用，不可复活）。 */
+  invalidatePrepared({ sessionId = null, personId = null } = {}) {
+    this.initialize();
+    const changes = this.prepared.invalidate({ sessionId, personId });
     this.prewarmStats.invalidated += changes;
     return changes;
   }
@@ -1350,6 +1591,10 @@ export class MusicSelectionService {
     const recommenderIds = proposalOnly ? [] : [...new Set((input.groupAction?.recommendations || [])
       .map(item => item.personId).concat(vouched || []).filter(id => id && id !== context.virtualPersonId))];
     const program = this.candidateProgram(selection, context, candidates);
+    // 这次提交的歌由谁写串词：只有确实进队列、模式允许说话、这一轮能接着写的时候才有 line pass。
+    const narrationAllowed = resolveCompanionModePolicy(context.listening?.companionModeId)?.automaticNarration !== false;
+    const linePass = input.linePass && narrationAllowed && !proposalOnly && !input.preparedAccept
+      && effective.delivery !== 'recommend_only' ? input.linePass : null;
     (commitAttempt || context.markCommitAttempt)?.();
     const result = await this.programCommitService.commit(program, {
       musicAction: { delivery: effective.delivery },
@@ -1359,6 +1604,8 @@ export class MusicSelectionService {
       outputGeneration: context.outputGeneration, signal: context.signal, isCurrent: context.isCurrent,
       virtualPersonId: context.virtualPersonId, voiceProfileId: context.entity.voiceProfileId, resolutionCache,
       recommenderIds,
+      linePassComing: Boolean(linePass),
+      trackNarrations: narrationAllowed && offer && indexes ? this._preparedNarrations(input.preparedLines, offer, indexes, context) : null,
       narrationContext: { origin: 'live', reason: input.reason || 'user_request',
         mode: plan.mode, softPreferences: plan.softPreferences },
     });
@@ -1371,6 +1618,9 @@ export class MusicSelectionService {
       return { ok: false, code: 'MUSIC_NOT_COMMITTED', reason: this._commitFailureReason(result, program),
         message: result.message, ...feedback };
     }
+    linePass?.collect(occurrencesForProgram(result.queueResult?.snapshot, result.committedProgram?.programId)
+      .filter(item => item.narration?.status === 'preparing')
+      .map(item => this._withNote(this.lineTargetFor(item, context.sessionId), this._noteFor(offer, indexes, item))));
     const tracks = result.committedProgram.tracks;
     const selectionId = this.saveSelection(effective, context, tracks);
     if (proposalOnly) recordRecommendation(input.groupAction, context.virtualPersonId, { candidates, selectionId,
@@ -1481,7 +1731,8 @@ export class MusicSelectionService {
       if (failures.has(candidate.candidateId)) failedItems.push({ index, provider: selected.source,
         songId: selected.songId, title: selected.title, artist: selected.artist, reason: failures.get(candidate.candidateId) });
     }
-    return { offerId: offer.offerId, resolvedIndexes, failedItems };
+    return { offerId: offer.offerId, resolvedIndexes, failedItems,
+      resourceReadyIndexes: this._resourceReadyIndexes(offer) };
   }
 
   /**

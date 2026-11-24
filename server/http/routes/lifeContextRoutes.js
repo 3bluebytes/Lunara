@@ -1,6 +1,8 @@
 // 今日生活资料的薄路由：本地 CRUD、revision 防覆盖、场景默认与显式使用。
 // 服务内只做本地校验与投影，不接外部账号；错误信息面向用户，不回显内部细节。
 
+import { randomUUID } from 'node:crypto';
+import { publicRuntimeState } from '../../playback/playbackRuntimeTypes.js';
 import { asyncRoute, requireService } from './routeUtils.js';
 import { LifeValidationError } from '../../life/LifeContextService.js';
 
@@ -177,14 +179,176 @@ export function registerLifeContextRoutes(app, services = {}) {
       }
     }
     res.json({ ok: true, confirmed: { sceneTag, targetDate },
-      modeApplied: !manualOverrideHeld, modeId: manualOverrideHeld ? null : sceneDefault.mode_id,
+      modeApplied: !manualOverrideHeld, modeId: manualOverrideHeld ? null : sceneDefault.modeId,
       manualOverrideHeld,
-      snapshot: runtime.listeningSnapshot(listeningSessionId) });
+      snapshot: publicRuntimeState(runtime.listeningSnapshot(listeningSessionId)) });
   }));
 
   app.post('/api/life/scenes/clear', asyncRoute(async (req, res) => {
     if (!requireService(res, life, 'life context service')) return;
     life.clearConfirmedScene(String(req.body?.listeningSessionId || ''));
     res.json({ ok: true });
+  }));
+
+  app.post('/api/life/entries/preview-context', (req, res) => {
+    if (!requireService(res, life, 'life context service')) return;
+    const registry = services.virtualPersonRegistry;
+    const personIds = Array.isArray(req.body?.allowedPersonIds) ? req.body.allowedPersonIds : [];
+    const partnerNames = personIds.map(id => registry?.get?.(id)?.displayName || (id === 'lunara' ? 'Lunara' : id));
+    const preview = life.previewCompanionshipText(req.body || {}, { partnerNames });
+    res.json({ ok: true, preview });
+  });
+
+  app.get('/api/life/day-music', (req, res) => {
+    if (!requireService(res, life, 'life context service')) return;
+    const date = String(req.query?.date || '');
+    if (!DATE_PATTERN.test(date)) return res.status(400).json({ ok: false, error: '日期无效。', code: 'invalid_date' });
+    const [year, month, day] = date.split('-').map(n => Number.parseInt(n, 10));
+    const startMs = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+    const endMs = startMs + 24 * 3600 * 1000;
+    const plays = typeof services.playsForDateRange === 'function'
+      ? services.playsForDateRange(startMs, endMs, 60)
+      : [];
+    const likeStore = services.trackLikeStore;
+    const seen = new Set();
+    const tracks = [];
+    for (const row of plays) {
+      if (!row?.title) continue;
+      const provider = row.source || 'unknown';
+      const songId = row.song_id || '';
+      const identity = songId ? `${provider}:${songId}` : `${row.title}::${row.artist || ''}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const liked = Boolean(likeStore && songId && likeStore.isLiked?.({ provider, songId }));
+      const dt = new Date(row.ts);
+      const playedAt = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+      tracks.push({
+        provider,
+        songId,
+        title: row.title,
+        artist: row.artist || '',
+        album: row.album || '',
+        playedAt,
+        ts: row.ts,
+        liked,
+      });
+    }
+    res.json({ ok: true, date, tracks });
+  });
+
+  app.get('/api/life/open-loops', (_req, res) => {
+    const notes = services.conversationStore?.notes;
+    if (!notes?.listOpenLoops) return res.json({ ok: true, openLoops: [] });
+    const registry = services.virtualPersonRegistry;
+    const loops = notes.listOpenLoops({ limit: 20 }).map(loop => ({
+      noteId: loop.noteId,
+      personId: loop.personId,
+      partnerName: registry?.get?.(loop.personId)?.displayName || (loop.personId === 'lunara' ? 'Lunara' : loop.personId),
+      sessionId: loop.sessionId,
+      text: loop.text,
+      dueDate: loop.dueAt ? new Intl.DateTimeFormat('en-CA').format(new Date(loop.dueAt)) : null,
+      createdAt: loop.createdAt,
+    }));
+    res.json({ ok: true, openLoops: loops });
+  });
+
+  app.post('/api/life/open-loops/:noteId/settle', (req, res) => {
+    const notes = services.conversationStore?.notes;
+    if (!notes?.settleById) return res.json({ ok: true, settled: false });
+    const status = req.body?.status === 'dropped' ? 'dropped' : 'resolved';
+    const settled = notes.settleById(String(req.params?.noteId || ''), status);
+    res.json({ ok: true, settled });
+  });
+
+  app.get('/api/life/day-quotes', (req, res) => {
+    if (!requireService(res, life, 'life context service')) return;
+    const date = String(req.query?.date || '');
+    if (!DATE_PATTERN.test(date)) return res.status(400).json({ ok: false, error: '日期无效。', code: 'invalid_date' });
+    const [year, month, day] = date.split('-').map(n => Number.parseInt(n, 10));
+    const startMs = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+    const endMs = startMs + 24 * 3600 * 1000;
+    const registry = services.virtualPersonRegistry;
+    let rawRows = [];
+    if (typeof services.listQuotesForDateRange === 'function') {
+      rawRows = services.listQuotesForDateRange({ startMs, endMs, date, limit: 30 }) || [];
+    } else if (services.conversationStore?.db) {
+      try {
+        rawRows = services.conversationStore.db.prepare(`
+          SELECT t.turn_id, t.session_id, t.role, t.speaker_virtual_person_id, t.visible_text, t.created_at
+          FROM conversation_turns t
+          LEFT JOIN conversation_requests r ON r.request_id = t.request_id
+          WHERE t.created_at >= ? AND t.created_at < ?
+            AND t.visibility = 'visible'
+            AND t.superseded_at IS NULL
+            AND t.visible_text != ''
+            AND (t.request_id IS NULL OR r.state = 'completed')
+          ORDER BY t.created_at DESC
+          LIMIT 30
+        `).all(startMs, endMs);
+      } catch {
+        rawRows = [];
+      }
+    }
+    const quotes = [];
+    for (const row of rawRows) {
+      const text = String(row?.visible_text ?? row?.text ?? '').trim();
+      if (!text) continue;
+      const role = row?.role === 'user' ? 'user' : 'assistant';
+      const personId = role === 'assistant' ? (row?.speaker_virtual_person_id || row?.personId || 'lunara') : null;
+      const speaker = role === 'user'
+        ? (row?.speaker || '你')
+        : (row?.speaker || registry?.get?.(personId)?.displayName || (personId === 'lunara' ? 'Lunara' : personId || '伙伴'));
+      const ts = Number(row?.created_at ?? row?.ts ?? startMs);
+      const dt = new Date(Number.isFinite(ts) ? ts : startMs);
+      const time = row?.time || `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+      quotes.push({
+        turnId: String(row?.turn_id || row?.turnId || ''),
+        sessionId: String(row?.session_id || row?.sessionId || ''),
+        role,
+        ...(personId ? { personId: String(personId) } : {}),
+        speaker,
+        time,
+        text,
+      });
+    }
+    res.json({ ok: true, date, quotes });
+  });
+
+  app.post('/api/life/entries/:id/annotations', asyncRoute(async (req, res) => {
+    if (!requireService(res, life, 'life context service')) return;
+    const entryId = String(req.params?.id || '');
+    const entry = life.getEntry(entryId);
+    if (!entry) return res.status(404).json({ ok: false, error: '这条内容已经不存在。', code: 'entry-not-found' });
+    const personId = String(req.body?.personId || '').trim() || 'lunara';
+    const person = services.virtualPersonRegistry?.get?.(personId);
+    if (!person) return res.status(400).json({ ok: false, error: '这位伙伴不存在。', code: 'invalid_person' });
+    if (typeof services.generateJournalAnnotation !== 'function') {
+      return res.status(503).json({ ok: false, error: '当前未配置可用模型，暂时无法生成伙伴批注。', code: 'annotation_llm_unavailable' });
+    }
+    try {
+      const generated = await services.generateJournalAnnotation({ entry, person, personId });
+      const text = String(generated?.text || '').trim();
+      if (!text) {
+        return res.status(500).json({ ok: false, error: '伙伴这次没能写出批注，请稍后再试。', code: 'annotation_empty' });
+      }
+      const dt = new Date();
+      const wallHHMM = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+      const saved = life.appendAnnotation(entry.id, {
+        id: `ann:${randomUUID()}`,
+        personId,
+        personName: person.displayName || personId,
+        createdAt: Date.now(),
+        time: wallHHMM,
+        anchor: String(generated?.anchor || '').trim().slice(0, 24),
+        text,
+        reply: '',
+      }, { expectedRevision: req.body?.expectedRevision ?? null });
+      res.status(201).json({ ok: true, entry: saved.entry, annotation: saved.annotation });
+    } catch (error) {
+      if (error?.code === 'annotation_llm_unavailable' || error?.name === 'LLMNotConfiguredError' || error?.code === 'LLM_NOT_CONFIGURED') {
+        return res.status(503).json({ ok: false, error: '当前未配置可用模型，暂时无法生成伙伴批注。', code: 'annotation_llm_unavailable' });
+      }
+      lifeError(res, error);
+    }
   }));
 }

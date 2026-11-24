@@ -34,6 +34,14 @@ function normalizeDefinition(name, definition = {}) {
   };
 }
 
+function resolveModeContext(context = {}) {
+  const interactionMode = context?.interactionMode === 'roleplay' ? 'roleplay' : 'radio';
+  const isGroup = context?.isGroup !== undefined
+    ? Boolean(context.isGroup)
+    : (Array.isArray(context?.memberIds) && context.memberIds.length > 1);
+  return { interactionMode, isGroup };
+}
+
 export class VirtualPersonToolRegistry {
   constructor({ logger = console } = {}) {
     this.logger = logger;
@@ -42,6 +50,8 @@ export class VirtualPersonToolRegistry {
 
   register(name, {
     definition,
+    resolveDefinition = null,
+    prepareArgs = null,
     handler,
     capability = 'general',
     authorize = null,
@@ -57,7 +67,10 @@ export class VirtualPersonToolRegistry {
       ? Object.freeze([...new Set(optionalNullObjectFields.map(String).filter(Boolean))])
       : null;
     this._tools.set(normalizedName, {
-      definition: normalizeDefinition(normalizedName, definition),
+      name: normalizedName,
+      definition: typeof resolveDefinition === 'function' ? null : normalizeDefinition(normalizedName, definition),
+      resolveDefinition: typeof resolveDefinition === 'function' ? resolveDefinition : null,
+      prepareArgs: typeof prepareArgs === 'function' ? prepareArgs : null,
       handler,
       capability: String(capability || 'general'),
       authorize: typeof authorize === 'function' ? authorize : null,
@@ -68,28 +81,42 @@ export class VirtualPersonToolRegistry {
     return this;
   }
 
+  _definitionFor(tool, modeContext) {
+    if (tool.resolveDefinition) {
+      return normalizeDefinition(tool.name, tool.resolveDefinition(modeContext));
+    }
+    return tool.definition;
+  }
+
   /**
    * 同步、纯、幂等的参数归一。直调 registry 与经 AgentLoop 走同一份合同。
    * 未知工具原样返回（由 execute 给出既有的 TOOL_NOT_AVAILABLE）。
    */
-  prepareArguments(name, args) {
+  prepareArguments(name, args, context = {}) {
     const tool = this._tools.get(String(name || ''));
     if (!tool) return args;
-    return prepareToolArguments(args, {
-      parameters: tool.definition.function.parameters,
+    const modeContext = resolveModeContext(context);
+    const definition = this._definitionFor(tool, modeContext);
+    let prepared = prepareToolArguments(args, {
+      parameters: definition.function.parameters,
       optionalNullObjectFields: tool.optionalNullObjectFields,
     });
+    if (tool.prepareArgs) {
+      prepared = tool.prepareArgs(prepared, modeContext);
+    }
+    return prepared;
   }
 
   isReadOnly(name) {
     return this._tools.get(String(name || ''))?.readOnly === true;
   }
 
-  definitions({ capabilities = null } = {}) {
+  definitions({ capabilities = null, interactionMode = 'radio', isGroup = false } = {}) {
     const allowed = Array.isArray(capabilities) ? new Set(capabilities.map(String)) : null;
+    const modeContext = resolveModeContext({ interactionMode, isGroup });
     return [...this._tools.values()]
       .filter(tool => !allowed || allowed.has(tool.capability))
-      .map(tool => structuredClone(tool.definition));
+      .map(tool => structuredClone(this._definitionFor(tool, modeContext)));
   }
 
   async execute(name, args, context = {}) {
@@ -107,10 +134,12 @@ export class VirtualPersonToolRegistry {
     try {
       context.signal?.throwIfAborted();
       if (context.isCurrent && !context.isCurrent()) throw new Error('response is no longer current');
+      const modeContext = resolveModeContext(context);
+      const definition = this._definitionFor(tool, modeContext);
       // 归一必须早于能力/授权判断、schema 校验和 handler：同一份 prepared 参数是唯一事实。
       let preparedArgs;
       try {
-        preparedArgs = this.prepareArguments(name, args);
+        preparedArgs = this.prepareArguments(name, args, context);
       } catch (preparationError) {
         return invalidArgumentsOutcome(preparationError, correlationId);
       }
@@ -141,7 +170,7 @@ export class VirtualPersonToolRegistry {
           modelContext: '本轮已经读取外部资料，后续只允许只读工具。不要执行记忆、人格或音乐写操作；需要下一轮用户明确发起。',
           presentation: { displayText: '资料已查到。这一轮先核对信息；如果需要保存或播放，请在下一条消息中明确告诉我。', speak: false } });
       }
-      const validation = validateJsonSchema(preparedArgs === undefined ? {} : preparedArgs, tool.definition.function.parameters);
+      const validation = validateJsonSchema(preparedArgs === undefined ? {} : preparedArgs, definition.function.parameters);
       if (!validation.valid) return createToolOutcome({ kind: ToolOutcomeKind.BUSINESS_FAILURE,
         code: 'INVALID_TOOL_ARGUMENTS', modelContext: `工具参数不符合约定，请修正：${validation.errors.slice(0, 8).join('; ')}`,
         presentation: { displayText: '这次操作的条件不完整，可以调整后再试。', speak: false } });
@@ -150,7 +179,10 @@ export class VirtualPersonToolRegistry {
       throw new TypeError(`tool ${name} returned an untyped outcome`);
     } catch (error) {
       const errorId = `err_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
-      this.logger?.error?.(`[virtual-person] tool ${name} failed errorId=${errorId}`, error);
+      // 回合被取消或发言人已变不是工具故障：记一行说明，不按错误级别带堆栈。
+      const stopped = context?.signal?.aborted === true || (typeof context?.isCurrent === 'function' && !context.isCurrent());
+      if (stopped) (this.logger?.info || this.logger?.warn)?.call(this.logger, `[virtual-person] tool ${name} stopped with its turn errorId=${errorId}`);
+      else this.logger?.error?.(`[virtual-person] tool ${name} failed errorId=${errorId}`, error);
       return createToolOutcome({
         kind: ToolOutcomeKind.INTERNAL_FAILURE,
         code: 'INTERNAL_TOOL_ERROR',

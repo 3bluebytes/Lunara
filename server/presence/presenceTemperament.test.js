@@ -37,3 +37,25 @@ test('temperament maps to cadence parameters; the stricter of mode ceiling and l
     '用户档位也不能越过模式上限');
   assert.equal(resolvePresencePolicy({ modeId: 'conversational' }).id, 'balanced');
 });
+
+test('生效话量：原因按 停用 > 全局关闭 > 只听歌 > 安静点 > 在场性格 的顺序给出', async () => {
+  const { describeEffectivePresence } = await import('./presenceTemperament.js');
+  const base = { available: true, ambientEnabled: true, listenerQuiet: false, modeId: 'conversational', temperament: 'lively' };
+  assert.deepEqual(describeEffectivePresence(base), { level: 'lively', limitedBy: null });
+  assert.deepEqual(describeEffectivePresence({ ...base, available: false, ambientEnabled: false, listenerQuiet: true }),
+    { level: 'silent', limitedBy: 'unavailable' });
+  assert.deepEqual(describeEffectivePresence({ ...base, ambientEnabled: false, listenerQuiet: true, temperament: 'quiet' }),
+    { level: 'silent', limitedBy: 'ambient-off' });
+  assert.deepEqual(describeEffectivePresence({ ...base, modeId: 'music_only', listenerQuiet: true }),
+    { level: 'silent', limitedBy: 'mode' });
+  assert.deepEqual(describeEffectivePresence({ ...base, listenerQuiet: true, temperament: 'quiet' }),
+    { level: 'silent', limitedBy: 'listener-quiet' });
+  assert.deepEqual(describeEffectivePresence({ ...base, temperament: 'quiet' }), { level: 'quiet', limitedBy: 'temperament' });
+  // 偶尔介绍的上限就是「自然」：自然的伙伴没被压低；健谈的伙伴是被模式自己压的，不必另外解释。
+  assert.deepEqual(describeEffectivePresence({ ...base, modeId: 'occasional', temperament: 'balanced' }), { level: 'balanced', limitedBy: null });
+  assert.deepEqual(describeEffectivePresence({ ...base, modeId: 'occasional' }), { level: 'balanced', limitedBy: 'mode' });
+  assert.deepEqual(describeEffectivePresence({ ...base, modeId: 'occasional', temperament: 'quiet' }), { level: 'quiet', limitedBy: 'temperament' });
+  // 「自然」是角色默认：配多聊一点也不算被压低，不打扰用户。
+  assert.deepEqual(describeEffectivePresence({ ...base, temperament: 'balanced' }), { level: 'balanced', limitedBy: null });
+  assert.deepEqual(describeEffectivePresence({ ...base, temperament: 'nonsense' }), { level: 'balanced', limitedBy: null });
+});

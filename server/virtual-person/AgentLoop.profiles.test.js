@@ -69,3 +69,96 @@ test('ambient profile 引用 ambient_turn 规格，并要求观测不记录正�
   assert.equal(options[0].temperature, 0.9);
   assert.equal(options[0].traceContent, false, '运行时提示与她的草稿都不进 trace 正文');
 });
+
+test('相邻的 user 消息只在发给模型的请求里并成一条；run.messages 保持调用方给的形状，并标记 promptCache', async () => {
+  const seen = [];
+  const loop = new AgentLoop({ toolRegistry: registry,
+    chat: async (messages, _tools, profile) => {
+      seen.push({ messages: structuredClone(messages), profile });
+      return { message: { role: 'assistant', content: '好。' } };
+    } });
+  const history = [
+    { role: 'user', content: '[较早对话摘要]' },
+    { role: 'user', content: '上一句' },
+    { role: 'assistant', content: '回上一句' },
+    { role: 'user', content: '[本轮背景]' },
+    { role: 'user', content: '运行时提示' },
+  ];
+  const result = await loop.run({ systemPrompt: '系统', messages: history });
+  assert.deepEqual(seen[0].messages.map(message => [message.role, message.content]), [
+    ['system', '系统'],
+    ['user', '[较早对话摘要]\n\n上一句'],
+    ['assistant', '回上一句'],
+    ['user', '[本轮背景]\n\n运行时提示'],
+  ]);
+  assert.equal(seen[0].profile.promptCache, true);
+  assert.deepEqual(result.messages.slice(0, 5), history, '历史不被改写');
+});
+
+function toolLoopRegistry(executed) {
+  return {
+    definitions: () => [{ type: 'function', function: { name: 'remember', parameters: { type: 'object', properties: {} } } }],
+    isReadOnly: () => false,
+    execute: async (name, args) => {
+      executed.push(args);
+      return { ok: true, kind: 'success', code: 'REMEMBERED', facts: {}, modelContext: '记住了', presentation: { displayText: '' } };
+    },
+  };
+}
+const callRemember = n => ({ role: 'assistant', content: '',
+  tool_calls: [{ id: `c${n}`, type: 'function', function: { name: 'remember', arguments: JSON.stringify({ n }) } }] });
+
+test('工具轮用完时对话任务再调一次、禁用工具，由她按已发生的结果收尾', async () => {
+  const executed = [];
+  const calls = [];
+  const loop = new AgentLoop({ toolRegistry: toolLoopRegistry(executed), maxRounds: 3,
+    chat: async (messages, tools, profile) => {
+      calls.push({ messages, tools, profile });
+      return profile.toolChoice === 'none'
+        ? { message: { role: 'assistant', content: '这几件事我都记下了，剩下的没来得及。', tool_calls: [callRemember(99).tool_calls[0]] } }
+        : { message: callRemember(calls.length) };
+    } });
+  const result = await loop.run({ messages: [{ role: 'user', content: '记一下这些' }] });
+  assert.equal(result.finalText, '这几件事我都记下了，剩下的没来得及。');
+  assert.equal(result.roundLimitReached, true);
+  assert.equal(executed.length, 3, '收尾调用里的工具调用不执行');
+  assert.equal(calls.length, 4);
+  assert.equal(calls[3].profile.toolChoice, 'none');
+  assert.ok(calls[3].tools?.length, '工具定义保留，只是不许调用');
+  assert.equal(calls[3].messages.at(-1).role, 'tool');
+});
+
+test('收尾调用没有文字时仍按 AGENT_ROUND_LIMIT 失败；受限任务不追加收尾调用', async () => {
+  const run = (profile, wrapText) => {
+    const calls = [];
+    const loop = new AgentLoop({ toolRegistry: toolLoopRegistry([]), maxRounds: 2,
+      chat: async (_messages, _tools, options) => {
+        calls.push(options);
+        return options.toolChoice === 'none' ? { message: { role: 'assistant', content: wrapText } } : { message: callRemember(calls.length) };
+      } });
+    return loop.run({ messages: [{ role: 'user', content: '记一下' }], modelProfileId: profile })
+      .then(() => ({ calls }), error => ({ calls, error }));
+  };
+  const empty = await run('dialogue', '');
+  assert.equal(empty.error?.code, 'AGENT_ROUND_LIMIT');
+  assert.equal(empty.error.agentOutcomes.length, 2);
+  const restricted = await run('music_selection', '不该出现');
+  assert.equal(restricted.error?.code, 'AGENT_ROUND_LIMIT');
+  assert.equal(restricted.calls.length, 2);
+});
+
+test('思考回传状态只在这次 run 的工具循环里带回，不交给 onMessage，也不留在返回的消息里', async () => {
+  const replay = { api: 'anthropic-messages', blocks: [{ type: 'thinking', thinking: '想', signature: 'sig' }] };
+  const requests = [];
+  const seen = [];
+  const loop = new AgentLoop({ toolRegistry: toolLoopRegistry([]),
+    chat: async messages => {
+      requests.push(structuredClone(messages));
+      return requests.length === 1 ? { message: { ...callRemember(1), providerReplay: replay } }
+        : { message: { role: 'assistant', content: '记住了。', providerReplay: replay } };
+    } });
+  const result = await loop.run({ messages: [{ role: 'user', content: '记一下' }], onMessage: event => { seen.push(structuredClone(event)); } });
+  assert.deepEqual(requests[1].find(message => message.role === 'assistant').providerReplay, replay);
+  assert.ok(seen.length && seen.every(event => !event.message || !('providerReplay' in event.message)));
+  assert.ok(result.messages.every(message => !('providerReplay' in message)));
+});

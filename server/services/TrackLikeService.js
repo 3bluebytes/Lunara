@@ -34,6 +34,7 @@ export class TrackLikeService {
     registry = providerRegistry,
     now = () => Date.now(),
     newRequestId = randomUUID,
+    onLikeChanged = null,
     // 远端只读结果的缓存时长：网易云一次 likelist 会返回全部 id，按秒级复用
     // 才不会变成「切一首歌打一次远端」。
     remoteReadTtlMs = 60_000,
@@ -44,6 +45,7 @@ export class TrackLikeService {
     this.registry = registry;
     this.now = now;
     this.newRequestId = newRequestId;
+    this.onLikeChanged = typeof onLikeChanged === 'function' ? onLikeChanged : null;
     this.remoteReadTtlMs = remoteReadTtlMs;
     this._queues = new Map();
     this._likeCache = new Map();   // `${provider}:${songId}` → { at, result }
@@ -220,12 +222,18 @@ export class TrackLikeService {
       return { ok: true, like: replayed, idempotent: true };
     }
 
+    const previous = (() => {
+      try { return this.store.get(provider, songId); } catch { return null; }
+    })();
     const writable = this.canWriteRemote(provider);
     const like = this.store.setDesired(provider, songId, desired, {
       remoteState: writable ? 'pending' : 'local_only',
       requestId: id,
       origin: 'user',
     });
+    if (this.onLikeChanged && (!previous || previous.desired !== like.desired)) {
+      try { this.onLikeChanged({ provider: like.provider, songId: like.songId, desired: like.desired }); } catch { /* 选歌预热失效失败不影响点赞事实 */ }
+    }
     if (!writable) {
       return { ok: true, like, idempotent: false, reason: 'no_write_capability' };
     }

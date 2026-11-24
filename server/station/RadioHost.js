@@ -10,9 +10,7 @@
 // registry metadata. The actual memory lives in the radiohost's namespace.
 
 import { randomUUID } from 'node:crypto';
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { resolveDatabasePath } from '../runtimePaths.js';
 
 function databasePath() {
@@ -57,9 +55,7 @@ export class RadioHostRegistry {
 
   initialize() {
     const dbPath = databasePath();
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db = openSqliteDatabase(dbPath);
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS radiohosts (

@@ -1,4 +1,4 @@
-// PresenceUtterance.js — presence_utterance 受限任务运行器（与 NarrationAgent 同构）。
+// PresenceUtterance.js — presence_utterance 受限任务运行器。
 //
 // 调用顺序：PresenceRuntime 给出冻结任务 → 本运行器调用主 AgentLoop：messages 为空、
 // 工具白名单只有 get_presence_brief / submit_presence_utterance、素材内联进系统提示、

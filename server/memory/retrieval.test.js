@@ -61,6 +61,28 @@ async function testBM25Matching() {
   assert(out[0].content.includes('jazz'), `top hit contains 'jazz' (got '${out[0].content.slice(0, 50)}')`);
 }
 
+async function testBM25OrderAmongSeveralHits() {
+  console.log('\n--- BM25: stronger matches rank above weaker ones ---');
+  const svc = await fresh();
+  plant(svc, { content: '用户失眠的时候喜欢听雨声' });
+  plant(svc, { content: '用户对芒果过敏' });
+  plant(svc, { content: '芒果过敏的人夏天可以多吃西瓜，夏天的水果里西瓜最解暑' });
+  const out = retrieveForPrompt(svc, { namespace: svc.namespace, query: '芒果过敏的人夏天的水果吃什么', topK: 2, enableSpreading: false });
+  assert(out[0]?.content.includes('西瓜'), `strongest hit first (got '${out[0]?.content}')`);
+  assert(!out.some(r => r.content.includes('失眠')), 'weakest hit is not kept over stronger ones');
+}
+
+async function testAcceptReachesBeyondFirstPage() {
+  console.log('\n--- accept: 前 50 个强命中都被拒时，往后翻页找到能用的 ---');
+  const svc = await fresh();
+  const target = plant(svc, { content: '周杰伦是用户初恋时最常听的歌手' }).id;
+  const rejected = new Set();
+  for (let i = 0; i < 70; i += 1) rejected.add(plant(svc, { content: `周杰伦的晴天又听了一遍，第 ${i} 次周杰伦晴天` }).id);
+  const out = retrieveForPrompt(svc, { namespace: svc.namespace, query: '周杰伦的晴天', topK: 3, enableSpreading: false,
+    accept: row => !rejected.has(row.id) });
+  assert(out.some(r => r.id === target), `weaker accepted hit is found (got ${out.map(r => r.content).join('|')})`);
+}
+
 async function testStateDependentBoost() {
   console.log('\n--- state-dependent boost ranks matching mood higher ---');
   const svc = await fresh();
@@ -152,6 +174,8 @@ async function runTests() {
   try {
     await testEmptyArgsReturnsRecent();
     await testBM25Matching();
+    await testBM25OrderAmongSeveralHits();
+    await testAcceptReachesBeyondFirstPage();
     await testStateDependentBoost();
     await testSpreadingActivation();
     await testSpreadingDisabled();

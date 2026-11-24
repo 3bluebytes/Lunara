@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   createPlaybackRuntimeState,
   hydratePlaybackRuntimeState,
-  reducePlayback,
+  reducePlayback as reduceRuntime,
 } from './PlaybackRuntime.js';
 import {
   PlaybackCommandType,
@@ -20,6 +20,27 @@ import {
   resolveCompanionModePolicy,
 } from './companionModes.js';
 
+// 串词写好只是文字，出声还要一步资产解析。只关心交付时机的用例用这个把两步连起来：
+// READY 带 ttsUrl 表示“写好了，声音也合成好了”。
+function reducePlayback(state, event, options) {
+  const result = reduceRuntime(state, event, options);
+  if (event.type !== PlaybackEventType.TRACK_NARRATION_READY || !result.accepted || !('ttsUrl' in event)) return result;
+  const written = [result.state.queue, ...Object.values(result.state.suspendedSessions || {}).map(session => session.queue)]
+    .flat().find(item => item.queueItemId === event.queueItemId);
+  let current = result;
+  if (written.narration.assetStatus !== 'resolving') {
+    current = { ...result, state: { ...result.state, queue: result.state.queue.map(item => (item.queueItemId === event.queueItemId
+      ? { ...item, narration: { ...item.narration, assetStatus: 'resolving' } } : item)) } };
+  }
+  const asset = reduceRuntime(current.state, { type: PlaybackEventType.TRACK_NARRATION_ASSET_READY, eventId: `${event.eventId}:asset`,
+    queueItemId: event.queueItemId, songId: event.songId, programId: event.programId, generationRevision: event.generationRevision,
+    listeningSessionId: event.listeningSessionId, ttsUrl: event.ttsUrl, contentHash: event.contentHash,
+    synthesisReason: event.synthesisReason, synthesisElapsedMs: event.synthesisElapsedMs }, options);
+  return { ...asset, commands: [...result.commands, ...asset.commands],
+    effects: [...result.effects.filter(effect => effect.queueItemId !== event.queueItemId
+      || effect.type !== PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET), ...asset.effects] };
+}
+
 function narrationContextTrack(songId, overrides = {}) {
   return {
     songId,
@@ -29,8 +50,14 @@ function narrationContextTrack(songId, overrides = {}) {
     artist: overrides.artist || `Artist ${songId}`,
     url: overrides.url || `/${songId}.mp3`,
     duration: overrides.duration || 200,
-    intro: { text: `Narration ${songId}`, context: { transition: 'next' } },
+    narration: { status: 'preparing', generationRevision: 1 },
   };
+}
+
+// 串词已经写好的歌：资格只决定要不要提前合成、要不要开口。
+function writtenTrack(songId, overrides = {}) {
+  return { ...narrationContextTrack(songId, overrides),
+    narration: { status: 'ready', assetStatus: 'missing', generationRevision: 1, text: `《Title ${songId}》这首可以听下去。` } };
 }
 
 function commit(state, tracks, overrides = {}) {
@@ -180,8 +207,6 @@ test('recovered unset sessions use the default cadence and keep the 120s interva
   const recovered = hydratePlaybackRuntimeState({ ...createPlaybackRuntimeState(), companionModeId: null });
   assert.equal(recovered.companionModeId, 'conversational');
   const committed = commit(recovered, tracks);
-  // 多聊一点每个 occurrence 都有资格：当前准备 + 紧邻下一首预测准备。
-  assert.equal(committed.effects.filter(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION).length, 2);
   let state = startCurrent(committed, 'default-1', 2_000);
   state = readyNarration(state, 'default-1', 2_500);
   state = speakCurrent(windowOpen(state, 'default-1', 3_500).state, 'default-1', 3_600);
@@ -250,20 +275,20 @@ test('hydration backfills a missing txn mode revision without touching media ide
     assert.equal(session.txn.queueItemId, state.txn.queueItemId);
     assert.equal(session.txn.songId, state.txn.songId);
   }
-  // 不补讲、不重写：串词交付与准备状态原样保留。
+  // 不补讲、不重写：交付状态原样保留；重启前没写完的串词不再等。
   assert.equal(hydrated.txn.narrationDelivery, state.txn.narrationDelivery);
-  assert.equal(hydrated.queue[0].narration.status, state.queue[0].narration.status);
+  assert.equal(hydrated.queue[0].narration.status, 'absent');
   assert.equal(hydrated.queue[0].narration.generationRevision, state.queue[0].narration.generationRevision);
 });
 
 // ---- 三预设的自动资格 ----
 
 test('explicitly saved occasional prepares only the 1st, 4th, 7th accepted occurrences', () => {
-  const tracks = [1, 2, 3, 4].map(index => narrationContextTrack(`song-${index}`));
+  const tracks = [1, 2, 3, 4].map(index => writtenTrack(`song-${index}`));
   // 真正的 occasional 断言必须显式选择该模式，不靠旧默认值。
   const committed = commit(createPlaybackRuntimeState({ companionModeId: 'occasional' }), tracks);
-  // 第 1 个：有资格 → 当前准备 + 紧邻下一首（第 2 个）预测不合格 → 不准备。
-  assert.equal(committed.effects.filter(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION).length, 1);
+  // 第 1 个：有资格 → 合成声音；紧邻下一首（第 2 个）预测不合格 → 不合成。
+  assert.equal(committed.effects.filter(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET).length, 1);
   assert.equal(committed.effects[0].queueItemId, committed.state.queue[0].queueItemId);
 
   let state = startCurrent(committed, 'occ-1', 2_000);
@@ -274,8 +299,7 @@ test('explicitly saved occasional prepares only the 1st, 4th, 7th accepted occur
     const activatedId = next.state.txn.queueItemId;
     const ownEffects = next.effects.filter(effect =>
       effect.queueItemId === activatedId
-      && (effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-        || effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET));
+      && effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET);
     assert.deepEqual(ownEffects, [], `occurrence ${index} starts no narration work of its own`);
     state = startCurrent(next, `occ-${index}`, nowMs + 1_000);
   }
@@ -283,6 +307,8 @@ test('explicitly saved occasional prepares only the 1st, 4th, 7th accepted occur
   // 第 4 个：恢复资格。
   const fourth = requestNext(state, 'occ-4', 360_000);
   assert.equal(fourth.state.modeActivationCount, 3, 'counting waits for accepted media');
+  assert.equal(fourth.state.queue[3].narration.assetStatus, 'resolving');
+  assert.equal(fourth.state.queue[1].narration.assetStatus, 'missing', '不开口的那几首不花 TTS');
   state = startCurrent(fourth, 'occ-4', 361_000);
   assert.equal(state.modeActivationCount, 4);
 });
@@ -292,9 +318,7 @@ test('music_only starts no automatic narration preparation or asset resolution',
   let state = createPlaybackRuntimeState();
   state = modeChange(state, { modeId: 'music_only', requestId: 'mode-1' }).state;
   const committed = commit(state, tracks);
-  assert.deepEqual(committed.effects.filter(effect =>
-    effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-    || effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET), []);
+  assert.deepEqual(committed.effects.filter(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET), []);
   const playing = startCurrent(committed, 'music-only', 2_000);
   const opened = windowOpen(playing, 'music-only', 3_500);
   assert.equal(opened.state.txn.narrationDelivery, 'skipped');
@@ -304,17 +328,17 @@ test('music_only starts no automatic narration preparation or asset resolution',
 });
 
 test('conversational grants every new occurrence and music keeps starting', () => {
-  const tracks = [1, 2, 3].map(index => narrationContextTrack(`song-${index}`));
+  const tracks = [1, 2, 3].map(index => writtenTrack(`song-${index}`));
   let state = createPlaybackRuntimeState();
   state = modeChange(state, { modeId: 'conversational', requestId: 'mode-1' }).state;
   let result = commit(state, tracks);
-  assert.ok(result.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
+  assert.ok(result.effects.some(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET
     && effect.queueItemId === result.state.queue[0].queueItemId));
-  assert.ok(result.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
+  assert.ok(result.effects.some(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET
     && effect.queueItemId === result.state.queue[1].queueItemId), 'the next occurrence is prepared ahead');
   state = startCurrent(result, 'conv-1', 2_000);
   const second = requestNext(state, 'conv-2', 3_000);
-  assert.ok(second.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
+  assert.ok(second.effects.some(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET
     && effect.queueItemId === second.state.queue[2].queueItemId));
 });
 
@@ -518,7 +542,7 @@ test('a waitable interval re-arms the window instead of skipping', () => {
 // ---- 显式请求绕过频率 ----
 
 test('an explicit current-track narration request bypasses the cadence in music_only', () => {
-  const tracks = [narrationContextTrack('one')];
+  const tracks = [{ ...narrationContextTrack('one'), narration: { status: 'absent' } }];
   let state = createPlaybackRuntimeState();
   state = modeChange(state, { modeId: 'music_only', requestId: 'explicit-mode-1' }).state;
   state = startCurrent(commit(state, tracks), 'explicit-1', 2_000);
@@ -533,8 +557,8 @@ test('an explicit current-track narration request bypasses the cadence in music_
   }, { nowMs: 30_000 });
   assert.equal(requested.accepted, true, requested.reason);
   assert.equal(requested.state.txn.narrationUserRequested, true);
-  assert.ok(requested.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION));
-  // 准备完成后，显式串词按放宽窗口排队；其 audible 事实不占用自动间隔。
+  assert.equal(requested.state.queue[0].narration.status, 'preparing', '开一个新代次，等发起请求的回合写');
+  // 写好之后，显式串词按放宽窗口排队；其 audible 事实不占用自动间隔。
   const ready = reducePlayback(requested.state, {
     type: PlaybackEventType.TRACK_NARRATION_READY,
     eventId: 'explicit-ready', queueItemId: state.txn.queueItemId, songId: state.txn.songId,
@@ -670,20 +694,23 @@ test('switching modes keeps user-requested narration and an audible one finishes
   assert.equal(switched.state.txn.narrationUserRequested, true);
 });
 
-test('mode changes carry modeRevision on narration effects and re-prepare under the new policy', () => {
-  const tracks = [narrationContextTrack('one'), narrationContextTrack('two')];
+test('mode changes carry modeRevision on narration effects and drop unspoken lines under the new policy', () => {
+  const tracks = [writtenTrack('one'), writtenTrack('two')];
   const committed = commit(createPlaybackRuntimeState({ companionModeId: 'conversational' }), tracks);
+  assert.equal(committed.effects[0].type, PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET);
   assert.equal(committed.effects[0].modeRevision, 0);
   const switched = modeChange(committed.state, { modeId: 'conversational', requestId: 'rev-mode-1' });
-  // 选中当前已生效的模式只记录来源：策略没变，不跨 revision、不重新准备串词。
+  // 选中当前已生效的模式只记录来源：策略没变，不跨 revision、不动已写好的串词。
   assert.equal(switched.state.modeRevision, 0);
   assert.equal(switched.state.modeSource, 'explicit');
-  assert.equal(switched.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION), false);
+  assert.equal(switched.state.queue[1].narration.status, 'ready');
   const toOccasional = modeChange(committed.state, { modeId: 'occasional', requestId: 'rev-mode-2' });
   assert.equal(toOccasional.state.modeRevision, 1);
-  // epoch 重建后，upcoming occurrence 重新按新策略预测（occasional 第 1 个 → 有资格）。
-  assert.ok(toOccasional.effects.some(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-    && effect.modeRevision === 1), 're-preparation carries the new mode revision');
+  // 作废，不重写：这几首接下来安静播放，写作时间一起清掉。
+  assert.deepEqual(toOccasional.state.queue.map(item => item.narration.status), ['absent', 'absent']);
+  assert.equal(toOccasional.state.queue[1].narration.text, '');
+  assert.equal(toOccasional.state.queue[1].narration.writtenAt, null);
+  assert.equal(toOccasional.effects.some(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET), false);
 });
 
 test('mode state survives restart via hydration', () => {
@@ -756,10 +783,6 @@ test('a mode change for a suspended session does not strand its next narration i
   const back = send(changed.state, PlaybackEventType.LISTENING_SESSION_SWITCH_REQUESTED,
     { listeningSessionId: 'conversation:a' });
   assert.equal(back.accepted, true, back.reason);
-  // 切回后凡是 preparing 的串词，都必须有本次下发的准备 effect 托底。
-  const preparing = back.state.queue.filter(item => item.narration?.status === 'preparing').map(item => item.queueItemId);
-  const prepared = back.effects.filter(effect => effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION)
-    .map(effect => effect.queueItemId);
-  assert.ok(preparing.length > 0, '切回后要为当前与下一首重新准备');
-  assert.deepEqual(prepared.sort(), preparing.sort());
+  // 切回后不重写：作废的那几首安静播放，没有等人写的串词。
+  assert.equal(back.state.queue.some(item => item.narration?.status === 'preparing'), false);
 });

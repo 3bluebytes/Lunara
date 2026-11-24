@@ -269,3 +269,33 @@ test('正在看的聊天不是正在听的聊天时，已放只是图，不能�
   assert.deepEqual(selected, []);
   view.destroy();
 });
+
+test('手帐或设置全屏覆盖时 1 秒定时器跳过 render，退出覆盖后恢复刷新', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { view, nodes, bar, clock } = setup();
+  const appClasses = new Set(['today-open']);
+  nodes.set('#app', { classList: { contains: name => appClasses.has(name) } });
+  bar.now = '190';
+  view.init();
+  assert.equal(nodes.get('#timeline-rail').children['[data-timeline-ss]'].textContent, '08');
+  assert.equal(firstAt(nodes.get('#timeline-next').innerHTML), '约 14:32');
+
+  bar.now = '1';
+  clock.at += 1000;
+  t.mock.timers.tick(1000);
+  assert.equal(nodes.get('#timeline-rail').children['[data-timeline-ss]'].textContent, '08', 'today-open 时跳过每秒刷新');
+  assert.equal(firstAt(nodes.get('#timeline-next').innerHTML), '约 14:32');
+
+  appClasses.clear();
+  appClasses.add('settings-open');
+  clock.at += 1000;
+  t.mock.timers.tick(1000);
+  assert.equal(nodes.get('#timeline-rail').children['[data-timeline-ss]'].textContent, '08', 'settings-open 时跳过每秒刷新');
+
+  appClasses.clear();
+  clock.at += 1000;
+  t.mock.timers.tick(1000);
+  assert.equal(nodes.get('#timeline-rail').children['[data-timeline-ss]'].textContent, '11', '退出覆盖后恢复 1 秒刷新');
+  assert.equal(firstAt(nodes.get('#timeline-next').innerHTML), '约 14:35');
+  view.destroy();
+});

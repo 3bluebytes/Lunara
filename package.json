@@ -5,6 +5,24 @@
   "description": "Lunara · Luna Radio — 本地优先的音乐伙伴：与多位有独立人格的虚拟伙伴聊天、一起听歌",
   "author": "3bluebytes",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3bluebytes/Lunara.git"
+  },
+  "homepage": "https://github.com/3bluebytes/Lunara#readme",
+  "bugs": {
+    "url": "https://github.com/3bluebytes/Lunara/issues"
+  },
+  "keywords": [
+    "ai",
+    "music",
+    "radio",
+    "electron",
+    "local-first",
+    "llm",
+    "tts",
+    "music-player"
+  ],
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -16,7 +34,7 @@
     "dev": "node --watch server/index.js",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:electron:legacy": "electron-rebuild --force-abi 140 -w better-sqlite3",
-    "rebuild:node": "npm rebuild better-sqlite3",
+    "rebuild:node": "node scripts/rebuild-node.mjs",
     "pretest": "npm run rebuild:node",
     "test": "node scripts/run-tests.mjs",
     "smoke:cli": "node scripts/smoke-cli-launch.mjs",
@@ -28,7 +46,7 @@
     "ncm": "node scripts/start-music-source.mjs ncm",
     "qq": "node scripts/qq-sdk-ready.mjs",
     "music:ncm": "npm run ncm",
-    "all": "echo 'QQ Music is embedded. Start optional NCM with npm run ncm, then run npm start.'"
+    "all": "echo 'QQ Music and Netease Cloud Music are embedded. Start Lunara with npm start.'"
   },
   "engines": {
     "node": "20.x || 22.x || 23.x || 24.x || 25.x"
@@ -69,5 +87,8 @@
     "electron",
     "scripts/ensure-electron.mjs",
     "user/*.example"
-  ]
+  ],
+  "optionalDependencies": {
+    "@huggingface/transformers": "4.3.1"
+  }
 }

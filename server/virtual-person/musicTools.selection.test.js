@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VirtualPersonToolRegistry } from './VirtualPersonToolRegistry.js';
 import { registerMusicTools } from './musicTools.js';
+import { AgentLoop } from './AgentLoop.js';
 import { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY } from '../program/musicSelectionRequest.js';
 
 const context = { capabilities: [MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY], sessionId: 'conversation:a',
@@ -133,6 +134,39 @@ test('a committed selection lets the model line through only for the committed t
   assert.deepEqual(group.presentation.modelLine, { allowedTitles: ['春风吹', '三人游'], othersTitles: ['春风吹'] });
 });
 
+for (const [tool, args] of [
+  ['select_music', { mode: 'exact', delivery: 'replace_now', targets: [{ title: '夜曲' }] }],
+  ['commit_music_selection', { offerId: 'offer:abc', indexes: [1, 2] }],
+]) {
+  test(`${tool} keeps dialogue separate from the selection and the authoritative receipt`, async () => {
+    const writes = [];
+    const invoke = async received => {
+      writes.push(received);
+      return { ok: true, code: 'MUSIC_COMMITTED', terminal: true, requestedCount: 2, selectedCount: 1,
+        tracks: [{ title: '夜曲' }], userMessage: '这次只安排了《夜曲》，没有用别的歌顶替。' };
+    };
+    const toolRegistry = registryFor({ execute: invoke, commitSelection: invoke });
+    const dialogue = '我刚才不是在回避你。' + '只是想把话说清楚，不想随口让你觉得是你的错。'.repeat(12);
+    const run = async text => {
+      let calls = 0;
+      const loop = new AgentLoop({ toolRegistry, chat: async () => {
+        assert.equal(++calls, 1, '提交后不能再调用模型');
+        return { message: { role: 'assistant', content: '另一首也响起来了。', tool_calls: [
+          { id: 'one', function: { name: tool, arguments: JSON.stringify({ ...args, dialogue: text }) } },
+        ] } };
+      } });
+      return loop.run({ systemPrompt: 'test', capabilities: context.capabilities, toolContext: context });
+    };
+    const receipt = '这次只安排了《夜曲》，没有用别的歌顶替。';
+    assert.ok([...dialogue].length > 200);
+    assert.equal((await run(dialogue)).finalText, dialogue + '\n\n' + receipt);
+    assert.equal((await run('《另一首》已经在放了。')).finalText, receipt);
+    assert.equal((await run('cookie: private-example')).finalText, receipt);
+    assert.equal((await run('另一首已经加入队列。')).finalText, receipt);
+    assert.deepEqual(writes, [args, args, args, args], '独立答话不是选歌参数，不改变提交');
+  });
+}
+
 test('commit_music_selection propagates typed failures without leaking internal copy', async () => {
   const registry = registryFor({
     commitSelection: async () => ({ ok: false, code: 'SELECTION_OFFER_UNAVAILABLE',
@@ -176,6 +210,24 @@ test('an all-failed selection guides one correction with other indexes, not a ve
   assert.notEqual(outcome.terminal, true);
 });
 
+test('失败纠正把完整窗口的资源就绪序号交给 host，但不宣称已经提交或出声', async () => {
+  for (const code of ['SELECTION_INDEXES_UNPLAYABLE', 'MUSIC_NOT_COMMITTED']) {
+    const resourceReadyIndexes = Array.from({ length: 60 }, (_, index) => index + 1);
+    const registry = registryFor({ commitSelection: async () => ({ ok: false, code,
+      offerId: 'offer:abc', resourceReadyIndexes, knownUnplayableIndexes: [],
+      failedItems: [], message: '这次没有提交，队列没有变化。' }) });
+    const outcome = await registry.execute('commit_music_selection', { offerId: 'offer:abc', indexes: [1] }, context);
+    assert.deepEqual(outcome.facts.resourceReadyIndexes, resourceReadyIndexes, '最多六十个序号不被截成二十个');
+    assert.match(outcome.modelContext, /resourceReadyIndexes/);
+    assert.match(outcome.modelContext, /优先.*符合.*要求/u);
+    assert.match(outcome.modelContext, /少选/u);
+    assert.match(outcome.modelContext, /不代表.*提交.*出声/u);
+    assert.match(outcome.modelContext, /硬约束/u);
+    assert.notEqual(outcome.terminal, true);
+    assert.equal(outcome.presentation.speak, false);
+  }
+});
+
 test('a punctuation-only follow-up cannot replay either step of the selection flow', async () => {
   const calls = [];
   const registry = registryFor({
@@ -212,4 +264,190 @@ test('群聊非负责人只有 music 能力也能看到 commit_music_selection�
   // 负责人看到的候选说明不带这句。
   const ownerOffer = await registry.execute('select_music', { mode: 'discovery', delivery: 'replace_now' }, context);
   assert.doesNotMatch(ownerOffer.modelContext, /登记为你的推荐/u);
+});
+
+test('music tools beats slot merges beats with receipt on MUSIC_COMMITTED, discards on failure/offer, and rejects action outside single roleplay', async () => {
+  const { VirtualPersonToolRegistry } = await import('./VirtualPersonToolRegistry.js');
+  const { registerMusicTools } = await import('./musicTools.js');
+  const { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY } = await import('../program/musicSelectionRequest.js');
+
+  let nextResult = null;
+  const service = {
+    execute: async () => nextResult,
+    commitSelection: async () => nextResult,
+  };
+  const registry = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  registerMusicTools(registry, () => service);
+
+  const baseCaps = [MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY];
+  const selectRadioDef = registry.definitions({ capabilities: baseCaps, interactionMode: 'radio', isGroup: false })
+    .find(d => d.function.name === 'select_music');
+  const selectRpDef = registry.definitions({ capabilities: baseCaps, interactionMode: 'roleplay', isGroup: false })
+    .find(d => d.function.name === 'select_music');
+  const commitGroupDef = registry.definitions({ capabilities: baseCaps, interactionMode: 'roleplay', isGroup: true })
+    .find(d => d.function.name === 'commit_music_selection');
+  assert.equal('action' in selectRadioDef.function.parameters.properties.beats.items.properties, false);
+  assert.equal('action' in selectRpDef.function.parameters.properties.beats.items.properties, true);
+  assert.equal('action' in commitGroupDef.function.parameters.properties.beats.items.properties, false);
+
+  const rejectedAction = await registry.execute('commit_music_selection', {
+    offerId: 'offer:x',
+    indexes: [1],
+    beats: [{ action: '点头', say: '来听夜曲。' }],
+  }, { capabilities: baseCaps, userText: '换首夜曲', interactionMode: 'radio', isGroup: false });
+  assert.equal(rejectedAction.ok, false);
+  assert.equal(rejectedAction.code, 'INVALID_TOOL_ARGUMENTS');
+
+  nextResult = {
+    ok: true,
+    code: 'MUSIC_COMMITTED',
+    terminal: true,
+    selectedCount: 1,
+    requestedCount: 1,
+    tracks: [{ title: '夜曲', artist: '周杰伦' }],
+    userMessage: '已经给你排好《夜曲》。',
+  };
+  const committed = await registry.execute('commit_music_selection', {
+    offerId: 'offer:x',
+    indexes: [1],
+    beats: [
+      { action: '轻轻放下杯子', say: '我找了一下。', pauseAfterMs: 500 },
+      { say: '挑了这首《夜曲》。' },
+    ],
+  }, { capabilities: baseCaps, userText: '放首夜曲', interactionMode: 'roleplay', isGroup: false });
+  assert.equal(committed.ok, true);
+  assert.equal(committed.terminal, true);
+  assert.equal(committed.presentation.beats.length, 3);
+  assert.equal(committed.presentation.beats[0].action, '轻轻放下杯子');
+  assert.equal(committed.presentation.beats[0].say, '我找了一下。');
+  assert.equal(committed.presentation.beats[0].pauseAfterMs, 500);
+  assert.equal(committed.presentation.beats[1].say, '挑了这首《夜曲》。');
+  assert.equal(committed.presentation.beats[1].pauseAfterMs, 650);
+  assert.equal(committed.presentation.beats[2].say, '已经给你排好《夜曲》。');
+  assert.equal(committed.presentation.beats[2].pauseAfterMs, 0);
+
+  nextResult = {
+    ok: true,
+    code: 'MUSIC_CANDIDATES_OFFERED',
+    offerId: 'offer:y',
+    request: { mode: 'discovery', delivery: 'replace_now', count: 1 },
+    offer: { candidates: [{ index: 1, songId: '1', title: '晴天', artist: '周杰伦', album: '叶惠美', source: 'qq', duration: 269 }] },
+  };
+  const offered = await registry.execute('select_music', {
+    mode: 'discovery',
+    delivery: 'replace_now',
+    beats: [{ say: '挑好之前先写一句' }],
+  }, { capabilities: baseCaps, userText: '挑首歌', interactionMode: 'radio', isGroup: false });
+  assert.equal(offered.code, 'MUSIC_CANDIDATES_OFFERED');
+  assert.equal(offered.presentation.beats, undefined);
+});
+
+test('select_music and commit_music_selection safely truncate slightly overlong voice.direction while still rejecting disallowed content', async () => {
+  const { VirtualPersonToolRegistry } = await import('./VirtualPersonToolRegistry.js');
+  const { registerMusicTools } = await import('./musicTools.js');
+  const { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY } = await import('../program/musicSelectionRequest.js');
+
+  const overlongDir = '压低音量贴近收音麦带点微沙哑的气声慢慢吐字说给你听好不好呀';
+  assert.ok([...overlongDir].length > 25 && [...overlongDir].length <= 40);
+
+  const committedResult = {
+    ok: true,
+    code: 'MUSIC_COMMITTED',
+    terminal: true,
+    selectedCount: 1,
+    requestedCount: 1,
+    tracks: [{ title: '夜曲', artist: '周杰伦' }],
+    userMessage: '已经给你排好《夜曲》。',
+  };
+  const registry = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  registerMusicTools(registry, () => ({
+    execute: async () => committedResult,
+    commitSelection: async () => committedResult,
+  }));
+
+  const caps = [MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY];
+  const toolCtx = { capabilities: caps, userText: '放首夜曲', interactionMode: 'roleplay', isGroup: false };
+
+  const selectOk = await registry.execute('select_music', {
+    mode: 'exact',
+    delivery: 'replace_now',
+    targets: [{ title: '夜曲' }],
+    beats: [{ action: '轻轻推近杯子', say: '挑了这首《夜曲》。', voice: { pace: 'slow', direction: overlongDir } }],
+  }, toolCtx);
+  assert.equal(selectOk.ok, true);
+  assert.equal(selectOk.presentation.beats.length, 2);
+  assert.equal(selectOk.presentation.beats[0].say, '挑了这首《夜曲》。');
+  assert.equal([...selectOk.presentation.beats[0].voice.direction].length, 25);
+  assert.equal(selectOk.presentation.beats[0].voice.direction, [...overlongDir].slice(0, 25).join(''));
+
+  const commitOk = await registry.execute('commit_music_selection', {
+    offerId: 'offer:z',
+    indexes: [1],
+    beats: [{ say: '这首《夜曲》给你排好了。', voice: { direction: overlongDir } }],
+  }, toolCtx);
+  assert.equal(commitOk.ok, true);
+  assert.equal(commitOk.presentation.beats.length, 2);
+  assert.equal(commitOk.presentation.beats[0].say, '这首《夜曲》给你排好了。');
+  assert.equal([...commitOk.presentation.beats[0].voice.direction].length, 25);
+
+  for (const badBeat of [
+    { say: '这首《夜曲》给你排好了。', voice: { direction: '压低音量贴近麦克风带上{叹气}效果慢慢说话' } },
+    { say: '这首《夜曲》给你排好了。', voice: { direction: 'https://example.com 压低音量慢慢说' } },
+    { say: '这首《夜曲》给你排好了。', voice: { direction: '用 commit_music_selection 压低音量' } },
+    { say: '《夜曲》已经在放了。', voice: { direction: overlongDir } },
+  ]) {
+    const rejected = await registry.execute('commit_music_selection', {
+      offerId: 'offer:z',
+      indexes: [1],
+      beats: [badBeat],
+    }, toolCtx);
+    assert.equal(rejected.ok, true);
+    assert.equal(rejected.presentation.displayText, '已经给你排好《夜曲》。');
+    assert.equal(rejected.presentation.beats, undefined);
+  }
+});
+
+test('select_music schema reserves constraints.tags for objective boundaries while keeping search_library full tags', async () => {
+  const executed = [];
+  const registry = registryFor({
+    execute: async args => { executed.push(args); return offerResult(); },
+    getCandidates: async () => [{ song_id: 's1', title: 'Moon River', artist: '手嶌葵', source: 'qq:library' }],
+    getSongTagStore: () => ({
+      getTags: id => (id === 's1' ? { genre: '爵士', mood: 'calm', energy: 0.3 } : null),
+      getArtistTags: () => null,
+    }),
+  });
+
+  for (const tags of [{ genre: '爵士', tempo: 'slow' }, { mood: '慵懒' }, { maxEnergy: 0.4 }]) {
+    const blocked = await registry.execute('select_music', {
+      mode: 'constrained',
+      delivery: 'replace_now',
+      constraints: { tags },
+    }, context);
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.code, 'INVALID_TOOL_ARGUMENTS');
+  }
+  assert.equal(executed.length, 0);
+
+  const discoveryOk = await registry.execute('select_music', {
+    mode: 'discovery',
+    delivery: 'replace_now',
+    softPreferences: '浪漫、jazz且慵懒',
+  }, context);
+  assert.equal(discoveryOk.ok, true);
+  assert.equal(discoveryOk.code, 'MUSIC_CANDIDATES_OFFERED');
+
+  const objectiveOk = await registry.execute('select_music', {
+    mode: 'constrained',
+    delivery: 'replace_now',
+    constraints: { tags: { language: 'cantonese', gender: 'female', has_vocal: true, minYear: 2000, region: '港台' } },
+  }, context);
+  assert.equal(objectiveOk.ok, true);
+  assert.equal(objectiveOk.code, 'MUSIC_CANDIDATES_OFFERED');
+
+  const librarySearch = await registry.execute('search_library', {
+    tags: { genre: '爵士', mood: 'calm', maxEnergy: 0.4 },
+  }, context);
+  assert.equal(librarySearch.ok, true);
+  assert.equal(librarySearch.facts.total, 1);
 });

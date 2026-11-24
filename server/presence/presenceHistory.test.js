@@ -78,3 +78,57 @@ test('voice gate: current audio session, playing or just exhausted, a connected 
   clients = 0;
   assert.equal(gate('room'), false, '没有客户端在线');
 });
+
+test('real VirtualPersonRuntime passes roundId to onUserTurn/onRoundSettled so quiet/control turns revert replied bonus', async () => {
+  const { createReceptionSignals } = await import('./receptionSignals.js');
+  const { PRESENCE_PREFERENCE_CAPABILITY, registerPresencePreferenceTool } = await import('./presencePreferenceTool.js');
+  const dir = mkdtempSync(join(tmpdir(), 'lunara-presence-round-'));
+  const dbPath = join(dir, 'state.db');
+  const registry = new VirtualPersonRegistry({ dbPath });
+  const conversationStore = new ConversationStore({ dbPath });
+  const tools = new VirtualPersonToolRegistry({ logger: { error() {} } });
+  const reception = createReceptionSignals({ now: () => 1_000_000 });
+  registerPresencePreferenceTool(tools, { getReception: () => reception, getListeningSessionId: () => 'room' });
+  let step = 0;
+  const chat = async () => {
+    step += 1;
+    if (step === 1) return { message: { role: 'assistant', content: '', tool_calls: [
+      { id: 'c-quiet', type: 'function', function: { name: 'set_presence_preference', arguments: JSON.stringify({ preference: 'quiet', sourceQuote: '安静点' }) } },
+    ] } };
+    if (step === 2) return { message: { role: 'assistant', content: '好，那先安静听着。' } };
+    return { message: { role: 'assistant', content: '嗯嗯。' } };
+  };
+  const runtime = new VirtualPersonRuntime({
+    registry, conversationStore,
+    promptAssembler: new PromptAssembler({ now: () => new Date('2026-10-19T12:00:00.000Z') }),
+    agentLoop: new AgentLoop({ chat, toolRegistry: tools }),
+    presentationService: new PresentationService(),
+    capabilityResolver: () => [PRESENCE_PREFERENCE_CAPABILITY],
+    logger: { error() {}, warn() {} },
+  }).initialize();
+  try {
+    conversationStore.createRoom({ sessionId: 'room', memberIds: ['lunara'], hostId: 'lunara' });
+    runtime.onUserTurn((sid, meta) => reception.noteUserTurn(sid, meta));
+    const settledEvents = [];
+    runtime.onRoundSettled(ev => {
+      settledEvents.push(ev);
+      if (!ev.ok || ev.cancelled || ev.outcomeCodes.includes('PRESENCE_QUIET_SET')) {
+        reception.revertUserTurn({ sessionId: ev.sessionId, roundId: ev.roundId });
+      }
+    });
+    reception.noteLine('room', { voiced: true });
+    await runtime.handleTurn({ sessionId: 'room', requestId: 'r-quiet', userText: '有点吵，安静点', speak: false });
+    assert.equal(reception.isQuiet('room'), true);
+    assert.deepEqual(reception.signals(), [], '真实回合里调用 quiet 不留 replied 加分');
+    assert.equal(settledEvents.length, 1);
+    assert.deepEqual(settledEvents[0].outcomeCodes, ['PRESENCE_QUIET_SET']);
+
+    reception.restore('room');
+    reception.noteLine('room', { voiced: true });
+    await runtime.handleTurn({ sessionId: 'room', requestId: 'r-chat', userText: '今晚风真好', speak: false });
+    assert.deepEqual(reception.signals().map(s => s.kind), ['replied'], '普通闲聊回应照常记 replied');
+  } finally {
+    runtime.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

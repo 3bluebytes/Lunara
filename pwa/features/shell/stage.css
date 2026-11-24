@@ -42,7 +42,9 @@
 :root[data-layout="stage"] .conversation-sidebar.expanded .shell-nav-item span { display: inline; }
 :root[data-layout="stage"] .shell-nav-item svg { width: 18px; height: 18px; }
 :root[data-layout="stage"] .conversation-list-heading { font-size: 12px; padding: 0 10px; color: var(--text-2); }
-:root[data-layout="stage"] .room-search-label input { padding: 8px 10px; font-size: 12px; }
+:root[data-layout="stage"] .room-search-label { display: block; }
+:root[data-layout="stage"] .room-search-label[hidden] { display: none; }
+:root[data-layout="stage"] .room-search-label input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-row); background: var(--bg-input); color: var(--text); font-size: 12px; }
 :root[data-layout="stage"] .room-group { gap: 3px; }
 :root[data-layout="stage"] .room-group-heading { padding: 7px 10px; font: 400 11px var(--font-ui); letter-spacing: .1em; }
 :root[data-layout="stage"] .room-group-count { font: 400 11px var(--font-mono); }
@@ -50,7 +52,7 @@
 :root[data-layout="stage"] .room-row strong { font-size: 12px; font-weight: 400; }
 :root[data-layout="stage"] .room-row-preview { font-size: 11px; margin-top: 4px; color: var(--text-3); }
 :root[data-layout="stage"] .room-row.selected { background: color-mix(in srgb,var(--text) 7%,transparent); }
-:root[data-layout="stage"] .room-row-playing { font: italic 400 13px var(--font-display); color: var(--accent); white-space: nowrap; }
+:root[data-layout="stage"] .room-row-playing { font: italic 400 13px var(--font-display); color: var(--studio-accent-ink, var(--accent)); white-space: nowrap; }
 :root[data-layout="stage"] .room-row-time { margin-left: auto; color: var(--text-3); font: 10px var(--font-mono); }
 :root[data-layout="stage"] .person-avatar { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; width: auto; min-width: 14px; height: 20px; border-radius: 0; box-shadow: none; }
 :root[data-layout="stage"] .shell-nav-tail { align-items: stretch; gap: 2px; }
@@ -161,8 +163,8 @@
 :root[data-layout="stage"] .chat-speaker-signal { display: inline-block; flex: 0 0 7px; border: 0; background: var(--person-color,var(--partner-lunara)); width: 7px; height: 7px; box-shadow: 0 0 6px var(--person-color,var(--partner-lunara)); }
 :root[data-layout="stage"] .chat-speaker-signal::before { content: none; }
 :root[data-layout="stage"] .chat-speaker .chat-speaker-name { text-transform: none; font: 12px var(--font-ui); letter-spacing: 0; }
-:root[data-layout="stage"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial) { padding: 10px 0 0; border: 0; background: none; border-radius: 0; box-shadow: none; font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); }
-:root[data-layout="stage"] :is(.chat-text,.chat-segment,.chat-editorial p) { font: inherit; }
+:root[data-layout="stage"] .chat-msg.assistant :is(.chat-bubble,.chat-editorial,.chat-beat-group) { padding: 10px 0 0; border: 0; background: none; border-radius: 0; box-shadow: none; font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-reading); }
+:root[data-layout="stage"] :is(.chat-text,.chat-segment,.chat-editorial p,.chat-beat-bubble,.roleplay-speech) { font: inherit; }
 :root[data-layout="stage"] .chat-msg.user .chat-bubble { background: color-mix(in srgb,var(--accent) 13%,transparent); border: 1px solid color-mix(in srgb,var(--accent) 18%,transparent); border-radius: 16px 16px 4px 16px; font: 400 var(--chat-body-size)/var(--chat-body-line) var(--font-ui); }
 :root[data-layout="stage"] .chat-time { font: 10px var(--font-mono); color: var(--text-3); }
 :root[data-layout="stage"] .chat-date-divider { font: italic 400 14px var(--font-display); color: var(--text-3); }
@@ -260,7 +262,7 @@
   :root[data-layout="stage"] .persistent-player #progress-bar { grid-column: 1 / -1; grid-row: 2; width: 100%; min-width: 0; height: 24px; margin: 0; background: none; }
   :root[data-layout="stage"] .persistent-player #progress-bar::before { content: ''; position: absolute; inset: 11px 0 auto; height: 2px; background: var(--line-strong); }
   :root[data-layout="stage"] .persistent-player #progress-bar > i { display: block; top: 11px; bottom: auto; height: 2px; background: var(--player-accent); }
-  :root[data-layout="stage"] .persistent-player :is(.player-waveform,.np-time,.np-duration,.player-mobile-np,.player-upcoming) { display: none !important; }
+  :root[data-layout="stage"] .persistent-player :is(.player-waveform,.np-time,.np-duration,.player-mobile-np,.player-upcoming,.player-volume) { display: none !important; }
   :root[data-layout="stage"] .persistent-player .queue-toggle { grid-column: 4; grid-row: 1; width: 44px; height: 44px; min-height: 44px; padding: 0; }
   :root[data-layout="stage"] .persistent-player .player-details { display: block; position: relative; grid-column: 3; grid-row: 1; min-width: 0; z-index: 5; }
   :root[data-layout="stage"] .persistent-player .player-details:has(> .episode-mixer[hidden]) { visibility: hidden; }
@@ -281,7 +283,11 @@
   :root[data-layout="stage"] .persistent-player .previous-btn { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  :root[data-layout="stage"] *, :root[data-layout="stage"] *::before, :root[data-layout="stage"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  :root[data-layout="stage"] :is(#app, .conversation-sidebar, .sb-resize::after, .chat-scroll, .listening-panel, .persistent-player, .play-btn, .skip-btn, .chat-track, .ct-cover-play, .compose, #compose-send, .radio-toggle, .identity-dot.is-live, .sb-status .dot, .thinking-dots span, .compose-hint .ch-dots span, .sb-logo .logo-core, .sb-logo .logo-arc) {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ===== 原 features/conversations/cikeFocus.css ===== */
@@ -339,67 +345,10 @@
   :root[data-layout="stage"] #app.focus-mode .session-breadcrumb { padding: 18px 24px; }
 }
 
-/* ===== 原 features/today/cikeToday.css ===== */
-:root[data-layout="stage"] #app.today-open .today-panel { grid-column: 2 / -1; padding: 34px 40px 28px; background: none; gap: 24px; }
-:root[data-layout="stage"] .today-workspace-title small { font: 13px var(--font-ui); color: var(--text-2); margin-left: 14px; }
-/* 三轨：列表 | 可拖动分隔线 12px | 编辑器。--today-list-width 由 todaySplit.js 写入；
-   min() 保证编辑器至少留有 420px，拖到过宽也不会把它挤没。 */
-:root[data-layout="stage"] .today-panel .today-workspace-body,
-:root[data-layout="stage"] .today-panel .today-workspace-body.is-detail-open { grid-template-columns: min(var(--today-list-width, 480px), calc(100% - 420px)) 12px minmax(0,1fr); gap: 28px; }
-/* 分界由分隔线承担：列表侧栏不再自带右边线，避免双线并排（≤960 单栏时同样不画）。 */
-:root[data-layout="stage"] .today-panel .today-notes-sidebar { border: 0; border-right: 0; border-radius: 0; padding: 0 28px 0 0; background: none; gap: 16px; }
-:root[data-layout="stage"] .today-panel .today-filter-tabs { background: none; border: 0; border-radius: 0; padding: 0; gap: 6px; flex-wrap: wrap; }
-:root[data-layout="stage"] .today-panel .today-filter-tab { background: none; border: 0; color: var(--text-2); border-radius: 999px; }
-:root[data-layout="stage"] .today-panel .today-filter-tab.is-active { background: color-mix(in srgb,var(--text) 7%,transparent); color: var(--text); }
-:root[data-layout="stage"] .today-panel .today-search-sort { grid-template-columns: minmax(0,1fr) 115px; gap: 8px; }
-:root[data-layout="stage"] .today-panel :is(input,textarea,select) { color: var(--text); }
-:root[data-layout="stage"] .today-panel :is(.today-search-field,.today-list-tools select,.today-quick-add textarea) { border: 1px solid var(--line-strong); background: var(--bg-input); border-radius: 12px; font-family: var(--font-ui); }
-:root[data-layout="stage"] .today-panel .today-quick-add { border: 0; padding: 0; background: none; }
-:root[data-layout="stage"] .today-panel .today-notes-list { padding: 0; gap: 0; }
-:root[data-layout="stage"] .today-panel .today-timeline-heading { display: block; margin: 22px 0 10px; padding: 0; color: var(--text-2); font-size: 12px; }
-:root[data-layout="stage"] .today-panel .today-entry { padding: 12px 0; border: 0; border-top: 1px solid color-mix(in srgb,var(--text) 5%,transparent); border-radius: 0; background: none; box-shadow: none; }
-:root[data-layout="stage"] .today-panel .today-entry.is-selected { background: color-mix(in srgb,var(--text) 4.5%,transparent); }
-:root[data-layout="stage"] .today-panel .today-entry-main { display: grid; grid-template-columns: 48px 18px minmax(0,1fr); gap: 10px; align-items: start; }
-/* 没有时间的条目不再占一列空时间：整行左移到圆点列，避免大片空白。 */
-:root[data-layout="stage"] .today-panel .today-entry.is-untimed .today-entry-main { grid-template-columns: 20px minmax(0,1fr); }
-:root[data-layout="stage"] .today-panel .today-entry.is-untimed .today-timeline-time { display: none; }
-:root[data-layout="stage"] .today-panel .today-timeline-time { display: block; color: var(--text-2); font: 11px/1.8 var(--font-mono); padding-top: 4px; }
-:root[data-layout="stage"] .today-panel .today-entry-content { min-width: 0; }
-:root[data-layout="stage"] .today-panel .today-entry-title { font: 400 14px/1.6 var(--font-ui); }
-:root[data-layout="stage"] .today-panel .today-entry-snippet { font: 400 13px/1.7 var(--font-reading); color: var(--text-2); }
-:root[data-layout="stage"] .today-panel .today-entry-actions { margin-left: 76px; font-size: 11px; }
-:root[data-layout="stage"] .today-panel .today-entry.is-untimed .today-entry-actions { margin-left: 30px; }
-:root[data-layout="stage"] .today-panel .today-entry.done { opacity: .6; }
-:root[data-layout="stage"] .today-panel .today-now { display: flex; align-items: center; gap: 18px; padding: 16px 0; color: var(--accent); }
-:root[data-layout="stage"] .today-now time { font: 11px var(--font-mono); min-width: 48px; }
-:root[data-layout="stage"] .today-now em { font: italic 400 15px var(--font-display); white-space: nowrap; }
-:root[data-layout="stage"] .today-now > span { flex: 1; height: 1px; background: linear-gradient(90deg,var(--accent),transparent); }
-:root[data-layout="stage"] .today-panel .today-notes-editor-pane { border: 0; padding: 0; border-radius: 0; background: none; }
-:root[data-layout="stage"] .today-panel .today-editor-card { background: none; border: 0; padding: 0; border-radius: 0; box-shadow: none; }
-:root[data-layout="stage"] .today-panel .today-editor-surface { padding: 20px 0 0; }
-/* 标题只比正文高一级：44px 的展示字号会让写作区几乎全被占掉。 */
-:root[data-layout="stage"] .today-panel .today-input-seamless-title { font: 600 18px/1.45 var(--font-ui); color: var(--text); }
-:root[data-layout="stage"] .today-panel .today-textarea-seamless-body { font: 400 17px/1.9 var(--font-reading); min-height: 220px; color: var(--text); }
-:root[data-layout="stage"] .today-panel .today-editor-attributes { background: none; border: 0; border-top: 1px solid var(--line); padding: 20px 0; border-radius: 0; }
-:root[data-layout="stage"] .today-panel .today-attrs-row { grid-template-columns: repeat(2,minmax(0,1fr)); }
-:root[data-layout="stage"] .today-panel .today-companion-details { border-radius: 14px; background: color-mix(in srgb,var(--partner-lunara) 4%,transparent); }
-:root[data-layout="stage"] .today-panel .today-btn-primary { background: var(--accent); color: var(--text-on-accent); border: 0; border-radius: 999px; box-shadow: none; }
-:root[data-layout="stage"] .today-panel .today-btn-primary:hover { background: var(--accent-hover); color: var(--text-on-accent); }
-:root[data-layout="stage"] .today-panel .today-editor-empty { border: 0; background: none; font-family: var(--font-reading); }
-:root[data-layout="stage"] .today-panel .today-editor-empty h2 { font: 400 32px var(--font-display); }
-@media (max-width: 1100px) {
-  :root[data-layout="stage"] .today-panel .today-workspace-body,
-  :root[data-layout="stage"] .today-panel .today-workspace-body.is-detail-open { grid-template-columns: min(var(--today-list-width, 340px), calc(100% - 380px)) 12px minmax(0,1fr); gap: 24px; }
-}
+/* ===== 手帐页面位置骨架（具体内容与样式由 features/today/today.css 独占） ===== */
+:root[data-layout="stage"] #app.today-open .today-panel { grid-column: 2 / -1; min-width: 0; min-height: 0; }
 @media (max-width: 960px) {
-  :root[data-layout="stage"] #app.today-open .today-panel { grid-column: 1; grid-row: 1 / -1; padding: max(30px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom)); }
-  :root[data-layout="stage"] .today-panel .today-workspace-body,
-  :root[data-layout="stage"] .today-panel .today-workspace-body.is-detail-open { grid-template-columns: minmax(0,1fr); }
-  :root[data-layout="stage"] .today-panel .today-split { display: none; }
-  :root[data-layout="stage"] .today-panel .today-notes-sidebar { padding-right: 0; }
-  :root[data-layout="stage"] .today-panel .today-header-actions { flex-wrap: wrap; justify-content: flex-start; }
-  :root[data-layout="stage"] .today-panel .today-input-seamless-title { font-size: 18px; }
-  :root[data-layout="stage"] .today-panel .today-entry-actions { flex-wrap: wrap; }
+  :root[data-layout="stage"] #app.today-open .today-panel { grid-column: 1 / -1; grid-row: 1; min-width: 0; min-height: 0; }
 }
 
 /* ===== 原 features/conversations/cikePeople.css ===== */
@@ -427,7 +376,7 @@
 :root[data-layout="stage"] #person-detail-memories { max-height: none; overflow-y: visible; }
 :root[data-layout="stage"] #person-detail .person-memory { display: grid; grid-template-columns: 88px minmax(0,1fr) auto; gap: 16px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; padding: 22px 0; margin: 0; }
 :root[data-layout="stage"] #person-detail .person-memory time { font: 11px/1.8 var(--font-mono); color: var(--text-2); padding-top: 3px; }
-:root[data-layout="stage"] #person-detail .person-memory:first-child time { color: var(--accent); }
+:root[data-layout="stage"] #person-detail .person-memory:first-child time { color: var(--studio-accent-ink, var(--accent)); }
 :root[data-layout="stage"] #person-detail .person-memory p { margin: 0 0 12px; font: 400 15px/1.8 var(--font-reading); overflow-wrap: anywhere; }
 :root[data-layout="stage"] #person-detail .person-memory summary { font-size: 11px; color: var(--text-2); cursor: pointer; }
 :root[data-layout="stage"] #person-detail .person-memory textarea { width: 100%; background: var(--bg-input); color: var(--text); font: 13px/1.7 var(--font-reading); border: 1px solid var(--line-strong); margin-top: 10px; border-radius: 8px; }
@@ -450,9 +399,14 @@
 }
 
 /* ===== 设计稿对齐（theme-cike-design-parity） ===== */
-/* 设计稿没有的控件在此刻主题下不渲染（用户确认按稿去掉）；设置 / 新建 / 登录改走稿里已有的入口。 */
-:root[data-layout="stage"] :is(#nav-settings, #nav-create, #nav-account, .room-search-label, #room-archived, #sidebar-close) { display: none !important; }
+/* 设计稿没有的控件在舞台版式下收敛；保留搜索与按需露出的归档切换/返回出口，避免归档后困死。 */
+:root[data-layout="stage"] :is(#nav-settings, #nav-create, #nav-account, #room-archived, #sidebar-close) { display: none !important; }
+:root[data-layout="stage"] .conversation-sidebar:not(.people-mode):is(.has-archived, .archived-mode) #room-archived { display: inline-flex !important; align-items: center; justify-content: center; align-self: flex-start; min-height: 32px; padding: 4px 10px; margin: 2px 0; border: 1px solid var(--line); border-radius: var(--radius-row); font-size: 12px; color: var(--text-2); }
+:root[data-layout="stage"] .conversation-sidebar:not(.people-mode).archived-mode #room-archived { color: var(--text); border-color: var(--line-control, var(--line-strong)); }
+:root[data-layout="stage"] .conversation-sidebar.people-mode .room-search-label { display: none; }
 :root[data-layout="stage"] .room-list-create { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: auto; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--text-2); cursor: pointer; }
+:root[data-layout="stage"] .room-list-create { position: relative; }
+:root[data-layout="stage"] .room-list-create::before { content: ''; position: absolute; inset: -7px; }
 :root[data-layout="stage"] .room-list-create:hover { color: var(--text); background: color-mix(in srgb,var(--text) 5%,transparent); }
 :root[data-layout="stage"] .room-list-create svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 :root[data-layout="stage"] .conversation-list-heading { display: flex; align-items: center; }
@@ -477,9 +431,11 @@
   :root[data-layout="stage"] #nav-people { order: 4; }
   :root[data-layout="stage"] #recording-review-open { order: 5; }
   :root[data-layout="stage"] .conversation-sidebar > .conversation-list-heading { order: 6; margin: 24px 0 8px; }
-  :root[data-layout="stage"] .conversation-sidebar > :is(.room-list, .people-list) { order: 7; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-  :root[data-layout="stage"] .conversation-sidebar > :is(.sb-undo-toast, .room-row-menu) { order: 8; }
-  :root[data-layout="stage"] .conversation-sidebar > .sb-bottom { order: 9; margin-top: auto; padding-top: 12px; }
+  :root[data-layout="stage"] .conversation-sidebar > .room-search-label { order: 7; }
+  :root[data-layout="stage"] .conversation-sidebar > :is(.room-list, .people-list) { order: 8; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  :root[data-layout="stage"] .conversation-sidebar > #room-archived { order: 9; }
+  :root[data-layout="stage"] .conversation-sidebar > :is(.sb-undo-toast, .room-row-menu) { order: 10; }
+  :root[data-layout="stage"] .conversation-sidebar > .sb-bottom { order: 11; margin-top: auto; padding-top: 12px; }
 
   /* 播放条在每一页都常驻（5a/8a/8b/8c 同一条，设置页也一样），侧栏各页一致。 */
   :root[data-layout="stage"] #app:is(.today-open, .person-page, .settings-open) { grid-template-rows: minmax(0,1fr) auto; }
@@ -490,6 +446,11 @@
 @media (max-width: 960px) {
   :root[data-layout="stage"] #app.settings-open { grid-template-rows: minmax(0,1fr) auto; }
   :root[data-layout="stage"] #app.settings-open .persistent-player { display: grid !important; grid-column: 1 / -1; grid-row: 2; }
+}
+@media (max-width: 960px) {
+  :root[data-layout="stage"] #app:is(.today-open, .person-page):not(.keyboard-open) { grid-template-rows: minmax(0,1fr) auto; }
+  :root[data-layout="stage"] #app.today-open:not(.keyboard-open) .today-panel { grid-row: 1; }
+  :root[data-layout="stage"] #app:is(.today-open, .person-page):not(.keyboard-open) .persistent-player { display: grid !important; grid-column: 1 / -1; grid-row: 2; }
 }
 
 /* —— 设计稿对齐：聊天页（5a 右栏）——
@@ -524,6 +485,14 @@
 :root[data-layout="stage"] .companion-mode-control .source-label { font-size: 12px; color: var(--text); letter-spacing: 0; text-transform: none; }
 :root[data-layout="stage"] .companion-mode-control .source-label::after { content: '：'; }
 :root[data-layout="stage"] #companion-mode { padding: 2px 4px; border: 0; background: none; color: var(--text); font: 12px var(--font-ui); }
+@media (max-width: 960px) {
+  :root[data-layout="stage"] .chat-header { padding: 14px 16px 8px; gap: 10px; }
+  :root[data-layout="stage"] #room-menu { order: -2; }
+  :root[data-layout="stage"] #app #conversation-person { order: -1; flex: 0 0 26px; width: 26px; height: 26px; font-size: 12px; position: relative; }
+  :root[data-layout="stage"] #app #conversation-person::after { content: ''; position: absolute; inset: -8px; }
+  :root[data-layout="stage"] .room-actions #room-settings { width: 34px; height: 34px; min-height: 34px; display: inline-grid; place-items: center; }
+  :root[data-layout="stage"] #app:not(.focus-mode) .session-breadcrumb { padding: 2px 16px 12px; gap: 8px 14px; }
+}
 /* 消息：不逐条标时间，名字前不加圆点（左侧色线已经标明谁在说）。 */
 :root[data-layout="stage"] .chat-msg .chat-time { display: none; }
 :root[data-layout="stage"] .chat-msg .chat-speaker-signal { display: none; }
@@ -537,7 +506,7 @@
 :root[data-layout="stage"] #listening-intro-text,
 :root[data-layout="stage"] .listening-narration-rule { display: none; }
 :root[data-layout="stage"] .listening-intro { margin: 8px 0 0; padding: 0; border: 0; background: none; }
-:root[data-layout="stage"] #listening-intro-source { display: block; font: normal 500 12px/1.6 var(--font-ui); color: var(--accent); overflow-wrap: anywhere; }
+:root[data-layout="stage"] #listening-intro-source { display: block; font: normal 500 12px/1.6 var(--font-ui); color: var(--studio-accent-ink, var(--accent)); overflow-wrap: anywhere; }
 :root[data-layout="stage"] #listening-intro-source[hidden] { display: none; }
 :root[data-layout="stage"] .listening-reactions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 :root[data-layout="stage"] .listening-reaction { padding: 0 12px; min-height: 30px; border: 1px solid color-mix(in srgb,var(--text) 16%,transparent); border-radius: 999px; background: none; color: var(--text); font-size: 12px; }
@@ -556,36 +525,9 @@
 :root[data-layout="stage"] .cike-queue-row small { margin-top: 0; }
 :root[data-layout="stage"] .room-group-heading > svg { display: none; }
 
-/* —— 设计稿对齐：今日（8a）——
-   一条时间线：标题旁只留前一天/后一天，快速输入一行；类型筛选、搜索、排序、日期选择、
-   页眉按钮按稿去掉（聊天走左栏，新建走右侧空状态与快速输入）。
-   条目的「今天/明天/删除」只在悬停、聚焦或选中时出现。 */
-:root[data-layout="stage"] .today-panel .today-header-actions,
-:root[data-layout="stage"] .today-panel .today-filter-tabs,
-:root[data-layout="stage"] .today-panel .today-list-tools,
-:root[data-layout="stage"] .today-panel .today-task-filters,
-:root[data-layout="stage"] .today-panel .today-strip-picker-wrap,
-:root[data-layout="stage"] .today-panel .today-strip-date-text,
-:root[data-layout="stage"] .today-panel .today-quick-add-date,
-:root[data-layout="stage"] .today-panel :is(.today-meta-pill, .today-time-badge) { display: none; }
-:root[data-layout="stage"] .today-panel .today-workspace-title { font: 400 44px/1.15 var(--font-display); }
-:root[data-layout="stage"] .today-panel .today-workspace-sub { margin-top: 8px; font-size: 12px; color: var(--text-3); }
-:root[data-layout="stage"] .today-panel .today-date-strip { order: -1; display: flex; justify-content: flex-start; margin: 0 0 -8px; padding: 0; border: 0; background: none; }
-:root[data-layout="stage"] .today-panel .today-strip-nav { gap: 8px; }
-:root[data-layout="stage"] .today-panel .today-icon-btn { width: 28px; height: 28px; min-height: 28px; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: none; color: var(--text-2); }
-:root[data-layout="stage"] .today-panel .today-quick-add { display: flex; flex-direction: row; align-items: center; gap: 8px; }
-:root[data-layout="stage"] .today-panel .today-quick-add > :not(textarea):not(button) { flex-basis: 100%; }
-:root[data-layout="stage"] .today-panel .today-quick-add { flex-wrap: wrap; }
-/* 单行输入：框高比内容多留 4px，避免内容溢出后露出内部滚动条。 */
-:root[data-layout="stage"] .today-panel .today-quick-add textarea { flex: 1 1 0; min-width: 0; height: 44px; min-height: 44px; padding: 8px 14px; line-height: 22px; resize: none; font-size: 13px; }
-:root[data-layout="stage"] .today-panel .today-quick-add-btn { align-self: center; min-height: 34px; border-radius: 999px; }
-:root[data-layout="stage"] .today-panel .today-entry:not(:hover):not(:focus-within):not(.is-selected) .today-entry-actions { display: none; }
-:root[data-layout="stage"] .today-panel .today-entry-meta { gap: 6px; font-size: 11px; color: var(--text-3); }
-:root[data-layout="stage"] .today-panel .today-entry-meta :is(.today-date-badge, .today-repeat-badge, .today-scene-badge) { padding: 0; border: 0; background: none; font: 11px var(--font-ui); color: var(--text-3); }
-
 /* —— 设计稿对齐：人物（8c）——
    先只读：人格以正文排出，名字字段与「保存修改」收起；点「编辑」（或换声音）进入编辑。 */
-:root[data-layout="stage"] #person-detail .person-edit-toggle { display: inline-block; margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font: 12px var(--font-ui); cursor: pointer; }
+:root[data-layout="stage"] #person-detail .person-edit-toggle { display: inline-block; margin-left: auto; padding: 0; border: 0; background: none; color: var(--studio-accent-ink, var(--accent)); font: 12px var(--font-ui); cursor: pointer; }
 :root[data-layout="stage"] #person-detail .person-field-h { display: flex; align-items: baseline; gap: 10px; }
 :root[data-layout="stage"] #person-detail .person-profile-scroll { display: flex; flex-direction: column; gap: 22px; }
 :root[data-layout="stage"] #person-detail .person-field:has(#person-detail-persona-input) { order: -1; }

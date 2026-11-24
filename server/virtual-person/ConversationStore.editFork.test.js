@@ -90,7 +90,7 @@ test('fork copies only visible history before the target into a new room with th
   });
 });
 
-test('fork carries observation policies so restricted turns stay restricted', async () => {
+test('fork carries observation policies so labels and revocations survive the copy', async () => {
   await withStore(({ store }) => {
     store.createRoom({ sessionId: 's', memberIds: ['lunara'] });
     exchange(store, 's', 1, '这件事只告诉你，别在群里说');
@@ -105,7 +105,9 @@ test('fork carries observation policies so restricted turns stay restricted', as
       .get('lunara', turn.turnId)?.policy_json || 'null');
     assert.equal(policyOf(copied[0]).disclosure, 'private');
     assert.equal(policyOf(copied[1]).disclosure, 'private');
-    assert.equal(store.canReadTurn('lunara', copied[0], { sessionId: room.sessionId, isGroup: true }), false);
+    // 私下说的她自己照样读得到（标签跟着副本走）；没在场的人读不到。
+    assert.equal(store.canReadTurn('lunara', copied[0], { sessionId: room.sessionId, isGroup: true }), true);
+    assert.equal(store.canReadTurn('xiaoman', copied[0], { sessionId: room.sessionId, isGroup: true }), false);
     // 已撤销（忘记）的观察不会因分叉复活。
     assert.equal(store.canReadTurn('lunara', copied[2], { sessionId: room.sessionId }), false);
     assert.equal(store.canReadTurn('lunara', copied[3], { sessionId: room.sessionId }), false);

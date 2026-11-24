@@ -275,3 +275,47 @@ test('client presence: per-connection visibility and typing are summarised; sile
   ]);
   await hub.close();
 });
+
+test('client presence: activeSessionId is summarized when reported and one-shot idleReturn never lingers in presenceSummary', async () => {
+  class FakeWebSocketServer extends EventEmitter {
+    close(callback) { callback(); }
+  }
+  const hub = new WebSocketHub({ WebSocketServerClass: FakeWebSocketServer });
+  hub.attach(new EventEmitter());
+  const summaries = [];
+  hub.onPresenceChanged(summary => summaries.push(summary));
+  const ws = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, send() {} });
+  hub.wss.emit('connection', ws);
+
+  ws.emit('message', JSON.stringify({
+    type: 'client-presence',
+    visible: true,
+    typing: false,
+    activeSessionId: 'room-rp',
+    idleReturn: { sessionId: 'room-rp', awayMs: 1_800_000, firedAtMs: 123456 },
+  }));
+
+  assert.deepEqual(summaries.at(-1), {
+    connected: 1,
+    visible: 1,
+    typing: false,
+    activeSessionId: 'room-rp',
+    idleReturn: { sessionId: 'room-rp', awayMs: 1_800_000, firedAtMs: 123456 },
+  });
+  assert.deepEqual(hub.presenceSummary(), {
+    connected: 1,
+    visible: 1,
+    typing: false,
+    activeSessionId: 'room-rp',
+  });
+
+  // Subsequent normal presence update does not re-emit idleReturn.
+  ws.emit('message', JSON.stringify({ type: 'client-presence', visible: true, typing: true }));
+  assert.deepEqual(summaries.at(-1), {
+    connected: 1,
+    visible: 1,
+    typing: true,
+    activeSessionId: 'room-rp',
+  });
+  await hub.close();
+});

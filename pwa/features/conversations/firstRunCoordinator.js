@@ -1,4 +1,5 @@
 import { STORAGE_KEYS } from '../../core/storageKeys.js';
+import { isUsableVoice } from '../../core/usableVoice.js';
 
 const NOOP = () => {};
 
@@ -24,20 +25,47 @@ export function hasRecoverableListeningState(runtime) {
   return Object.values(runtime.suspendedSessions || {}).some(sessionHasQueue);
 }
 
-export function firstRunReadiness({ settings, auth } = {}) {
-  const current = settings?.current || settings || {};
+function currentSettings(settings) {
+  return settings?.current || settings || {};
+}
+
+function configuredPrimarySource(settings) {
+  const current = currentSettings(settings);
   const allowed = playableSources(settings);
   const configured = allowed ? allowed.has(current.primarySource) : Boolean(current.primarySource);
-  const source = configured ? current.primarySource : null;
-  if (current.llm?.ready !== true) return { ready: false, missing: 'llm', source };
-  if (!source) return { ready: false, missing: 'source-settings', source: null };
-  // 已保存过凭据（cookieStored）即使此刻登录态核验失败（上游故障/离线），
-  // 也不算「未连接音乐源」：把用户困在首启设置后面比让它稍后播放失败更糟，
-  // 播放失败有自己的提示与重试路径。
+  return configured ? current.primarySource : null;
+}
+
+// 已保存过凭据（cookieStored）即使此刻登录态核验失败（上游故障/离线），
+// 也不算「未连接音乐源」：把用户困在首启设置后面比让它稍后播放失败更糟，
+// 播放失败有自己的提示与重试路径。
+function sourceConnected(auth, source) {
   const login = auth?.[source] || {};
-  const connected = login.loggedIn === true || login.cookieStored === true;
-  if (!connected) return { ready: false, missing: 'source-login', source };
+  return login.loggedIn === true || login.cookieStored === true;
+}
+
+function rootVoiceReady({ settings, voices, rootVoiceId }) {
+  const id = String(rootVoiceId || '').trim();
+  if (!id || !Array.isArray(voices)) return false;
+  return isUsableVoice(voices.find(item => item?.id === id), settings);
+}
+
+export function firstRunReadiness({ settings, auth } = {}) {
+  const source = configuredPrimarySource(settings);
+  if (currentSettings(settings).llm?.ready !== true) return { ready: false, missing: 'llm', source };
+  if (!source) return { ready: false, missing: 'source-settings', source: null };
+  if (!sourceConnected(auth, source)) return { ready: false, missing: 'source-login', source };
   return { ready: true, source };
+}
+
+// 声音只进清单。不写进 ready，避免未同意的免费声音挡住自动播放。
+export function firstRunChecklist({ settings, auth, voices, rootVoiceId } = {}) {
+  const source = configuredPrimarySource(settings);
+  return {
+    model: currentSettings(settings).llm?.ready === true ? 'complete' : 'missing',
+    music: sourceConnected(auth, source) ? 'complete' : 'missing',
+    voice: rootVoiceReady({ settings, voices, rootVoiceId }) ? 'complete' : 'missing',
+  };
 }
 
 export function canDismissRequiredSetup({ status, settings, auth } = {}) {

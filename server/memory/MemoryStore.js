@@ -8,9 +8,7 @@ import { initializeRevocations } from './memoryProvenance.js';
 // Business logic MUST NOT depend directly on SQLiteMemoryStore — always
 // use the MemoryService facade which wraps policy enforcement around storage.
 
-import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSqliteDatabase } from '../sqlite.js';
 import { createMemoryRecord, parseTags } from './types.js';
 import * as types from './types.js';
 import { trace } from '../trace.js';
@@ -53,9 +51,7 @@ export class SQLiteMemoryStore {
   initialize() {
     if (!this.db) {
       const dbPath = this.dbPath || databasePath();
-      mkdirSync(dirname(dbPath), { recursive: true });
-      this.db = new Database(dbPath);
-      this.db.pragma('journal_mode = WAL');
+      this.db = openSqliteDatabase(dbPath);
     }
 
     this.db.exec(`
@@ -95,6 +91,9 @@ export class SQLiteMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at);
       CREATE INDEX IF NOT EXISTS idx_memories_type_namespace ON memories(type, namespace);
       CREATE INDEX IF NOT EXISTS idx_memories_namespace_type_importance ON memories(namespace, type, importance);
+      -- 按时间取最近 N 条（关系事实、串词与选歌的显式记忆、洞察）直接走索引，不再整段排序。
+      CREATE INDEX IF NOT EXISTS idx_memories_namespace_type_updated ON memories(namespace, type, updated_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memories_namespace_type_created ON memories(namespace, type, created_at DESC, id DESC);
       -- 注：v2 encoding-specificity indexes 在 _migrateV2EncodingColumns 里建，
       -- 不能放这儿：升级老 DB 时此时 mood_at_creation 等列还不存在，
       -- CREATE INDEX 会报 "no such column" 让整个 initialize 挂掉。
@@ -365,7 +364,8 @@ export class SQLiteMemoryStore {
    * @returns {object[]}
    */
   search(opts = {}) {
-    const { namespace, type, tags, query, minImportance, minConfidence, limit = 50, offset = 0, orderBy } = opts;
+    const { namespace, type, tags, query, minImportance, minConfidence, limit = 50, offset = 0, orderBy,
+      sources = null, excludeTags = null } = opts;
 
     const where = [];
     const params = [];
@@ -391,6 +391,17 @@ export class SQLiteMemoryStore {
       }
     }
 
+    if (Array.isArray(sources) && sources.length) {
+      where.push(`source IN (${sources.map(() => '?').join(',')})`);
+      params.push(...sources);
+    }
+
+    // 精确按逗号分隔的标签排除（如 revoked、superseded），免得这些行占掉 limit。
+    for (const tag of Array.isArray(excludeTags) ? excludeTags : []) {
+      where.push("(',' || COALESCE(tags, '') || ',') NOT LIKE ?");
+      params.push(`%,${tag},%`);
+    }
+
     if (query) {
       where.push('(content LIKE ? OR summary LIKE ?)');
       const like = `%${query}%`;
@@ -408,7 +419,8 @@ export class SQLiteMemoryStore {
     }
 
     const orderClause = orderBy === 'created_at_asc' ? 'ORDER BY created_at ASC'
-      : 'ORDER BY created_at DESC';
+      : orderBy === 'updated_at_desc' ? 'ORDER BY updated_at DESC, id DESC'
+      : 'ORDER BY created_at DESC, id DESC';
 
     const sql = `${this._stmts.searchBase} AND ${where.join(' AND ')} ${orderClause} LIMIT ? OFFSET ?`;
     params.push(limit, offset);

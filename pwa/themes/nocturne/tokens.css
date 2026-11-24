@@ -105,7 +105,7 @@
   --font-display: 'Lunara Latin', 'Lunara Serif', 'Noto Serif SC', 'Songti SC', 'STSong', serif;
   --font-reading: 'Lunara Latin', 'Lunara Serif', 'Noto Serif SC', 'Songti SC', 'STSong', serif;
   --font-ui: 'Lunara Sans', 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
-  --font-mono: 'Lunara Number', 'Bodoni Moda', 'Bodoni 72', Didot, 'Lunara Serif', serif;
+  --font-mono: 'Lunara Number', 'Bodoni Moda', 'Bodoni 72', Didot, 'Lunara Sans', 'Noto CJK Punct', 'Noto Sans SC', 'PingFang SC', -apple-system, sans-serif;
   --font-number: 'Lunara Number', 'Bodoni Moda', 'Bodoni 72', Didot, serif;
   --weight-heavy: 900; --weight-regular: 400; --weight-light: 300; --weight-number: 500;
   --tracking-label: .2em;

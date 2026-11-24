@@ -1,5 +1,5 @@
 import { PlaybackRuntimeHost } from './PlaybackRuntimeHost.js';
-import { PlaybackEffectType, PlaybackEventType, PlaybackPhase } from './playbackRuntimeTypes.js';
+import { PlaybackEffectType, PlaybackEventType, PlaybackPhase, wireRuntimeState } from './playbackRuntimeTypes.js';
 import { getTrackArtworkStore } from '../media/sharedTrackArtwork.js';
 import { synthesisReason, synthesisElapsed } from '../tts/boundedSynthesis.js';
 
@@ -15,10 +15,7 @@ async function abortable(work, signal) {
   } finally { signal.removeEventListener('abort', onAbort); }
 }
 
-const NARRATION_WORK_TYPES = new Set([
-  PlaybackEffectType.PREPARE_TRACK_NARRATION,
-  PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET,
-]);
+const NARRATION_WORK_TYPES = new Set([PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET]);
 
 export function createPlaybackRuntimeComposition({
   prefs,
@@ -26,9 +23,12 @@ export function createPlaybackRuntimeComposition({
   publish,
   trace = () => {},
   getRadioRequestService = () => null,
-  prepareTrackNarration = null,
   resolveTrackNarrationAsset = null,
+  // 交付前核对这段没说出口的话还算不算数：返回作废原因，或 null。
+  lineDropReason = null,
   onTrackNarrationStarted = null,
+  // 停得够久再接着放：把旧串词已作废的几首交给原 host 重写（{ listeningSessionId, tracks, stoppedAtMs, resumedAtMs }）。
+  rewriteTrackLines = null,
   schedule = (callback, delay) => globalThis.setTimeout(callback, delay),
   cancelSchedule = timer => globalThis.clearTimeout(timer),
   maxPreparationConcurrency = null,
@@ -44,6 +44,7 @@ export function createPlaybackRuntimeComposition({
   let generation = 0;
   let activeNarrationWork = 0;
   let timerSequence = 0;
+  let assetAttempt = 0;
   let runtime;
 
   function findNarrationTarget(effect) {
@@ -53,9 +54,7 @@ export function createPlaybackRuntimeComposition({
 
   function expectedNarrationState(effect, track) {
     if (!track || track.narration.generationRevision !== effect.generationRevision) return false;
-    return effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-      ? track.narration.status === 'preparing'
-      : track.narration.status === 'ready' && track.narration.assetStatus === 'resolving';
+    return track.narration.status === 'ready' && track.narration.assetStatus === 'resolving';
   }
 
   function preparationLimit() {
@@ -78,37 +77,62 @@ export function createPlaybackRuntimeComposition({
     const { effect } = entry;
     const track = findNarrationTarget(effect);
     if (!expectedNarrationState(effect, track)) return;
+    let dropReason = null;
+    try { dropReason = lineDropReason?.(track, effect.listeningSessionId) || null; } catch { dropReason = null; }
+    if (dropReason) {
+      await runtime.invalidatePreparedNarrations(effect.listeningSessionId,
+        { includeCurrent: true, queueItemIds: [effect.queueItemId], dropReason });
+      return;
+    }
     const startedAt = now();
-    const controller = new AbortController();
-    entry.controller = controller;
-    controllers.add(controller);
-    const isCurrent = () => !stopped && entry.generation === generation && !controller.signal.aborted
-      && expectedNarrationState(effect, findNarrationTarget(effect));
+    const submitAssetFailure = async (reason, elapsedMs) => {
+      const eventType = PlaybackEventType.TRACK_NARRATION_ASSET_FAILED;
+      const accepted = await runtime.submit({
+        type: eventType,
+        eventId: `narration:${eventType}:${effect.queueItemId}:${effect.generationRevision}:${++assetAttempt}`,
+        queueItemId: effect.queueItemId,
+        generationRevision: effect.generationRevision,
+        listeningSessionId: effect.listeningSessionId,
+        songId: effect.songId,
+        programId: effect.programId,
+        synthesisReason: reason, synthesisElapsedMs: elapsedMs,
+      });
+      trace({ event: 'track-narration-work-failed', workType: effect.type,
+        listeningSessionId: effect.listeningSessionId,
+        queueItemId: effect.queueItemId, generationRevision: effect.generationRevision,
+        elapsedMs, accepted: accepted.accepted, synthesisReason: reason });
+    };
     const snapshot = runtime.snapshot();
     const currentAutomatic = snapshot.activeListeningSessionId === effect.listeningSessionId
       && snapshot.queue[snapshot.currentIndex]?.queueItemId === effect.queueItemId
       && snapshot.txn?.narrationUserRequested !== true;
     // 当前自动口播只用现有开始窗口；下一首提前准备不受当前曲窗口截断。
     const deadlineMs = currentAutomatic
-      ? (snapshot.txn?.startedAtMs ?? now()) + Math.max(0, Number(snapshot.narrationPolicy?.maxStartOffsetMs) || 0)
+      ? (snapshot.txn?.startedAtMs ?? startedAt) + Math.max(0, Number(snapshot.narrationPolicy?.maxStartOffsetMs) || 0)
       : null;
+    if (deadlineMs != null && deadlineMs <= startedAt) {
+      await submitAssetFailure('timeout', 0);
+      return;
+    }
+    const controller = new AbortController();
+    entry.controller = controller;
+    controllers.add(controller);
+    const isCurrent = () => !stopped && entry.generation === generation && !controller.signal.aborted
+      && expectedNarrationState(effect, findNarrationTarget(effect));
     try {
-      const work = effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION ? prepareTrackNarration : resolveTrackNarrationAsset;
+      const work = resolveTrackNarrationAsset;
       if (typeof work !== 'function') throw Object.assign(new Error('narration not configured'), { code: 'NARRATION_NOT_CONFIGURED' });
       const result = await abortable(() => work(effect, { signal: controller.signal, isCurrent, deadlineMs }), controller.signal);
       if (!isCurrent()) return;
-      const { narrationSource, narrationRejection, narrationFinishReason, narrationDimensions, narrationBrief } = result || {};
       // 只映射受控资产字段，诊断不作为任意字段散传进状态事件。
-      const narration = Object.fromEntries(['text', 'spokenText', 'performance', 'ttsUrl', 'contentHash',
-        'voiceProfileId', 'previousSongId'].map(key => [key, result?.[key]]));
+      const narration = Object.fromEntries(['ttsUrl', 'contentHash', 'voiceProfileId'].map(key => [key, result?.[key]]));
       const synthReason = synthesisReason(result?.narrationSynthesisReason);
       const synthElapsedMs = synthesisElapsed(result?.narrationSynthesisElapsedMs);
-      const eventType = effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-        ? PlaybackEventType.TRACK_NARRATION_READY
-        : PlaybackEventType.TRACK_NARRATION_ASSET_READY;
+      const eventType = PlaybackEventType.TRACK_NARRATION_ASSET_READY;
       const accepted = await runtime.submit({
         type: eventType,
-        eventId: `narration:${eventType}:${effect.queueItemId}:${effect.generationRevision}`,
+        // 同一代次的串词可能重解析（提前一首一次、开播时再一次），事件 ID 不能相同。
+        eventId: `narration:${eventType}:${effect.queueItemId}:${effect.generationRevision}:${++assetAttempt}`,
         queueItemId: effect.queueItemId,
         generationRevision: effect.generationRevision,
         listeningSessionId: effect.listeningSessionId,
@@ -121,30 +145,12 @@ export function createPlaybackRuntimeComposition({
         queueItemId: effect.queueItemId, generationRevision: effect.generationRevision,
         elapsedMs: Math.max(0, now() - startedAt), accepted: accepted.accepted,
         staleReason: accepted.accepted ? null : accepted.reason,
-        narrationSource, narrationRejection, narrationFinishReason, narrationDimensions, narrationBrief,
         synthesisReason: synthReason, synthesisElapsedMs: synthElapsedMs });
     } catch (error) {
       if (!isCurrent()) return;
       const reason = error?.code === 'NARRATION_NOT_CONFIGURED' ? 'not-configured'
         : error?.name === 'TimeoutError' ? 'timeout' : 'failed';
-      const elapsedMs = Math.max(0, now() - startedAt);
-      const eventType = effect.type === PlaybackEffectType.PREPARE_TRACK_NARRATION
-        ? PlaybackEventType.TRACK_NARRATION_FAILED
-        : PlaybackEventType.TRACK_NARRATION_ASSET_FAILED;
-      const accepted = await runtime.submit({
-        type: eventType,
-        eventId: `narration:${eventType}:${effect.queueItemId}:${effect.generationRevision}`,
-        queueItemId: effect.queueItemId,
-        generationRevision: effect.generationRevision,
-        listeningSessionId: effect.listeningSessionId,
-        songId: effect.songId,
-        programId: effect.programId,
-        synthesisReason: reason, synthesisElapsedMs: elapsedMs,
-      });
-      trace({ event: 'track-narration-work-failed', workType: effect.type,
-        listeningSessionId: effect.listeningSessionId,
-        queueItemId: effect.queueItemId, generationRevision: effect.generationRevision,
-        elapsedMs, accepted: accepted.accepted, synthesisReason: reason });
+      await submitAssetFailure(reason, Math.max(0, now() - startedAt));
     } finally {
       controllers.delete(controller);
     }
@@ -230,24 +236,22 @@ export function createPlaybackRuntimeComposition({
         scheduleNarrationWindow(effect);
         return;
       }
+      if (effect.type === PlaybackEffectType.REWRITE_TRACK_LINES) {
+        void rewriteLines(effect);
+        return;
+      }
       if (effect.type !== PlaybackEffectType.REQUEST_CONTINUATION) return;
       const controller = new AbortController();
       controllers.add(controller);
       const effectGeneration = generation;
       const isCurrent = () => !stopped && effectGeneration === generation && !controller.signal.aborted;
+      let prewarming = false;
       try {
         const radio = getRadioRequestService();
         if (!radio) throw new Error('radio request service unavailable for continuation');
         const current = runtime.snapshot();
         if (current.activeListeningSessionId !== effect.listeningSessionId || current.outputGeneration !== effect.outputGeneration
           || !current.radioMode || current.pendingContinuation?.boundaryKey !== effect.boundaryKey) return;
-        // 权威预热触发点：这个边界由实时任务处理，同时为“下一个边界”挂起一批
-        // 已备好的歌（只登记、不播放）；命中时下个边界零模型调用地采用。
-        // boundaryInFlight 明确告诉预热：不要绑定正在被实时任务解析的这个边界。
-        if (typeof radio.prepareContinuation === 'function') {
-          void Promise.resolve(radio.prepareContinuation({ signal: controller.signal, isCurrent,
-            boundaryInFlight: effect.boundaryKey })).catch(() => {});
-        }
         const result = await radio.handleContinue({ requestId: `runtime-continuation:${effect.boundaryKey}`,
           sessionId: effect.listeningSessionId, outputGeneration: effect.outputGeneration,
           signal: controller.signal, isCurrent });
@@ -264,6 +268,13 @@ export function createPlaybackRuntimeComposition({
         if (!Number.isFinite(committedTracks) || committedTracks < 1) {
           throw new Error('continuation produced no tracks committed');
         }
+        // 这个边界的歌落定之后，等 host 写完串词，再为下一个边界挂起一批（只登记、不播放）；
+        // 命中时下个边界零模型调用地采用。同一个 host 不同时想两批歌。
+        if (typeof radio.prepareAfterBoundary === 'function') {
+          prewarming = true;
+          void Promise.resolve(radio.prepareAfterBoundary({ sessionId: effect.listeningSessionId, signal: controller.signal, isCurrent }))
+            .catch(() => {}).finally(() => controllers.delete(controller));
+        }
       } catch (error) {
         if (!isCurrent()) return;
         await runtime.submit({
@@ -277,11 +288,41 @@ export function createPlaybackRuntimeComposition({
           error: error.message,
         });
       } finally {
-        controllers.delete(controller);
+        if (!prewarming) controllers.delete(controller);
       }
     },
     onError: (error, context) => trace(`[playback-runtime] ${context?.type || 'error'}: ${error.message}`),
   });
+
+  // 重写交出去就不等它：模型调用由 line pass 自己兜底（没写成的走 fail）。只有交不出去
+  // （没配置、出错）才在这里按代次报失败，这几首安静播放，不会一直挂在“正在写”。
+  async function rewriteLines(effect) {
+    let tracks = [];
+    try {
+      const scoped = runtime.listeningSnapshot(effect.listeningSessionId);
+      tracks = (effect.queueItemIds || []).map(id => scoped.queue.find(item => item.queueItemId === id))
+        .filter(item => item?.narration?.status === 'preparing');
+      if (!tracks.length) return;
+      if (typeof rewriteTrackLines !== 'function') throw new Error('track line rewrite not configured');
+      trace({ event: 'track-lines-rewrite-requested', listeningSessionId: effect.listeningSessionId,
+        count: tracks.length, gapMs: Math.max(0, effect.resumedAtMs - effect.stoppedAtMs) });
+      await rewriteTrackLines({ listeningSessionId: effect.listeningSessionId, tracks,
+        stoppedAtMs: effect.stoppedAtMs, resumedAtMs: effect.resumedAtMs });
+    } catch (error) {
+      if (stopped) return;
+      trace({ event: 'track-lines-rewrite-failed', listeningSessionId: effect.listeningSessionId, count: tracks.length,
+        error: String(error?.message || error) });
+      const type = PlaybackEventType.TRACK_NARRATION_FAILED;
+      for (const track of tracks) {
+        const generationRevision = track.narration.generationRevision;
+        try {
+          await runtime.submit({ type, eventId: `narration:${type}:${track.queueItemId}:${generationRevision}`,
+            queueItemId: track.queueItemId, generationRevision, listeningSessionId: effect.listeningSessionId,
+            songId: track.songId, programId: track.programId, reason: 'rewrite-unavailable' });
+        } catch { /* 这首安静播放 */ }
+      }
+    }
+  }
 
   runtime.subscribe((snapshot, event) => {
     // 队列替换或素材 revision 失效后立即取消模型工作；仍在队列的后台准备可继续复用。
@@ -306,7 +347,7 @@ export function createPlaybackRuntimeComposition({
       if (track) onTrackNarrationStarted?.(snapshot, event, track);
     }
     if (event.type === PlaybackEventType.TRACK_NARRATION_READY) {
-      trace({ event: 'track-narration-prepared', queueItemId: event.queueItemId,
+      trace({ event: 'track-line-written', queueItemId: event.queueItemId,
         generationRevision: event.generationRevision });
     }
     if ([PlaybackEventType.NARRATION_DELIVERY_FINISHED, PlaybackEventType.NARRATION_DELIVERY_FAILED,
@@ -314,13 +355,15 @@ export function createPlaybackRuntimeComposition({
       trace({ event: 'track-narration-terminal', outcome: event.type,
         queueItemId: event.queueItemId, correlationId: event.correlationId });
     }
+    const isPositionReport = event?.type === PlaybackEventType.POSITION_REPORTED;
     const presentation = event?.type === PlaybackEventType.PROGRAM_COMMITTED
       ? event.presentation || {}
-      : {};
-    queueService.projectRuntimeSnapshot(snapshot, presentation);
-    publish({ type: 'runtime-state', state: snapshot });
+      : isPositionReport ? { publish: false } : {};
+    const wireState = wireRuntimeState(snapshot);
+    queueService.projectRuntimeSnapshot(wireState, presentation);
+    publish({ type: 'runtime-state', state: wireState });
   });
-  void runtime.ready.then(snapshot => queueService.projectRuntimeSnapshot(snapshot, { publish: false }));
+  void runtime.ready.then(snapshot => queueService.projectRuntimeSnapshot(wireRuntimeState(snapshot), { publish: false }));
   const stopHost = runtime.stop.bind(runtime);
   runtime.stop = async () => {
     stopped = true;

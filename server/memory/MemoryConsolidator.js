@@ -15,6 +15,12 @@
 
 import { MemoryType, MemorySource, createMemoryRecord, contentSimilarity, tagOverlap, parseTags } from './types.js';
 
+const CONFLICT_PROTECTED_SOURCES = new Set([
+  MemorySource.USER_EXPLICIT_FEEDBACK,
+  MemorySource.MANUAL_SEED,
+  MemorySource.STATION_SEED,
+]);
+
 export class MemoryConsolidator {
   constructor(memoryService, namespace) {
     this.service = memoryService;
@@ -403,8 +409,12 @@ export class MemoryConsolidator {
         for (let j = i + 1; j < group.length; j++) {
           const sim = contentSimilarity(group[i].content, group[j].content);
           if (sim < 0.3 && sim >= 0) {
-            // Potential contradiction — demote the lower-confidence one
-            const toDemote = group[i].confidence <= group[j].confidence ? group[i] : group[j];
+            // Potential contradiction — demote the lower-confidence inferred one.
+            // 用户亲口说的和种子记忆不靠"同标签、内容不像"降级：标签相同的
+            // 不同事实（猫的名字、职业）并不矛盾，每小时整理会把它们磨到 0。
+            const candidates = [group[i], group[j]].filter(m => !CONFLICT_PROTECTED_SOURCES.has(m.source));
+            if (candidates.length === 0) continue;
+            const toDemote = candidates.reduce((a, b) => (a.confidence <= b.confidence ? a : b));
             const newConf = Math.max(0, toDemote.confidence - 0.1);
             this.store.update(toDemote.id, { confidence: newConf });
             demoted++;

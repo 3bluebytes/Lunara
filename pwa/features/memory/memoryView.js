@@ -119,6 +119,16 @@ export function initMemoryView({
   listen($('#mem-list'), 'click', async event => {
     const button = event.target.closest('[data-memory-correct], [data-memory-forget], [data-candidate-forget]');
     if (!button) return;
+    const isForget = button.hasAttribute('data-memory-forget') || button.hasAttribute('data-candidate-forget');
+    if (isForget) {
+      const armedUntil = Number(button.dataset?.confirmUntil || 0);
+      if (Date.now() >= armedUntil) {
+        if (button.dataset) button.dataset.confirmUntil = String(Date.now() + 4000);
+        button.textContent = '再点一次确认忘记';
+        return;
+      }
+      if (button.dataset) delete button.dataset.confirmUntil;
+    }
     button.disabled = true;
     try {
       const row = button.closest('[data-memory], [data-candidate]');

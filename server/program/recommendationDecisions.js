@@ -190,7 +190,11 @@ export class RecommendationDecisionStore {
     this.initialize();
     if (!queueItemId || !DECISION_OUTCOMES.includes(outcome)) return 0;
     const played = Number.isFinite(Number(playedSeconds)) && playedSeconds != null ? Math.max(0, Number(playedSeconds)) : null;
-    const replaceable = outcome === 'superseded' ? 'outcome IS NULL' : `(outcome IS NULL OR outcome = 'superseded')`;
+    const replaceable = outcome === 'superseded'
+      ? 'outcome IS NULL'
+      : outcome === 'technical_failure'
+        ? `(outcome IS NULL OR outcome = 'superseded')`
+        : `(outcome IS NULL OR outcome IN ('superseded', 'technical_failure'))`;
     return this.db.prepare(`UPDATE music_recommendation_decisions
       SET outcome = ?, outcome_at = ?, played_seconds = COALESCE(?, played_seconds)
       WHERE queue_item_id = ? AND ${replaceable}`).run(outcome, this.now(), played, String(queueItemId)).changes;

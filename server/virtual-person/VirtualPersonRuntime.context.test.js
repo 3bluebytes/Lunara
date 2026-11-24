@@ -1,7 +1,8 @@
 // 普通回合上下文的逐字节基线（add-companion-heartbeat 1.1）。
 //
-// 抽出共用的 `_assembleContext` 之后，普通回合送给模型的 system prompt 与消息数组
-// 必须与抽取前完全一致。夹具覆盖 1:1、群聊、较早摘要、今日计划、天气、被撤回回合。
+// 普通回合送给模型的 system prompt 与消息数组逐字节固定：系统提示只有稳定小节，
+// 较早对话摘要是第一条消息，每轮都变的小节在最后一条 user 消息的「本轮背景」里。
+// 夹具覆盖 1:1、群聊、较早摘要、今日计划、天气、被撤回回合。
 // 有意修改提示词时，用 LUNARA_UPDATE_CONTEXT_BASELINE=1 重新生成基线并审阅 diff。
 process.env.TZ = 'Asia/Shanghai';
 
@@ -149,14 +150,21 @@ test('ordinary turn context stays byte-for-byte identical to the recorded baseli
 
 test('baseline fixtures exercise the intended context features', () => {
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+  // 每轮都变的小节在最后一条 user 消息的「本轮背景」里，系统提示只有稳定小节。
+  const background = call => call.messages.at(-1).content;
+  // 关系记忆留在系统提示；按本轮原话检索的记忆、跨聊天摘录与每轮变化节在本轮背景。
   assert.match(baseline.oneToOne.at(-1).system, /用户希望被直接指出问题/);
-  assert.match(baseline.oneToOne.at(-1).system, /上周聊过雨天通勤/);
+  assert.doesNotMatch(baseline.oneToOne.at(-1).system, /上周聊过雨天通勤/);
+  assert.match(background(baseline.oneToOne.at(-1)), /^\[本轮背景｜[\s\S]*用户在找工作[\s\S]*上周聊过雨天通勤[\s\S]*当前真实状态/);
+  assert.doesNotMatch(baseline.oneToOne.at(-1).system, /用户在找工作|## 当前真实状态/);
+  assert.equal(baseline.oneToOne[0].system, baseline.oneToOne.at(-1).system, '两轮之间系统提示逐字节不变');
   assert.deepEqual(baseline.oneToOne.at(-1).messages.map(message => message.role), ['user', 'assistant', 'user']);
   assert.match(baseline.group[0].system, /本聊天参与者/);
-  assert.ok(baseline.group.some(call => /私有:radiohost:b/.test(call.system)));
-  assert.match(baseline.summaries.at(-1).system, /较早对话摘要[\s\S]*CODEWORD-719/);
-  assert.match(baseline.lifeAndWeather[0].system, /今日计划/);
-  assert.match(baseline.lifeAndWeather[0].system, /上海 · 小雨 21°C/);
+  assert.ok(baseline.group.some(call => /私有:radiohost:b/.test(background(call))));
+  assert.match(baseline.summaries.at(-1).messages[0].content, /^\[较早对话摘要｜[\s\S]*CODEWORD-719/);
+  assert.doesNotMatch(baseline.summaries.at(-1).system, /CODEWORD-719/);
+  assert.match(background(baseline.lifeAndWeather[0]), /今日计划/);
+  assert.match(background(baseline.lifeAndWeather[0]), /上海 · 小雨 21°C/);
   const revoked = JSON.stringify(baseline.revokedTurn);
   assert.doesNotMatch(revoked, /我准备辞职了/);
 });

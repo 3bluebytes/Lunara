@@ -191,7 +191,7 @@ test('continue controls recover an exhausted radio session instead of becoming a
 });
 
 test('a memory change invalidates a suspended session prepared narration without emitting effects', () => {
-  const narrated = id => ({ ...song(id), intro: { text: `这是 ${id}`, context: { transition: 'next' } } });
+  const narrated = id => ({ ...song(id), narration: { status: 'preparing', generationRevision: 1 } });
   const playNarrated = (state, id, ids) => {
     const committed = send(state, 'PROGRAM_COMMITTED', { listeningSessionId: id, delivery: 'replace_now', tracks: ids.map(narrated) });
     assert.equal(committed.accepted, true, committed.reason);

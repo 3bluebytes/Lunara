@@ -244,3 +244,438 @@ test('without a web-audio graph, duck and restore respect the music volume prefe
   controller.destroy();
   resetMusicVolumePreferenceForTest();
 });
+
+test('finishOverlayNarrations keeps runtime narration ducking intact when runtime owns the duck', async () => {
+  const { createNarrationCoordinator } = await import('./narrationCoordinator.js');
+  const store = createAppState({
+    queue: [track('one')], cursor: 0,
+    runtimeState: { version: 3, currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [] },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  const coordinator = createNarrationCoordinator({ audio: narrationAudio, locationHref: 'http://localhost/' }).init();
+  const gains = [];
+  const controller = createPlaybackController({
+    store, narrationAudio, musicAudio, narrationCoordinator: coordinator,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: value => { gains.push(value); return true; } },
+  }).init();
+
+  let activeTask;
+  coordinator.enqueue({
+    id: 'runtime-intro-1',
+    lane: 'runtime',
+    url: '/intro.mp3',
+    meta: { command: { type: 'PLAY_TRACK_NARRATION', queueItemId: 'q1', correlationId: 'c1', outputGeneration: 1, duckLevel: 0.25, duckRampMs: 300, restoreRampMs: 500 } },
+    onStart: task => {
+      activeTask = task;
+      coordinator.publishLifecycle('runtime-audible', task, task.meta.command);
+    },
+  });
+  await settle();
+  assert.equal(activeTask?.lane, 'runtime');
+  assert.equal(controller.getSnapshot().musicDucked, true);
+  assert.deepEqual(gains, [0.25]);
+
+  controller.finishOverlayNarrations();
+  assert.equal(controller.getSnapshot().musicDucked, true, 'runtime 拥有 duck 时 overlay 收尾不得误恢复');
+  assert.deepEqual(gains, [0.25]);
+
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.deepEqual(gains, [0.25, 1]);
+  controller.destroy();
+  coordinator.destroy();
+});
+
+test('applyMusicVolume respects active ducking fallback and stopOverlayNarrations cancels foreground speech', async () => {
+  resetMusicVolumePreferenceForTest();
+  setMusicVolumePreference(0.5);
+  const store = createAppState({
+    queue: [track('one')], cursor: 0,
+    runtimeState: { version: 3, currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [] },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  const controller = createPlaybackController({
+    store, narrationAudio, musicAudio,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: () => false },
+  });
+  controller.init();
+  musicAudio.src = '/one.mp3';
+  await musicAudio.play();
+
+  assert.equal(controller.playOverlayNarrations([
+    { url: '/voice-1.mp3', text: '第一段' },
+    { url: '/voice-2.mp3', text: '第二段' },
+  ]), true);
+  await settle();
+  assert.equal(controller.getSnapshot().overlayActive, true);
+  assert.equal(controller.applyMusicVolume(0.8), 0.8);
+  assert.ok(Math.abs(musicAudio.volume - 0.16) < 1e-6, 'duck 期间修改音量应按 duck 比例折算');
+
+  assert.equal(controller.stopOverlayNarrations(), true);
+  assert.equal(controller.getSnapshot().overlayActive, false);
+  assert.equal(controller.getSnapshot().overlayQueueLength, 0);
+  assert.equal(musicAudio.volume, 0.8, '停止人声后音乐恢复到最新音量偏好');
+  controller.destroy();
+  resetMusicVolumePreferenceForTest();
+});
+
+test('Turn Ducking Lease holds continuous ducking across pipelined radio beats and delayBeforeMs pauses, releasing only on final beat', async () => {
+  const { createNarrationCoordinator } = await import('./narrationCoordinator.js');
+  const timers = [];
+  const store = createAppState({
+    queue: [track('one')],
+    cursor: 0,
+    runtimeState: { version: 3, activeListeningSessionId: 'room-1', currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [{ queueItemId: 'q1', songId: 'one' }] },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  musicAudio.src = '/one.mp3';
+  await musicAudio.play();
+
+  const coordinator = createNarrationCoordinator({
+    audio: narrationAudio,
+    locationHref: 'http://localhost/',
+    setTimer: (fn, ms) => { const entry = { kind: 'delay', fn, ms, cleared: false }; timers.push(entry); return entry; },
+    clearTimer: entry => { if (entry) entry.cleared = true; },
+  }).init();
+  const gains = [];
+  const controller = createPlaybackController({
+    store,
+    narrationAudio,
+    musicAudio,
+    narrationCoordinator: coordinator,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: value => { gains.push(value); return true; } },
+    setTimer: (fn, ms) => { const entry = { kind: 'safety', fn, ms, cleared: false }; timers.push(entry); return entry; },
+    clearTimer: entry => { if (entry) entry.cleared = true; },
+  }).init();
+
+  // 第 1 拍先到（流水线后续拍还在合成途中）
+  controller.playOverlayNarrations([{
+    url: '/b0.mp3',
+    sourceTurnId: 'turn_pipe_1',
+    beatIndex: 0,
+    beatCount: 3,
+    isLastBeat: false,
+    delayBeforeMs: 0,
+    turnDuckLeaseId: 'turn_pipe_1',
+    holdDuckLease: true,
+  }]);
+  await settle();
+  assert.deepEqual(gains, [0.2]);
+  assert.equal(controller.getSnapshot().musicDucked, true);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 'turn_pipe_1');
+
+  // 第 1 拍播完时队列暂时为空，但 holdDuckLease=true，音乐必须继续保持压低不抬回
+  narrationAudio.emit('ended');
+  await settle();
+  assert.deepEqual(gains, [0.2], '拍间等待下一拍期间音乐不得抬回');
+  assert.equal(controller.getSnapshot().musicDucked, true);
+
+  // 第 2 拍（带 delayBeforeMs: 500）与第 3 拍（末拍 holdDuckLease=false）相继到达
+  controller.playOverlayNarrations([{
+    url: '/b1.mp3',
+    sourceTurnId: 'turn_pipe_1',
+    beatIndex: 1,
+    beatCount: 3,
+    isLastBeat: false,
+    delayBeforeMs: 500,
+    turnDuckLeaseId: 'turn_pipe_1',
+    holdDuckLease: true,
+  }, {
+    url: '/b2.mp3',
+    sourceTurnId: 'turn_pipe_1',
+    beatIndex: 2,
+    beatCount: 3,
+    isLastBeat: true,
+    delayBeforeMs: 650,
+    turnDuckLeaseId: 'turn_pipe_1',
+    holdDuckLease: false,
+  }]);
+  await settle();
+  const delay1 = timers.find(t => t.kind === 'delay' && !t.cleared && t.ms === 500);
+  assert.ok(delay1);
+  assert.deepEqual(gains, [0.2], 'delayBeforeMs 停顿期间仍保持压低');
+  delay1.fn();
+  await settle();
+  assert.equal(narrationAudio.src, '/b1.mp3');
+
+  narrationAudio.emit('ended');
+  await settle();
+  const delay2 = timers.find(t => t.kind === 'delay' && !t.cleared && t.ms === 650);
+  assert.ok(delay2);
+  delay2.fn();
+  await settle();
+  assert.equal(narrationAudio.src, '/b2.mp3');
+  assert.deepEqual(gains, [0.2]);
+
+  // 末拍播完后才统一释放租约并恢复音乐音量
+  narrationAudio.emit('ended');
+  await settle();
+  assert.deepEqual(gains, [0.2, 1]);
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+
+  controller.destroy();
+  coordinator.destroy();
+});
+
+test('Turn Ducking Lease releases immediately on user stop, track switch, and 15_000ms safety timeout', async () => {
+  const { createNarrationCoordinator } = await import('./narrationCoordinator.js');
+  const safetyTimers = [];
+  const store = createAppState({
+    queue: [track('one'), track('two')],
+    cursor: 0,
+    runtimeState: { version: 3, activeListeningSessionId: 'room-1', currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [{ queueItemId: 'q1', songId: 'one' }, { queueItemId: 'q2', songId: 'two' }], txn: { queueItemId: 'q1' } },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  musicAudio.src = '/one.mp3';
+  await musicAudio.play();
+
+  const coordinator = createNarrationCoordinator({ audio: narrationAudio, locationHref: 'http://localhost/' }).init();
+  const gains = [];
+  const controller = createPlaybackController({
+    store,
+    narrationAudio,
+    musicAudio,
+    narrationCoordinator: coordinator,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: value => { gains.push(value); return true; } },
+    setTimer: (fn, ms) => { const t = { fn, ms, cleared: false }; safetyTimers.push(t); return t; },
+    clearTimer: t => { if (t) t.cleared = true; },
+  }).init();
+
+  // 1) 切歌打断释放租约
+  controller.playOverlayNarrations([{
+    url: '/b0.mp3', sourceTurnId: 'turn_cut', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 'turn_cut', holdDuckLease: true,
+  }]);
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, true);
+  store.update(prev => ({ runtimeState: { ...prev.runtimeState, currentSongId: 'two', currentIndex: 1, txn: { queueItemId: 'q2' } } }));
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(gains.at(-1), 1);
+
+  // 2) 丢包未发末拍时 15_000ms 安全兜底定时器释放租约
+  controller.playOverlayNarrations([{
+    url: '/lost0.mp3', sourceTurnId: 'turn_lost', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 'turn_lost', holdDuckLease: true,
+  }]);
+  await settle();
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, true);
+  const safety = safetyTimers.at(-1);
+  assert.equal(safety.ms, 15_000);
+  assert.equal(safety.cleared, false);
+  safety.fn();
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(gains.at(-1), 1);
+
+  // 3) 前台组级 turn_voice（非 overlayOwner）共享 turnDuckLeaseId 并在取消时恢复
+  coordinator.enqueue({
+    id: 'tv-0', lane: 'foreground', url: '/tv0.mp3',
+    meta: { kind: 'turn_voice', sourceTurnId: 'turn_rp_g', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 'turn_rp_g', holdDuckLease: true },
+  });
+  coordinator.enqueue({
+    id: 'tv-1', lane: 'foreground', url: '/tv1.mp3',
+    meta: { kind: 'turn_voice', sourceTurnId: 'turn_rp_g', beatIndex: 1, isLastBeat: true, turnDuckLeaseId: 'turn_rp_g', holdDuckLease: false },
+  });
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, true);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 'turn_rp_g');
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, true, '组级第 0 拍结束保持压低直到末拍');
+  coordinator.cancel(task => task.meta?.turnDuckLeaseId === 'turn_rp_g', 'user-stopped');
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+
+  controller.destroy();
+  coordinator.destroy();
+});
+
+test('[P0-2] queued overlay waits until beforeStart/onStart to take turnDuckLease, preserving active turn_voice ducking', async () => {
+  const { createNarrationCoordinator } = await import('./narrationCoordinator.js');
+  const store = createAppState({
+    queue: [track('one')],
+    cursor: 0,
+    runtimeState: { version: 3, activeListeningSessionId: 'room-1', currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [{ queueItemId: 'q1', songId: 'one' }] },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  musicAudio.src = '/one.mp3';
+  await musicAudio.play();
+
+  const coordinator = createNarrationCoordinator({ audio: narrationAudio, locationHref: 'http://localhost/' }).init();
+  const gains = [];
+  const controller = createPlaybackController({
+    store,
+    narrationAudio,
+    musicAudio,
+    narrationCoordinator: coordinator,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: v => { gains.push(v); return true; } },
+  }).init();
+
+  coordinator.enqueue({
+    id: 'tv-active',
+    lane: 'foreground',
+    url: '/tv0.mp3',
+    meta: { kind: 'turn_voice', sourceTurnId: 'turn_voice_1', beatIndex: 0, isLastBeat: true, turnDuckLeaseId: 'turn_voice_1', holdDuckLease: false },
+  });
+  await settle();
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 'turn_voice_1');
+  assert.deepEqual(gains, [0.2]);
+
+  // Overlay arrives while turn_voice is still playing: must NOT steal turn_voice_1's lease on enqueue.
+  controller.playOverlayNarrations([{
+    url: '/overlay0.mp3',
+    sourceTurnId: 'turn_overlay_1',
+    beatIndex: 0,
+    isLastBeat: true,
+    turnDuckLeaseId: 'turn_overlay_1',
+    holdDuckLease: false,
+  }]);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 'turn_voice_1');
+  assert.deepEqual(gains, [0.2]);
+
+  // Once turn_voice finishes, overlay takes its lease and plays seamlessly.
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(narrationAudio.src, '/overlay0.mp3');
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 'turn_overlay_1');
+  assert.equal(controller.getSnapshot().musicDucked, true);
+
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(controller.getSnapshot().musicDucked, false);
+
+  controller.destroy();
+  coordinator.destroy();
+});
+
+test('[P0-2] sealTurnDuckLease seals queued, active, and dangling-gap leases; stopOverlayNarrations & STOP_PLAYBACK clear dangling leases', async () => {
+  const { createNarrationCoordinator } = await import('./narrationCoordinator.js');
+  const { createPlaybackRuntimeClient } = await import('./playbackRuntimeClient.js');
+  const store = createAppState({
+    queue: [track('one')],
+    cursor: 0,
+    runtimeState: { version: 3, activeListeningSessionId: 'room-1', currentSongId: 'one', currentIndex: 0, phase: 'playing', queue: [{ queueItemId: 'q1', songId: 'one' }] },
+  });
+  const narrationAudio = new FakeAudio();
+  const musicAudio = new FakeAudio();
+  musicAudio.src = '/one.mp3';
+  await musicAudio.play();
+
+  const coordinator = createNarrationCoordinator({ audio: narrationAudio, locationHref: 'http://localhost/' }).init();
+  let unlocks = 0;
+  const gains = [];
+  const controller = createPlaybackController({
+    store,
+    narrationAudio,
+    musicAudio,
+    narrationCoordinator: coordinator,
+    apiClient: { post: async () => ({ ok: true }) },
+    storage: memoryStorage(),
+    locationHref: 'http://localhost/',
+    audioGraph: { setMusicGain: v => { gains.push(v); return true; } },
+    callbacks: { onUnlock: () => { unlocks += 1; } },
+  }).init();
+
+  // 1) Seal queued last beat in overlayQueue
+  controller.playOverlayNarrations([
+    { url: '/a0.mp3', sourceTurnId: 't_seal_q', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 't_seal_q', holdDuckLease: true },
+    { url: '/a1.mp3', sourceTurnId: 't_seal_q', beatIndex: 1, isLastBeat: false, turnDuckLeaseId: 't_seal_q', holdDuckLease: true },
+  ]);
+  assert.equal(controller.sealTurnDuckLease('t_seal_q'), true);
+  await settle();
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, true, '第0拍结束切入第1拍期间保持压低');
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, false, '被封口的第1拍结束后释放租约');
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+
+  // 2) Seal currently playing overlayCurrent
+  controller.playOverlayNarrations([
+    { url: '/b0.mp3', sourceTurnId: 't_seal_cur', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 't_seal_cur', holdDuckLease: true },
+  ]);
+  await settle();
+  assert.equal(controller.sealTurnDuckLease('t_seal_cur'), true);
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+
+  // 3) Seal dangling lease in inter-beat gap (previous beat ended, final beat failed synthesis) -> immediate release + onUnlock
+  const unlocksBefore = unlocks;
+  controller.playOverlayNarrations([
+    { url: '/c0.mp3', sourceTurnId: 't_seal_gap', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 't_seal_gap', holdDuckLease: true },
+  ]);
+  await settle();
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().overlayActive, false);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 't_seal_gap');
+  assert.equal(controller.sealTurnDuckLease('t_seal_gap'), true);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(unlocks, unlocksBefore + 1);
+
+  // 4) stopOverlayNarrations in inter-beat gap clears dangling lease and unlocks
+  controller.playOverlayNarrations([
+    { url: '/d0.mp3', sourceTurnId: 't_stop_gap', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 't_stop_gap', holdDuckLease: true },
+  ]);
+  await settle();
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 't_stop_gap');
+  assert.equal(controller.stopOverlayNarrations(), true);
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(controller.getSnapshot().musicDucked, false);
+  assert.equal(unlocks, unlocksBefore + 2);
+
+  // 5) STOP_PLAYBACK through playbackRuntimeClient invokes stopOverlayNarrations and clears dangling lease
+  const runtimeClient = createPlaybackRuntimeClient({
+    store,
+    narrationAudio,
+    musicAudio,
+    narrationCoordinator: coordinator,
+    playbackController: controller,
+    apiClient: { post: async () => ({ ok: true }) },
+    locationHref: 'http://localhost/',
+  }).init();
+  controller.playOverlayNarrations([
+    { url: '/e0.mp3', sourceTurnId: 't_stop_pb', beatIndex: 0, isLastBeat: false, turnDuckLeaseId: 't_stop_pb', holdDuckLease: true },
+  ]);
+  await settle();
+  narrationAudio.emit('ended');
+  await settle();
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, 't_stop_pb');
+  await runtimeClient.execute({ type: 'STOP_PLAYBACK', runtimeVersion: 4 });
+  assert.equal(controller.getSnapshot().turnDuckLeaseId, null);
+  assert.equal(controller.getSnapshot().musicDucked, false);
+
+  runtimeClient.destroy();
+  controller.destroy();
+  coordinator.destroy();
+});

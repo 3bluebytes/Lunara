@@ -488,6 +488,67 @@ async function testVerbatimKeylessMerge() {
   refl.shutdown();
 }
 
+async function testSourceForgottenDuringModelCallDiscardsResult() {
+  console.log('\n--- 模型调用期间来源被忘记：结果作废，不写洞察 ---');
+  const bus = createBus({ log: false });
+  const station = makeMockStation('host-race');
+  let ledger = null;
+  let userTurnId = '';
+  const llm = {
+    askText: async () => {
+      ledger.revokeObservation('host-race', userTurnId);
+      return JSON.stringify({ observation: '用户今天提到了想去海边。', evidence: ['原话'], tags: ['life:travel'], confidence: 0.3 });
+    },
+    extractJson: text => JSON.parse(text),
+  };
+  const refl = new ReflectionAgent({ bus, station, llm, shortWindow: 1 });
+  await refl.initialize();
+  ledger = new ConversationStore({ db: refl.store.db }).initialize();
+  const { turn } = ledger.beginRequest({ sessionId: 's', requestId: 'r-race', virtualPersonId: 'host-race', userText: '周末想去海边。' });
+  userTurnId = turn.turnId;
+  ledger.completeRequest({ requestId: 'r-race', virtualPersonId: 'host-race', message: { content: '海边很适合放松。' } });
+  bus.publishEvent(createEvent({ type: EventType.TURN_COMMITTED, sourceAgentId: 'virtual-person:host-race',
+    payload: { virtualPersonId: 'host-race', sessionId: 's', requestId: 'r-race', committedAt: Date.now() } }));
+  await bus.flush();
+  await new Promise(r => setTimeout(r, 100));
+
+  const mem = await station.getRadioHostMemoryService('host-race');
+  const insights = mem.searchMemory(undefined, { tags: 'reflection-insight', limit: 5 });
+  assert(insights.length === 0, `来源已忘记的批次不写洞察（实际 ${insights.length}）`);
+  assert(refl.store.attempt('host-race').status === 'batch_expired', `批次作废（实际 ${refl.store.attempt('host-race').status}）`);
+  assert(refl.store.pending('host-race').length === 0, '不会换批次身份重学');
+  refl.shutdown();
+}
+
+async function testPrivateEvidenceDoesNotMergeIntoPublicInsight() {
+  console.log('\n--- 私密证据不并进公开洞察 ---');
+  const bus = createBus({ log: false });
+  const station = makeMockStation('host-private-merge');
+  const claim = { key: 'music.genre.jazz', polarity: 'positive', text: '喜欢爵士', scope: 'relationship', explicitSharedQuote: '' };
+  const llm = makeStubLLM([
+    JSON.stringify({ observation: '用户最近常听爵士', evidence: [], tags: [], confidence: 0.3, claim }),
+    JSON.stringify({ observation: '用户私下说很爱爵士', evidence: [], tags: [], confidence: 0.3, claim }),
+  ]);
+  const refl = new ReflectionAgent({ bus, station, llm, shortWindow: 2, rateLimitMs: 10 });
+  await refl.initialize();
+  const send = texts => { for (const t of texts) bus.publishEvent(createEvent({
+    type: EventType.USER_FEEDBACK_OBSERVED, sourceAgentId: radiohostAgentId('host-private-merge'),
+    payload: { radiohostId: 'host-private-merge', userInput: t } })); };
+  send(['再来点爵士', '爵士真好听']);
+  await bus.flush();
+  await new Promise(r => setTimeout(r, 150));
+  send(['我超爱爵士，别告诉别人', '今晚继续爵士']);
+  await bus.flush();
+  await new Promise(r => setTimeout(r, 150));
+
+  const mem = await station.getRadioHostMemoryService('host-private-merge');
+  const insights = mem.searchMemory(undefined, { tags: 'reflection-insight', limit: 10 });
+  const policies = insights.map(row => JSON.parse(row.evidence || '{}').policy?.disclosure).sort();
+  assert(insights.length === 2, `公开与私密各一条（实际 ${insights.length}）`);
+  assert(JSON.stringify(policies) === JSON.stringify(['normal', 'private']), `披露范围各自保留（实际 ${policies}）`);
+  refl.shutdown();
+}
+
 async function runTests() {
   console.log('\n🧪 ReflectionAgent tests\n');
   try {
@@ -505,6 +566,8 @@ async function runTests() {
     await testOppositePolarityStaysSeparate();
     await testVerbatimKeylessMerge();
     await testBudgetRejectionDefersWithoutConsumingRetries();
+    await testSourceForgottenDuringModelCallDiscardsResult();
+    await testPrivateEvidenceDoesNotMergeIntoPublicInsight();
   } catch (e) {
     console.error('Test runner error:', e);
     failed++;

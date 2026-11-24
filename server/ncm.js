@@ -13,6 +13,29 @@ import { reportSourceHealth } from './music/sourceHealthSignal.js';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3000';
 let BASE = normalizeBaseUrl(process.env.NCM_BASE_URL) || DEFAULT_BASE_URL;
 let COOKIE = process.env.NCM_COOKIE || '';
+// 只退避新取流，不阻塞登录/元数据，也不创建自动重试定时器。
+const STREAM_BACKOFF_MS = 30_000;
+let streamBlockedUntil = 0;
+let transportGeneration = 0;
+function resetTransportBackoff() {
+  transportGeneration += 1;
+  streamBlockedUntil = 0;
+}
+
+function rateLimitedError() {
+  return Object.assign(new Error(SOURCE_FAILURE.RATE_LIMITED), { code: SOURCE_FAILURE.RATE_LIMITED });
+}
+
+function checkRiskResponse(status, body, generation, path) {
+  if (status !== 429 && Number(body?.code) !== -460 && Number(body?.code) !== 429) return;
+  // 只有音源请求能建立取流退避；可选歌词/封面受限不等于音源不可用。
+  if (path === '/song/url/v1' && generation === transportGeneration) {
+    streamBlockedUntil = Math.max(streamBlockedUntil, Date.now() + STREAM_BACKOFF_MS);
+    reportSourceHealth('ncm', SOURCE_FAILURE.RATE_LIMITED);
+  }
+  // 即使是旧代次，也停止该调用的降档；不能用旧响应开启新代次的退避。
+  throw rateLimitedError();
+}
 
 function normalizeBaseUrl(value) {
   const raw = String(value ?? '').trim();
@@ -22,6 +45,7 @@ function normalizeBaseUrl(value) {
 export function setBaseUrl(url) {
   const next = normalizeBaseUrl(url);
   if (!next) return;
+  if (BASE !== next) resetTransportBackoff();
   BASE = next;
   process.env.NCM_BASE_URL = next;
 }
@@ -47,14 +71,20 @@ function _emitCookieChange() {
 }
 
 export function setCookie(c) {
-  COOKIE = (c || '').trim();
+  const next = (c || '').trim();
+  if (COOKIE !== next) resetTransportBackoff();
+  COOKIE = next;
   process.env.NCM_COOKIE = COOKIE;
   _emitCookieChange();
 }
 
 export function getCookie() { return COOKIE; }
 
+/** 来源健康读取同一取流门，避免仍在退避却被旧成功标成恢复。 */
+export function isStreamBackoffActive() { return Date.now() < streamBlockedUntil; }
+
 export function clearCookie() {
+  resetTransportBackoff();
   COOKIE = '';
   process.env.NCM_COOKIE = '';
   _emitCookieChange();
@@ -65,6 +95,8 @@ export function clearCookie() {
 //   带过去导致后端命中「老用户的登录态」、新二维码扫了也只回旧 cookie。
 // opts.noCache：所有跟登录态相关的接口加 timestamp 旁路 NCM API 自带的 LRU 缓存。
 async function _get(path, params = {}, timeout = 8000, opts = {}) {
+  if (path === '/song/url/v1' && isStreamBackoffActive()) throw rateLimitedError();
+  const generation = transportGeneration;
   const requestParams = new URLSearchParams(params);
   const authenticated = Boolean(COOKIE && !opts.noCookie);
   if (authenticated) requestParams.set('cookie', COOKIE);
@@ -89,12 +121,15 @@ async function _get(path, params = {}, timeout = 8000, opts = {}) {
     // 写接口会拿 HTTP 4xx/5xx 承载业务原因（例如「下架歌曲无法收藏」是 500 +
     // body.code 500）。只有显式要求时把 body 交出去，默认仍是抛错——读接口
     // 一直依赖这个行为。
-    if (opts.allowHttpError) {
-      try { return await r.json(); } catch { return { code: r.status }; }
-    }
+    let body = null;
+    try { body = await r.json(); } catch { /* 非 JSON 错误仍按 HTTP 状态处理 */ }
+    checkRiskResponse(r.status, body, generation, path);
+    if (opts.allowHttpError) return body ?? { code: r.status };
     throw new Error(`ncm ${path} → ${r.status}`);
   }
-  return r.json();
+  const body = await r.json();
+  checkRiskResponse(r.status, body, generation, path);
+  return body;
 }
 
 /** 封面必须走 https：http 图在 https 页面会被混合内容策略直接拦掉，表现为「没有封面」。 */
@@ -193,11 +228,15 @@ export async function songUrl(songId) {
   let answered = false;
   for (const level of levels) {
     try {
-      const j = await _get('/song/url/v1', { id: songId, level });
+      // 同一网易云歌曲走网页协议；不在风控后叠加 EAPI/跨协议重试。
+      const j = await _get('/song/url/v1', { id: songId, level, crypto: 'weapi' });
       answered = true;
       const item = j?.data?.[0];
       if (item?.url && !item.freeTrialInfo) return item.url;
-    } catch (error) { lastError = error; }
+    } catch (error) {
+      if (error?.code === SOURCE_FAILURE.RATE_LIMITED) throw error;
+      lastError = error;
+    }
   }
   if (!answered && lastError) throw lastError;
   return null;

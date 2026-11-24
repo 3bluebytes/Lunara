@@ -4,10 +4,12 @@ import test from 'node:test';
 import {
   createPlaybackRuntimeState,
   hydratePlaybackRuntimeState,
-  reducePlayback,
+  prunePlayedQueueHistory,
+  reducePlayback as reduceRuntime,
   resumeCommandsForState,
   resumeEffectsForState,
   MAX_CONTINUATION_ATTEMPTS,
+  MAX_PLAYED_QUEUE_HISTORY,
 } from './PlaybackRuntime.js';
 import {
   PlaybackCommandType,
@@ -17,6 +19,27 @@ import {
 } from './playbackRuntimeTypes.js';
 
 const { ListeningReflectionBridge } = await import('../station/ListeningReflectionBridge.js');
+
+// 串词写好只是文字，出声还要一步资产解析。只关心交付时机的用例用这个把两步连起来：
+// READY 带 ttsUrl 表示“写好了，声音也合成好了”。
+function reducePlayback(state, event, options) {
+  const result = reduceRuntime(state, event, options);
+  if (event.type !== PlaybackEventType.TRACK_NARRATION_READY || !result.accepted || !('ttsUrl' in event)) return result;
+  const written = [result.state.queue, ...Object.values(result.state.suspendedSessions || {}).map(session => session.queue)]
+    .flat().find(item => item.queueItemId === event.queueItemId);
+  let current = result;
+  if (written.narration.assetStatus !== 'resolving') {
+    current = { ...result, state: { ...result.state, queue: result.state.queue.map(item => (item.queueItemId === event.queueItemId
+      ? { ...item, narration: { ...item.narration, assetStatus: 'resolving' } } : item)) } };
+  }
+  const asset = reduceRuntime(current.state, { type: PlaybackEventType.TRACK_NARRATION_ASSET_READY, eventId: `${event.eventId}:asset`,
+    queueItemId: event.queueItemId, songId: event.songId, programId: event.programId, generationRevision: event.generationRevision,
+    listeningSessionId: event.listeningSessionId, ttsUrl: event.ttsUrl, contentHash: event.contentHash,
+    synthesisReason: event.synthesisReason, synthesisElapsedMs: event.synthesisElapsedMs }, options);
+  return { ...asset, commands: [...result.commands, ...asset.commands],
+    effects: [...result.effects.filter(effect => effect.queueItemId !== event.queueItemId
+      || effect.type !== PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET), ...asset.effects] };
+}
 
 function track(songId, overrides = {}) {
   return {
@@ -76,10 +99,8 @@ function narrationIdentity(state, type, eventId, overrides = {}) {
 }
 
 function narrationContextTrack(songId, overrides = {}) {
-  return track(songId, {
-    ...overrides,
-    intro: { text: `Narration ${songId}`, context: { transition: 'next' } },
-  });
+  const { intro: _intro, ...base } = track(songId, overrides);
+  return { ...base, narration: { status: 'preparing', generationRevision: 1 } };
 }
 
 test('initial activation starts the committed track immediately and confirms playback', () => {
@@ -609,12 +630,8 @@ test('Radiohost reset clears runtime ownership atomically and commands media sto
 test('activating a track prepares the following committed occurrence without speaking it', () => {
   const committed = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one'), narrationContextTrack('two')], { nowMs: 1_000 });
   const upcoming = committed.state.queue[1];
-  // 预取 effect 排在串词准备之后：两首队列激活即提前续选。
-  assert.deepEqual(committed.effects.map(effect => effect.type),
-    [PlaybackEffectType.PREPARE_TRACK_NARRATION, PlaybackEffectType.PREPARE_TRACK_NARRATION,
-      PlaybackEffectType.REQUEST_CONTINUATION]);
-  assert.equal(committed.effects[1].queueItemId, upcoming.queueItemId);
-  assert.equal(committed.effects[1].previousTrack.songId, 'one');
+  // 串词在提交之后由 host 写，runtime 不派工：两首队列激活只提前续选。
+  assert.deepEqual(committed.effects.map(effect => effect.type), [PlaybackEffectType.REQUEST_CONTINUATION]);
   assert.equal(committed.state.queue[1].narration.status, 'preparing');
   // Preparing ahead is not playback: only the activated track is commanded.
   assert.deepEqual(committed.commands.map(command => command.type), [PlaybackCommandType.PLAY_TRACK]);
@@ -627,11 +644,9 @@ test('activating a track prepares the following committed occurrence without spe
     generationRevision: playing.queue[1].narration.generationRevision,
     listeningSessionId: playing.activeListeningSessionId,
     text: '接下来是 Artist two 的《Title two》。这首歌可以安静听下去。', ttsUrl: '/two-tts.mp3',
-    previousSongId: 'one',
   }, { nowMs: 12_000 });
   assert.equal(ready.accepted, true, ready.reason);
   assert.equal(ready.state.queue[1].narration.status, 'ready');
-  assert.equal(ready.state.queue[1].narration.previousSongId, 'one');
   assert.deepEqual(ready.commands, []);
   assert.equal(ready.state.currentSongId, 'one');
   assert.equal(ready.state.txn.narrationDelivery, 'waiting');
@@ -647,24 +662,20 @@ test('activating a track prepares the following committed occurrence without spe
   assert.equal(next.state.queue[1].narration.generationRevision, ready.state.queue[1].narration.generationRevision);
 });
 
-test('narration prepared for a different predecessor is regenerated instead of delivered', () => {
+test('a written line is kept when the playing order changes: it says nothing about the predecessor', () => {
   const committed = commit(createPlaybackRuntimeState({ companionModeId: null }),
     [narrationContextTrack('one'), narrationContextTrack('two'), narrationContextTrack('three')], { nowMs: 1_000 });
   const two = committed.state.queue[1];
   let state = finishActivation(committed, 'first-of-three');
   state = reducePlayback(state, {
-    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'two-prepared-for-one',
+    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'two-written',
     queueItemId: two.queueItemId, songId: 'two', programId: 'program-a',
     generationRevision: state.queue[1].narration.generationRevision,
     listeningSessionId: state.activeListeningSessionId,
-    text: '接下来是 Artist two 的《Title two》。这首歌可以安静听下去。', ttsUrl: '/two-tts.mp3',
-    previousSongId: 'one',
+    text: 'Artist two 的《Title two》，这首歌可以安静听下去。', ttsUrl: '/two-tts.mp3',
   }, { nowMs: 12_000 }).state;
-  assert.equal(state.queue[1].narration.status, 'ready');
-  const preparedRevision = state.queue[1].narration.generationRevision;
+  const writtenRevision = state.queue[1].narration.generationRevision;
 
-  // The user jumps to the third occurrence and it actually plays, so 'three' is
-  // the confirmed output before 'two'.
   state = finishActivation(reducePlayback(state, {
     type: PlaybackEventType.CARD_SELECTED, eventId: 'jump-to-three',
     runtimeVersion: state.version, queueItemId: state.queue[2].queueItemId,
@@ -675,50 +686,71 @@ test('narration prepared for a different predecessor is regenerated instead of d
   }, { nowMs: 15_000 });
 
   assert.equal(back.state.currentSongId, 'two');
-  assert.ok(back.state.diagnostics.some(entry => entry.type === 'track-narration-predecessor-changed'
-    && entry.preparedFor === 'one' && entry.actual === 'three'));
-  assert.deepEqual(back.effects.map(effect => effect.type),
-    [PlaybackEffectType.PREPARE_TRACK_NARRATION, PlaybackEffectType.REQUEST_CONTINUATION]);
-  assert.equal(back.effects[0].previousTrack.songId, 'three');
-  assert.ok(back.state.queue[1].narration.generationRevision > preparedRevision);
-
-  const stale = reducePlayback(back.state, {
-    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'stale-two-ready',
-    queueItemId: two.queueItemId, songId: 'two', programId: 'program-a',
-    generationRevision: preparedRevision, listeningSessionId: back.state.activeListeningSessionId,
-    text: '过期的串词。', ttsUrl: '/stale-two-tts.mp3', previousSongId: 'one',
-  }, { nowMs: 16_000 });
-  assert.equal(stale.accepted, false);
+  assert.equal(back.state.queue[1].narration.status, 'ready');
+  assert.equal(back.state.queue[1].narration.text, 'Artist two 的《Title two》，这首歌可以安静听下去。');
+  assert.equal(back.state.queue[1].narration.generationRevision, writtenRevision);
+  assert.equal(back.effects.some(effect => effect.type === PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET
+    && effect.queueItemId === two.queueItemId), true);
 });
 
-test('upcoming narration is skipped without a candidate, context, or a retryable artifact', () => {
-  const solo = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('solo')], { nowMs: 1_000 });
-  assert.deepEqual(solo.effects.map(effect => effect.type),
-    [PlaybackEffectType.PREPARE_TRACK_NARRATION, PlaybackEffectType.REQUEST_CONTINUATION]);
+test('READY stores text only: TTS waits until the song is current or next', () => {
+  const committed = commit(createPlaybackRuntimeState({ companionModeId: null }),
+    [narrationContextTrack('one'), narrationContextTrack('two'), narrationContextTrack('three')], { nowMs: 1_000 });
+  const written = (state, index, eventId) => reduceRuntime(state, {
+    type: PlaybackEventType.TRACK_NARRATION_READY, eventId, queueItemId: state.queue[index].queueItemId,
+    songId: state.queue[index].songId, programId: 'program-a', generationRevision: state.queue[index].narration.generationRevision,
+    listeningSessionId: state.activeListeningSessionId, text: `《Title ${state.queue[index].songId}》。`, ttsUrl: '/ignored.mp3',
+    writtenAt: 900, membershipRevision: 4,
+  }, { nowMs: 2_000 });
+  const far = written(committed.state, 2, 'far-written');
+  assert.equal(far.accepted, true, far.reason);
+  assert.equal(far.state.queue[2].narration.status, 'ready');
+  assert.equal(far.state.queue[2].narration.assetStatus, 'missing', '离播放还远：只存文字');
+  assert.equal(far.state.queue[2].narration.ttsUrl, null, 'READY 带来的音频不算数');
+  assert.equal(far.state.queue[2].narration.writtenAt, 900);
+  assert.equal(far.state.queue[2].narration.membershipRevision, 4);
+  assert.deepEqual(far.effects, []);
+  assert.deepEqual(far.commands, []);
+  const next = written(far.state, 1, 'next-written');
+  assert.equal(next.state.queue[1].narration.assetStatus, 'resolving');
+  assert.deepEqual(next.effects.map(effect => [effect.type, effect.queueItemId]),
+    [[PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET, next.state.queue[1].queueItemId]]);
+});
 
-  const contextless = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one'),
-    { ...track('two'), intro: { text: '第一首，卫兰的《街灯晚餐》。' } }], { nowMs: 1_000 });
-  assert.deepEqual(contextless.effects.map(effect => effect.type),
-    [PlaybackEffectType.PREPARE_TRACK_NARRATION, PlaybackEffectType.REQUEST_CONTINUATION]);
-  assert.equal(contextless.state.queue[1].narration.status, 'absent');
+test('a line that is still being written at restart settles to absent instead of waiting forever', () => {
+  const committed = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one'), narrationContextTrack('two')], { nowMs: 1_000 });
+  const restored = hydratePlaybackRuntimeState(committed.state, { nowMs: 90_000 });
+  assert.deepEqual(restored.queue.map(item => item.narration.status), ['absent', 'absent']);
+  assert.ok(restored.diagnostics.some(entry => entry.type === 'track-line-not-written' && entry.reason === 'interrupted'));
+  const late = reduceRuntime(restored, { type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'late-after-restart',
+    queueItemId: restored.queue[0].queueItemId, songId: 'one', programId: 'program-a',
+    generationRevision: restored.queue[0].narration.generationRevision, listeningSessionId: restored.activeListeningSessionId,
+    text: '《Title one》。' }, { nowMs: 91_000 });
+  assert.equal(late.accepted, false, '重启前那一轮写作交上来的结果不算数');
+});
+
+test('a track without a line plays silently and activation starts no narration work', () => {
+  const solo = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('solo')], { nowMs: 1_000 });
+  assert.deepEqual(solo.effects.map(effect => effect.type), [PlaybackEffectType.REQUEST_CONTINUATION]);
 
   const committed = commit(createPlaybackRuntimeState({ companionModeId: null }),
     [narrationContextTrack('one'), narrationContextTrack('two')], { nowMs: 1_000 });
   const failed = reducePlayback(committed.state, {
-    type: PlaybackEventType.TRACK_NARRATION_FAILED, eventId: 'two-preparation-failed',
+    type: PlaybackEventType.TRACK_NARRATION_FAILED, eventId: 'two-not-written',
     queueItemId: committed.state.queue[1].queueItemId, songId: 'two', programId: 'program-a',
     generationRevision: committed.state.queue[1].narration.generationRevision,
-    listeningSessionId: committed.state.activeListeningSessionId, error: 'tts unavailable',
+    listeningSessionId: committed.state.activeListeningSessionId, reason: 'not-written',
   }, { nowMs: 11_000 });
-  assert.equal(failed.state.queue[1].narration.status, 'failed');
+  assert.equal(failed.state.queue[1].narration.status, 'absent', '没写成不是错误状态');
+  assert.ok(failed.state.diagnostics.some(entry => entry.type === 'track-line-not-written' && entry.reason === 'not-written'));
   const playing = finishActivation(failed, 'after-upcoming-failure');
   const next = reducePlayback(playing, {
     type: PlaybackEventType.NEXT_REQUESTED, eventId: 'next-after-upcoming-failure',
     runtimeVersion: playing.version, songId: 'one',
   }, { nowMs: 13_000 });
-  // Activation is what decides; background work is not restarted on its own.
-  assert.deepEqual(next.effects.map(effect => effect.type),
-    [PlaybackEffectType.PREPARE_TRACK_NARRATION, PlaybackEffectType.REQUEST_CONTINUATION]);
+  assert.equal(next.state.currentSongId, 'two');
+  assert.deepEqual(next.effects.map(effect => effect.type), [PlaybackEffectType.REQUEST_CONTINUATION]);
+  assert.deepEqual(next.commands.map(command => command.type), [PlaybackCommandType.PLAY_TRACK]);
 });
 
 test('a requested narration reuses the ready artifact even after the automatic window closed', () => {
@@ -786,7 +818,7 @@ test('an automatic narration still skips once the insertion window has passed', 
   assert.ok(result.state.diagnostics.some(entry => entry.type === 'track-narration-skipped' && entry.reason === 'late'));
 });
 
-test('a requested narration prepares the current occurrence once when it is missing or failed', () => {
+test('a requested narration opens one new line generation when the line is missing', () => {
   let result = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one')], { nowMs: 1_000 });
   const queueItemId = result.state.queue[0].queueItemId;
   const correlationId = result.state.txn.correlationId;
@@ -801,7 +833,7 @@ test('a requested narration prepares the current occurrence once when it is miss
     queueItemId, songId: 'one', programId: 'program-a', generationRevision: 1,
     listeningSessionId: result.state.activeListeningSessionId, error: 'tts unavailable',
   }, { nowMs: 40_000 });
-  assert.equal(failed.state.queue[0].narration.status, 'failed');
+  assert.equal(failed.state.queue[0].narration.status, 'absent');
 
   const requested = reducePlayback(failed.state, {
     type: PlaybackEventType.NARRATION_REQUESTED, eventId: 'listener-asks-after-failure',
@@ -809,7 +841,8 @@ test('a requested narration prepares the current occurrence once when it is miss
     correlationId, listeningSessionId: failed.state.activeListeningSessionId,
     outputGeneration: failed.state.outputGeneration,
   }, { nowMs: 60_000 });
-  assert.deepEqual(requested.effects.map(effect => effect.type), [PlaybackEffectType.PREPARE_TRACK_NARRATION]);
+  // runtime 只开代次；写是发起请求的那个回合接的 line pass。
+  assert.deepEqual(requested.effects, []);
   assert.equal(requested.state.queue[0].narration.status, 'preparing');
   assert.equal(requested.state.txn.narrationGenerationRevision, 2);
   assert.deepEqual(requested.commands, []);
@@ -822,6 +855,21 @@ test('a requested narration prepares the current occurrence once when it is miss
     text: '过期的串词。', ttsUrl: '/stale-one.mp3',
   }, { nowMs: 61_000 });
   assert.equal(stale.accepted, false);
+
+  // 写好之后补 TTS，声音好了就说：明确请求不受自动窗口约束。
+  const written = reduceRuntime(requested.state, {
+    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'requested-line-written',
+    queueItemId, songId: 'one', programId: 'program-a', generationRevision: 2,
+    listeningSessionId: requested.state.activeListeningSessionId, text: '《Title one》。',
+  }, { nowMs: 62_000 });
+  assert.deepEqual(written.effects.map(effect => effect.type), [PlaybackEffectType.RESOLVE_TRACK_NARRATION_ASSET]);
+  assert.deepEqual(written.commands, [], '声音没好不开口');
+  const audio = reduceRuntime(written.state, {
+    type: PlaybackEventType.TRACK_NARRATION_ASSET_READY, eventId: 'requested-line-audio',
+    queueItemId, songId: 'one', programId: 'program-a', generationRevision: 2,
+    listeningSessionId: written.state.activeListeningSessionId, ttsUrl: '/one.mp3',
+  }, { nowMs: 63_000 });
+  assert.deepEqual(audio.commands.map(command => command.type), [PlaybackCommandType.PLAY_TRACK_NARRATION]);
 });
 
 test('a narration request cannot act on another occurrence, another session, or a non-playing track', () => {
@@ -866,7 +914,6 @@ test('a narration request cannot act on another occurrence, another session, or 
 test('narration preparation is independent and READY before settling waits for the correlated window', () => {
   let result = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one')], { nowMs: 1_000 });
   assert.deepEqual(result.commands.map(command => command.type), [PlaybackCommandType.PLAY_TRACK]);
-  assert.equal(result.effects[0].type, PlaybackEffectType.PREPARE_TRACK_NARRATION);
   const queueItemId = result.state.queue[0].queueItemId;
   const correlationId = result.state.txn.correlationId;
 
@@ -951,7 +998,7 @@ test('late or malformed narration is retained as failed/skipped and cannot inter
     generationRevision: 1, listeningSessionId: malformed.state.activeListeningSessionId,
     text: '', ttsUrl: '',
   }, { nowMs: 1_000 });
-  assert.equal(malformed.state.queue[0].narration.status, 'failed');
+  assert.equal(malformed.state.queue[0].narration.status, 'absent');
   assert.equal(malformed.state.txn.narrationDelivery, 'skipped');
   assert.equal(malformed.state.phase, PlaybackPhase.LOADING);
   assert.deepEqual(malformed.commands, []);
@@ -1308,20 +1355,14 @@ test('a re-attach confirmation cannot resurrect a listener pause or another occu
 });
 
 test('a re-attach confirmation arms the narration window the track still owes', () => {
-  const restored = restoredUnconfirmedActivation('reattach-narration',
-    [narrationContextTrack('one'), narrationContextTrack('two')]);
-  const ready = reducePlayback(restored, {
-    type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'reattach-narration-ready',
-    queueItemId: restored.queue[0].queueItemId, generationRevision: restored.queue[0].narration.generationRevision,
-    songId: 'one', programId: 'program-a', listeningSessionId: restored.activeListeningSessionId,
-    text: '接下来是 Artist one 的《Title one》。', ttsUrl: '/one-narration.mp3', contentHash: 'hash',
-  }, { nowMs: 5_000 });
-  assert.equal(ready.accepted, true, ready.reason);
-  assert.equal(ready.state.queue[0].narration.status, 'ready');
+  const withWrittenLine = songId => ({ ...track(songId), intro: undefined, narration: { status: 'ready', assetStatus: 'ready',
+    generationRevision: 1, text: `Artist ${songId} 的《Title ${songId}》。`, ttsUrl: `/${songId}-narration.mp3`, contentHash: 'hash' } });
+  const restored = restoredUnconfirmedActivation('reattach-narration', [withWrittenLine('one'), withWrittenLine('two')]);
+  assert.equal(restored.queue[0].narration.status, 'ready', '写好的串词经得起重启');
 
-  const confirmed = reducePlayback(ready.state, {
+  const confirmed = reducePlayback(restored, {
     type: PlaybackEventType.TRACK_REATTACHED, eventId: 'reattach-narration-confirm',
-    ...activationIdentity(ready.state, { runtimeVersion: ready.state.version }), positionSeconds: 19.5,
+    ...activationIdentity(restored, { runtimeVersion: restored.version }), positionSeconds: 19.5,
   }, { nowMs: 9_000 });
   assert.equal(confirmed.state.phase, PlaybackPhase.PLAYING);
   assert.equal(confirmed.state.txn.narrationDelivery, 'waiting');
@@ -1587,7 +1628,7 @@ test('narration synthesis failure (all providers) leaves queue/phase/generation 
     listeningSessionId: before.activeListeningSessionId, error: 'TTS_ALL_PROVIDERS_FAILED',
   }, { nowMs: 40_000 });
 
-  assert.equal(failed.state.queue[0].narration.status, 'failed');
+  assert.equal(failed.state.queue[0].narration.status, 'absent');
   assert.equal(failed.state.phase, before.phase, '合成失败不得改变播放阶段');
   assert.equal(failed.state.outputGeneration, before.outputGeneration, '合成失败不得推进输出代次');
   assert.equal(failed.state.currentSongId, before.currentSongId, '合成失败不得切歌');
@@ -1646,16 +1687,14 @@ test('a memory change invalidates prepared-but-unheard narration without touchin
     queueItemId: state.queue[0].queueItemId, songId: 'one', programId: 'program-a',
     generationRevision: state.queue[0].narration.generationRevision,
     listeningSessionId: state.activeListeningSessionId,
-    text: '接下来是 Artist one 的《Title one》。这首歌可以安静听下去。', ttsUrl: '/one-tts.mp3',
-    previousSongId: null,
+    text: 'Artist one 的《Title one》，这首歌可以安静听下去。', ttsUrl: '/one-tts.mp3',
   }, { nowMs: 5_000 }).state;
   state = reducePlayback(state, {
     type: PlaybackEventType.TRACK_NARRATION_READY, eventId: 'upcoming-ready',
     queueItemId: two.queueItemId, songId: 'two', programId: 'program-a',
     generationRevision: state.queue[1].narration.generationRevision,
     listeningSessionId: state.activeListeningSessionId,
-    text: '接下来是 Artist two 的《Title two》。这首歌可以安静听下去。', ttsUrl: '/two-tts.mp3',
-    previousSongId: 'one',
+    text: 'Artist two 的《Title two》，这首歌可以安静听下去。', ttsUrl: '/two-tts.mp3',
   }, { nowMs: 6_000 }).state;
   assert.equal(state.queue[1].narration.status, 'ready');
 
@@ -1664,15 +1703,14 @@ test('a memory change invalidates prepared-but-unheard narration without touchin
     listeningSessionId: state.activeListeningSessionId,
   }, { nowMs: 7_000 });
   assert.equal(stale.accepted, true, stale.reason);
-  // 未播的 prepared 串词失效并当场重备（status → preparing，旧音频与承接记录被清空）。
-  assert.equal(stale.state.queue[1].narration.status, 'preparing');
+  // 没说出口的串词作废，不重写：这首安静播放，旧音频和写作时间一起清空。
+  assert.equal(stale.state.queue[1].narration.status, 'absent');
   assert.ok(stale.state.queue[1].narration.generationRevision > state.queue[1].narration.generationRevision);
   assert.equal(stale.state.queue[1].narration.ttsUrl, null);
-  assert.equal(stale.state.queue[1].narration.previousSongId, null);
+  assert.equal(stale.state.queue[1].narration.writtenAt, null);
   assert.ok(stale.state.diagnostics.some(entry => entry.type === 'track-narration-invalidated-by-memory'
     && entry.queueItemIds.includes(two.queueItemId)));
-  assert.deepEqual(stale.effects.map(effect => effect.type), [PlaybackEffectType.PREPARE_TRACK_NARRATION]);
-  assert.equal(stale.effects[0].queueItemId, two.queueItemId);
+  assert.deepEqual(stale.effects, []);
   // 正在播的当前曲不受影响：仍然 ready，可以被说出。
   assert.equal(stale.state.queue[0].narration.status, 'ready');
   assert.equal(stale.state.queue[0].narration.ttsUrl, '/one-tts.mp3');
@@ -1686,6 +1724,27 @@ test('a memory change invalidates prepared-but-unheard narration without touchin
   // 校验：必须携带 listeningSessionId。
   const invalid = reducePlayback(state, { type: PlaybackEventType.NARRATION_CONTEXT_STALE_REQUESTED, eventId: 'missing-session' });
   assert.equal(invalid.accepted, false);
+});
+
+test('a line that fails its delivery check is dropped without touching the music or other lines', () => {
+  const committed = commit(createPlaybackRuntimeState({ companionModeId: null }), [narrationContextTrack('one'), narrationContextTrack('two')], { nowMs: 1_000 });
+  let state = finishActivation(committed, 'drop-check');
+  for (const [index, eventId] of [[0, 'drop-one'], [1, 'drop-two']]) {
+    state = reducePlayback(state, { type: PlaybackEventType.TRACK_NARRATION_READY, eventId,
+      queueItemId: state.queue[index].queueItemId, songId: state.queue[index].songId, programId: 'program-a',
+      generationRevision: state.queue[index].narration.generationRevision, listeningSessionId: state.activeListeningSessionId,
+      text: `《Title ${state.queue[index].songId}》，这首歌可以安静听下去。`, ttsUrl: `/${index}.mp3` }, { nowMs: 1_500 }).state;
+  }
+  const dropped = reducePlayback(state, { type: PlaybackEventType.NARRATION_CONTEXT_STALE_REQUESTED, eventId: 'too-old',
+    listeningSessionId: state.activeListeningSessionId, includeCurrent: true,
+    queueItemIds: [state.queue[0].queueItemId], dropReason: 'too-old' }, { nowMs: 2_000 });
+  assert.equal(dropped.accepted, true, dropped.reason);
+  assert.equal(dropped.state.queue[0].narration.status, 'absent');
+  assert.equal(dropped.state.queue[1].narration.status, 'ready', '只作废点名的那一首');
+  assert.equal(dropped.state.currentSongId, 'one');
+  assert.equal(dropped.state.phase, PlaybackPhase.PLAYING);
+  assert.ok(dropped.state.diagnostics.some(entry => entry.type === 'track-narration-dropped' && entry.reason === 'too-old'));
+  assert.ok(dropped.state.diagnostics.some(entry => entry.type === 'track-narration-skipped' && entry.reason === 'line-dropped'));
 });
 
 test('life authorization change cancels the current ready introduction and rejects late preparation', () => {
@@ -1783,4 +1842,267 @@ test('artwork repair fails closed for unknown targets, inactive sessions, bad va
     assert.equal(attempt.reason, reason);
     assert.equal(attempt.state, state, 'a rejected repair must not touch the snapshot');
   }
+});
+
+test('batch artwork repair updates multiple tracks atomically in one version bump and fails closed', () => {
+  const committed = commit(createPlaybackRuntimeState(), [track('a'), track('b'), track('c')]);
+  const before = committed.state;
+  const repairs = before.queue.map(item => ({ queueItemId: item.queueItemId, artwork: ARTWORK }));
+  const batch = reducePlayback(before, {
+    type: PlaybackEventType.TRACK_ARTWORK_RESOLVED,
+    eventId: 'artwork-batch-1',
+    listeningSessionId: before.activeListeningSessionId,
+    repairs,
+  }, { nowMs: 2_000 });
+
+  assert.equal(batch.accepted, true, batch.reason);
+  assert.equal(batch.state.version, before.version + 1, '整批封面修补只递增 1 次 version');
+  assert.deepEqual(batch.state.queue.map(item => item.artwork), [ARTWORK, ARTWORK, ARTWORK]);
+
+  const partialInvalid = reducePlayback(before, {
+    type: PlaybackEventType.TRACK_ARTWORK_RESOLVED,
+    eventId: 'artwork-batch-bad',
+    listeningSessionId: before.activeListeningSessionId,
+    repairs: [{ queueItemId: before.queue[0].queueItemId, artwork: ARTWORK }, { queueItemId: 'missing', artwork: ARTWORK }],
+  }, { nowMs: 2_100 });
+  assert.equal(partialInvalid.accepted, false);
+  assert.equal(partialInvalid.state, before);
+});
+
+test('prunePlayedQueueHistory bounds played tracks to MAX_PLAYED_QUEUE_HISTORY across activation, commit, session switch, and hydration', () => {
+  assert.equal(MAX_PLAYED_QUEUE_HISTORY, 120);
+  assert.equal(prunePlayedQueueHistory(null), 0);
+
+  // 1. createActivation 通过 CARD_SELECTED 跳到第 123 首时，裁剪已播历史至 120 首，保留当前曲身份与全部待播。
+  const tracks126 = Array.from({ length: 126 }, (_, i) => track(`s${i}`));
+  const committed = commit(createPlaybackRuntimeState({ companionModeId: null }), tracks126);
+  assert.equal(committed.accepted, true, committed.reason);
+  const target123 = committed.state.queue[123];
+  const jumped = reducePlayback(committed.state, {
+    type: PlaybackEventType.CARD_SELECTED,
+    eventId: 'jump-123',
+    runtimeVersion: committed.state.version,
+    queueItemId: target123.queueItemId,
+  }, { nowMs: 2_000 });
+  assert.equal(jumped.accepted, true, jumped.reason);
+  assert.equal(jumped.state.currentIndex, MAX_PLAYED_QUEUE_HISTORY);
+  assert.equal(jumped.state.queue.length, MAX_PLAYED_QUEUE_HISTORY + 3);
+  assert.equal(jumped.state.currentSongId, 's123');
+  assert.equal(jumped.state.queue[jumped.state.currentIndex].queueItemId, target123.queueItemId);
+  assert.equal(jumped.state.txn.queueItemId, target123.queueItemId);
+  assert.deepEqual(jumped.state.queue.slice(jumped.state.currentIndex).map(item => item.songId), ['s123', 's124', 's125']);
+
+  // 2. commitProgram (after_current 不触发 createActivation) 与 switchListeningSession 均执行裁剪。
+  const makeOversizedSession = (prefix, total, currentIdx) => {
+    const base = commit(createPlaybackRuntimeState({ companionModeId: null }),
+      Array.from({ length: total }, (_, i) => track(`${prefix}${i}`))).state;
+    const raw = JSON.parse(JSON.stringify(base));
+    const cur = raw.queue[currentIdx];
+    raw.currentIndex = currentIdx;
+    raw.currentSongId = cur.songId;
+    raw.txn = { ...raw.txn, queueItemId: cur.queueItemId, songId: cur.songId };
+    return raw;
+  };
+
+  const oversizedForCommit = makeOversizedSession('c', 128, 125);
+  const expectedCurrentCommit = oversizedForCommit.queue[125];
+  const afterCurrent = reducePlayback(oversizedForCommit, {
+    type: PlaybackEventType.PROGRAM_COMMITTED,
+    eventId: 'after-current-prune',
+    delivery: 'after_current',
+    source: 'user',
+    tracks: [track('added-1'), track('added-2')],
+  }, { nowMs: 3_000 });
+  assert.equal(afterCurrent.accepted, true, afterCurrent.reason);
+  assert.equal(afterCurrent.state.currentIndex, MAX_PLAYED_QUEUE_HISTORY);
+  assert.equal(afterCurrent.state.currentSongId, expectedCurrentCommit.songId);
+  assert.equal(afterCurrent.state.queue[afterCurrent.state.currentIndex].queueItemId, expectedCurrentCommit.queueItemId);
+  assert.deepEqual(afterCurrent.state.queue.slice(afterCurrent.state.currentIndex).map(item => item.songId),
+    ['c125', 'added-1', 'added-2']);
+
+  const oversizedForSwitch = makeOversizedSession('sw', 127, 124);
+  const expectedSwitchCur = oversizedForSwitch.queue[124];
+  const switched = reducePlayback(oversizedForSwitch, {
+    type: PlaybackEventType.LISTENING_SESSION_SWITCH_REQUESTED,
+    eventId: 'switch-prune',
+    listeningSessionId: 'conversation:other',
+  }, { nowMs: 4_000 });
+  assert.equal(switched.accepted, true, switched.reason);
+  const savedPrimary = switched.state.suspendedSessions['conversation:primary'];
+  assert.equal(savedPrimary.currentIndex, MAX_PLAYED_QUEUE_HISTORY);
+  assert.equal(savedPrimary.currentSongId, expectedSwitchCur.songId);
+  assert.equal(savedPrimary.queue[savedPrimary.currentIndex].queueItemId, expectedSwitchCur.queueItemId);
+  assert.deepEqual(savedPrimary.queue.slice(savedPrimary.currentIndex).map(item => item.songId), ['sw124', 'sw125', 'sw126']);
+
+  // 3. hydratePlaybackRuntimeState 对活动会话与挂起会话均裁剪，并保持 txn.queueItemId 对齐。
+  const rawActive = makeOversizedSession('ha', 126, 124);
+  const expectedActiveCur = rawActive.queue[124];
+  delete rawActive.txn.queueItemId;
+  const rawBg = makeOversizedSession('hb', 128, 125);
+  const expectedBgCur = rawBg.queue[125];
+  delete rawBg.txn.queueItemId;
+  rawActive.suspendedSessions = {
+    'conversation:bg': {
+      queue: rawBg.queue,
+      currentIndex: rawBg.currentIndex,
+      currentSongId: rawBg.currentSongId,
+      phase: PlaybackPhase.PAUSED,
+      txn: rawBg.txn,
+      radioMode: true,
+      radioModeOverride: null,
+      queueVersion: 1,
+      positionSeconds: 10,
+      hasStarted: true,
+      listeningPlan: null,
+      pendingContinuation: null,
+      lastError: null,
+    },
+  };
+  const hydrated = hydratePlaybackRuntimeState(rawActive);
+  assert.equal(hydrated.currentIndex, MAX_PLAYED_QUEUE_HISTORY);
+  assert.equal(hydrated.currentSongId, 'ha124');
+  assert.equal(hydrated.queue[hydrated.currentIndex].queueItemId, expectedActiveCur.queueItemId);
+  assert.equal(hydrated.txn.queueItemId, expectedActiveCur.queueItemId);
+  assert.deepEqual(hydrated.queue.slice(hydrated.currentIndex).map(item => item.songId), ['ha124', 'ha125']);
+
+  const hydratedBg = hydrated.suspendedSessions['conversation:bg'];
+  assert.equal(hydratedBg.currentIndex, MAX_PLAYED_QUEUE_HISTORY);
+  assert.equal(hydratedBg.currentSongId, 'hb125');
+  assert.equal(hydratedBg.queue[hydratedBg.currentIndex].queueItemId, expectedBgCur.queueItemId);
+  assert.equal(hydratedBg.txn.queueItemId, expectedBgCur.queueItemId);
+  assert.deepEqual(hydratedBg.queue.slice(hydratedBg.currentIndex).map(item => item.songId), ['hb125', 'hb126', 'hb127']);
+});
+
+test('POSITION_REPORTED fast path shares unchanged queue/suspendedSessions references, freezes deeply, and expires overdue queued narrations', () => {
+  // 先建一个挂起会话，验证 suspendedSessions 与 queue 在快速路径下引用不变。
+  const bg = commit(createPlaybackRuntimeState({ companionModeId: 'conversational' }), [track('bg-1')], {
+    eventId: 'pos-bg-commit',
+  });
+  let state = reducePlayback(bg.state, {
+    type: PlaybackEventType.LISTENING_SESSION_SWITCH_REQUESTED,
+    eventId: 'pos-switch-primary',
+    listeningSessionId: 'conversation:active',
+  }, { nowMs: 1_000 }).state;
+  state = reducePlayback(state, {
+    type: PlaybackEventType.COMPANION_MODE_CHANGED,
+    eventId: 'pos-mode',
+    listeningSessionId: 'conversation:active',
+    modeId: 'conversational',
+    requestId: 'pos-mode',
+  }, { nowMs: 1_100 }).state;
+  const committed = reducePlayback(state, {
+    type: PlaybackEventType.PROGRAM_COMMITTED,
+    eventId: 'pos-active-commit',
+    listeningSessionId: 'conversation:active',
+    delivery: 'replace_now',
+    source: 'user',
+    tracks: [{
+      ...track('act-1', { duration: 200 }),
+      intro: undefined,
+      narration: { status: 'ready', assetStatus: 'ready', generationRevision: 1, text: '一句串词', ttsUrl: '/act-1.mp3' },
+    }],
+  }, { nowMs: 1_500 });
+  const assetReady = reducePlayback(committed.state, {
+    type: PlaybackEventType.TRACK_NARRATION_ASSET_READY,
+    eventId: 'pos-act-asset',
+    queueItemId: committed.state.queue[0].queueItemId,
+    songId: 'act-1',
+    programId: 'program-a',
+    generationRevision: committed.state.queue[0].narration.generationRevision,
+    listeningSessionId: committed.state.activeListeningSessionId,
+    ttsUrl: '/act-1.mp3',
+  }, { nowMs: 1_600 });
+  assert.equal(assetReady.accepted, true, assetReady.reason);
+  const started = reducePlayback(assetReady.state, {
+    type: PlaybackEventType.TRACK_STARTED,
+    eventId: 'pos-act-started',
+    runtimeVersion: assetReady.state.version,
+    songId: assetReady.state.currentSongId,
+    programId: assetReady.state.txn.programId,
+    correlationId: assetReady.state.txn.correlationId,
+    queueItemId: assetReady.state.txn.queueItemId,
+    listeningSessionId: assetReady.state.activeListeningSessionId,
+    outputGeneration: assetReady.state.outputGeneration,
+  }, { nowMs: 2_000 });
+  assert.equal(started.accepted, true, started.reason);
+  state = started.state;
+  const win = reducePlayback(state, {
+    type: PlaybackEventType.NARRATION_WINDOW_OPENED,
+    eventId: 'pos-win-open',
+    runtimeVersion: state.version,
+    queueItemId: state.txn.queueItemId,
+    songId: 'act-1',
+    programId: 'program-a',
+    correlationId: state.txn.correlationId,
+    listeningSessionId: state.activeListeningSessionId,
+    outputGeneration: state.outputGeneration,
+    positionSeconds: 2,
+    durationSeconds: 200,
+  }, { nowMs: 5_000 });
+  assert.equal(win.accepted, true, win.reason);
+  assert.equal(win.state.txn.narrationDelivery, 'queued');
+
+  const before = win.state;
+  const normal = reducePlayback(before, {
+    type: PlaybackEventType.POSITION_REPORTED,
+    eventId: 'pos-rep-1',
+    runtimeVersion: before.version,
+    songId: 'act-1',
+    programId: 'program-a',
+    correlationId: before.txn.correlationId,
+    listeningSessionId: before.activeListeningSessionId,
+    outputGeneration: before.outputGeneration,
+    positionSeconds: 15,
+  }, { nowMs: 18_000 });
+  assert.equal(normal.accepted, true, normal.reason);
+  assert.equal(normal.state.queue, before.queue, 'queue 引用共享');
+  assert.equal(normal.state.suspendedSessions, before.suspendedSessions, 'suspendedSessions 引用共享');
+  assert.equal(normal.state.diagnostics, before.diagnostics, '未过期时 diagnostics 引用共享');
+  assert.equal(normal.state.positionSeconds, 15);
+  assert.equal(normal.state.txn.startedPositionSeconds, 15);
+  assert.equal(normal.state.txn.startedAtMs, 18_000);
+  assert.equal(normal.state.lastAudibleAtMs, 18_000);
+  assert.equal(normal.state.version, before.version + 1);
+  assert.equal(normal.state.processedEventIds.at(-1), 'pos-rep-1');
+  assert.equal(Object.isFrozen(normal.state), true);
+  assert.equal(Object.isFrozen(normal.state.txn), true);
+  assert.equal(Object.isFrozen(normal.state.processedEventIds), true);
+  assert.throws(() => { normal.state.positionSeconds = 999; }, TypeError);
+
+  // 超过 maxStartOffsetMs (60s) 的进度上报仍会过期已排队的 queued 串词并写诊断。
+  const expired = reducePlayback(normal.state, {
+    type: PlaybackEventType.POSITION_REPORTED,
+    eventId: 'pos-rep-expired',
+    runtimeVersion: normal.state.version,
+    songId: 'act-1',
+    programId: 'program-a',
+    correlationId: normal.state.txn.correlationId,
+    listeningSessionId: normal.state.activeListeningSessionId,
+    outputGeneration: normal.state.outputGeneration,
+    positionSeconds: 70,
+  }, { nowMs: 73_000 });
+  assert.equal(expired.accepted, true, expired.reason);
+  assert.equal(expired.state.queue, normal.state.queue);
+  assert.equal(expired.state.suspendedSessions, normal.state.suspendedSessions);
+  assert.equal(expired.state.positionSeconds, 70);
+  assert.equal(expired.state.txn.narrationDelivery, 'skipped');
+  assert.ok(expired.state.diagnostics.some(d => d.type === 'track-narration-skipped'
+    && d.reason === 'delivery-window-expired-before-start'));
+  assert.equal(Object.isFrozen(expired.state), true);
+  assert.equal(Object.isFrozen(expired.state.diagnostics), true);
+
+  // 已被 VALID_RUNTIME_SNAPSHOTS 缓存的快照仍可继续正常做下一次 reducePlayback（含 POSITION_REPORTED）。
+  const nextPos = reducePlayback(expired.state, {
+    type: PlaybackEventType.POSITION_REPORTED,
+    eventId: 'pos-rep-2',
+    runtimeVersion: expired.state.version,
+    songId: 'act-1',
+    programId: 'program-a',
+    correlationId: expired.state.txn.correlationId,
+    listeningSessionId: expired.state.activeListeningSessionId,
+    outputGeneration: expired.state.outputGeneration,
+    positionSeconds: 75,
+  }, { nowMs: 78_000 });
+  assert.equal(nextPos.accepted, true);
+  assert.equal(nextPos.state.positionSeconds, 75);
 });

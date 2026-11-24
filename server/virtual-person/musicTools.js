@@ -1,5 +1,6 @@
+import { publicRuntimeState } from '../playback/playbackRuntimeTypes.js';
 import { createToolOutcome } from './VirtualPersonTypes.js';
-import { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY, MUSIC_SELECTION_PARAMETERS, TAG_FILTER_PROPERTIES } from '../program/musicSelectionRequest.js';
+import { MUSIC_CAPABILITY, MUSIC_MUTATION_CAPABILITY, MUSIC_SELECTION_PARAMETERS, SELECT_MUSIC_PARAMETERS, TAG_FILTER_PROPERTIES } from '../program/musicSelectionRequest.js';
 import { matchesTags, hasAnyTagFilter } from '../songtags/songTagRetrieval.js';
 import { cleanTrack } from '../program/MusicSelectionService.js';
 import * as libraryTools from '../tools/musicTools.js';
@@ -10,9 +11,18 @@ import { sanitizeFacts, sanitizeExternalText } from './toolFacts.js';
 import { policyFromUserText } from '../memory/memoryPolicy.js';
 import { parseEvidence } from '../memory/memoryPolicy.js';
 import { isMemoryRevoked } from '../memory/memoryProvenance.js';
+import { writeMemoryWithEncoding } from '../memory/writeMemoryWithEncoding.js';
 import { createHash } from 'node:crypto';
 import { saveFamiliarArtistFeedback } from '../program/familiarArtistCadence.js';
 import { OFFER_MAX_CANDIDATES } from '../program/musicSelectionOffers.js';
+import { acceptIndependentDialogue, INDEPENDENT_DIALOGUE_MAX_CHARS } from './committedLine.js';
+import {
+  DEFAULT_BEAT_PAUSE_MS,
+  beatsToVisibleText,
+  buildBeatsArraySchema,
+  prepareBeatsArgs,
+  validateReplyBeats,
+} from './replyBeats.js';
 
 const object = properties => ({ type: 'object', additionalProperties: false, properties });
 // `message` is the internal status handed to the model. `userMessage` is the reviewed
@@ -44,25 +54,32 @@ const USER_FACING_FALLBACK = {
 const DEFAULT_USER_FALLBACK = '这次没有完成，队列和播放状态都没有变化。';
 const MUTATING_MUSIC_TOOLS = new Set(['select_music', 'commit_music_selection', 'record_music_feedback',
   'control_listening', 'narrate_current_track', 'edit_listening_queue', 'set_familiar_artist_cadence']);
+const MUSIC_DIALOGUE_TOOLS = new Set(['select_music', 'commit_music_selection']);
+const MUSIC_DIALOGUE_FIELD = {
+  type: 'string',
+  description: `可选：用户还单独问了别的事时，在提交调用的 dialogue 写完整答话（不超过 ${INDEPENDENT_DIALOGUE_MAX_CHARS} 字）。若需要分拍回复请优先用 beats；不要写选歌回执或宣称出声，系统会另附真实结果。纯点歌省略。`,
+};
 // 候选 offer 的两步指引：候选不是已播放，选序号后才提交，交付方式保持原样。
 const OFFER_MODEL_CONTEXT = `先读 facts.brief（选歌简报）再挑序号：它按优先级列出本轮要求、用户显式反馈、口味画像、伙伴自己的审美、推断信号与近期收听。
 每首候选的 features 是可解释特征：tags 为 null 表示还没有标注，未标注不等于不符合；tasteMatches 是命中的口味信号（+ 正向、- 负向，都是推断）；probe 为 true 表示这是一首试探歌曲。
 特征和简报只帮你挑选，不放宽任何硬条件，候选提交时仍会逐项复核。
-下一步：从上面的 candidates 里选择要放的歌曲序号（index，1 起始），调用 commit_music_selection，参数为 { offerId, indexes }，一次最多 10 个序号、不可重复。
+下一步：从上面的 candidates 里选择要放的歌曲序号（index，1 起始），调用 commit_music_selection，参数为 { offerId, indexes }，一次最多 10 个序号、不可重复；可以再给 notes，给每首留一句你为什么这会儿想放它（写串词时你会看到，听众看不到）。
 候选只是候选，不代表已经播放，也不代表用户听过；不要编造 candidates 之外的歌曲、歌手、歌单或 songId。
 交付方式（是否播放、replace_now/append/recommend_only）由本轮 select_music 的请求锁定，commit_music_selection 不能改写；recommend_only 提交后仍然不会播放。
 候选不合适时宁可少选几首，也不要选明显不符的候选或改口说已经安排。
-要播放时，提交后这一轮就结束：把要对用户说的一两句话写在调用 commit_music_selection 的同一条消息里，只提你选中的歌。`;
+要播放时，提交后这一轮就结束：普通选歌的一两句短话写在调用 commit_music_selection 的同一条消息里，只提你选中的歌。需要分拍回应或用户还问了独立问题时用工具参数 beats（或 dialogue）保存完整答话，播放回执由系统另附。`;
 // 简报正文上限：第 1–3 部分不截断，可能略超 MUSIC_BRIEF_MAX_CHARS，这里只防失控。
 const BRIEF_FACT_MAX_CHARS = 16_000;
 const OFFER_FACT_LIMITS = { maxDepth: 6, maxItems: Math.max(20, OFFER_MAX_CANDIDATES) };
+const MAX_PRIOR_TRACK_PERSPECTIVES = 8;
+const PRIOR_TRACK_PERSPECTIVE_GUIDE = 'facts.priorTrackPerspectives 是你以前在本聊天聊同一首歌时的角度（按候选序号）；只作参考，不是曲库事实或听众偏好，不要照读。';
 const NON_OWNER_OFFER_NOTE = '这一轮的音乐由别的成员负责：你调用 commit_music_selection 只会把选中的歌登记为你的推荐，不会播放，提交后你还要自己说一两句推荐了哪首、为什么。只在正文里提到的歌不算推荐。';
 
 function hasFreshUserInput(value) {
   return /[\p{L}\p{N}]/u.test(String(value || ''));
 }
 
-function toolOutcome(result) {
+function toolOutcome(result, { dialogue = null, beats = null, allowAction = false } = {}) {
   const ok = result?.ok !== false;
   const code = result?.code || (ok ? 'MUSIC_RESULT' : 'MUSIC_UNAVAILABLE');
   const terminal = ok && result?.terminal === true;
@@ -71,7 +88,7 @@ function toolOutcome(result) {
   // 候选 offer 的事实结构已知且有界（窗口、特征）：放宽深度与条数，其余工具保持默认上限。
   const facts = sanitizeFacts(rawFacts
     || Object.fromEntries(Object.entries(result || {}).filter(([key]) => !['message', 'userMessage', 'context', 'candidates', 'error', 'terminal', 'facts', 'modelContext', 'offer', 'brief'].includes(key))),
-  0, rawFacts?.offerId ? OFFER_FACT_LIMITS : undefined);
+  0, (rawFacts?.offerId || result?.offerId) ? OFFER_FACT_LIMITS : undefined);
   // 简报是长文本，单独按自己的上限清洗；它已经在 facts 里，不再重复写进「运行结果」那一行。
   if (typeof rawFacts?.brief === 'string') facts.brief = sanitizeExternalText(rawFacts.brief, BRIEF_FACT_MAX_CHARS);
   const status = sanitizeExternalText(result?.message || '');
@@ -87,6 +104,9 @@ function toolOutcome(result) {
       // 能放的会直接提交（部分成功不走这里）；走到这里说明选中的都放不了。
       ? '选中的序号都没能解析出可播放版本（见 failedItems），队列没有变化。可以在同一 offerId 的候选内换别的序号再提交一次（resolvedIndexes 中如有成功项一并保留）；每项已在同一次提交内重试过，不要原样重复同样的参数。保持原请求的交付方式和硬约束。'
       : '',
+    !ok && facts.resourceReadyIndexes?.length
+      ? 'facts.resourceReadyIndexes 是同一组候选里后台已拿到音源的序号。优先从这些序号里挑仍符合本轮要求的歌，可以少选；没有合适的就如实失败。资源就绪不代表已提交或实际出声，仍须通过 canonical、硬约束和提交资格校验；不要自动替换点名歌曲。'
+      : '',
     code === 'MUSIC_COMMITTED' ? '已提交表示歌曲已安排，实际出声还需等待串词和媒体确认；可以说已选好或已安排，不要仅凭提交就宣称已经响起。' : '',
   ].filter(Boolean).join('\n');
   // 播放提交后不再调模型：发起提交的同一条消息里写好的话，只提到这些已提交的歌时才能直接给用户看。
@@ -97,31 +117,109 @@ function toolOutcome(result) {
   const cleanTitle = title => String(title || '').replace(/[《》]/gu, '').trim();
   const othersTitles = titles.length && Array.isArray(result?.recommendedTitles)
     ? result.recommendedTitles.map(cleanTitle).filter(title => titles.includes(title)) : [];
-  const modelLine = titles.length ? { allowedTitles: titles, ...(othersTitles.length ? { othersTitles } : {}) } : null;
+  let validatedBeats = null;
+  if (terminal && code === 'MUSIC_COMMITTED' && displayText && Array.isArray(beats) && beats.length) {
+    const check = validateReplyBeats(beats, {
+      allowAction,
+      minItems: 1,
+      maxItems: 4,
+      allowMusicClaims: titles.length > 0,
+      allowedTitles: titles,
+      othersTitles,
+      truncateVoiceDirection: true,
+    });
+    if (check.ok && check.beats.length) validatedBeats = check.beats;
+  }
+  const hasBeats = Boolean(validatedBeats?.length);
+  const modelLine = titles.length && !dialogue && !hasBeats ? { allowedTitles: titles, ...(othersTitles.length ? { othersTitles } : {}) } : null;
+  const independentDialogue = terminal && code === 'MUSIC_COMMITTED' && displayText
+    ? (validatedBeats ? beatsToVisibleText(validatedBeats) : acceptIndependentDialogue(dialogue))
+    : '';
+  let presentationBeats = null;
+  if (validatedBeats) {
+    const lastSay = validatedBeats.at(-1)?.say || '';
+    presentationBeats = lastSay === displayText
+      ? validatedBeats
+      : [
+        ...validatedBeats.map((beat, index) => (
+          index === validatedBeats.length - 1
+            ? { ...beat, pauseAfterMs: beat.pauseAfterMs || DEFAULT_BEAT_PAUSE_MS }
+            : beat
+        )),
+        { index: validatedBeats.length, say: displayText, pauseAfterMs: 0 },
+      ];
+  }
   return createToolOutcome({ kind: ok ? 'success' : 'business_failure', code, terminal,
-    facts, modelContext, presentation: { displayText, speak: false, ...(modelLine ? { modelLine } : {}) } });
+    facts: result?.priorTrackPerspectives?.length
+      ? { ...facts, priorTrackPerspectives: sanitizeFacts(result.priorTrackPerspectives) } : facts,
+    modelContext, presentation: { displayText, speak: false, ...(modelLine ? { modelLine } : {}),
+      ...(independentDialogue ? { independentDialogue } : {}),
+      ...(presentationBeats ? { beats: presentationBeats } : {}) } });
 }
 
 // 纯查询工具：不改队列、偏好或账号数据，跨轮重新执行以反映当前状态。
 const READ_ONLY_MUSIC_TOOLS = new Set(['get_user_playlists', 'get_playlist_tracks', 'search_library', 'search_music', 'get_listening_state']);
 
 export function registerMusicTools(registry, getService) {
-  const register = (name, description, parameters, handler, capability = MUSIC_CAPABILITY) => registry.register(name, {
-    capability, definition: { description, parameters }, readOnly: READ_ONLY_MUSIC_TOOLS.has(name),
-    // 只有这两个字段已确认 null 与「未指定」同义；不处理版本/硬约束或任何其它工具。
-    ...(name === 'select_music' ? { optionalNullObjectFields: ['playlist', 'reference'] } : {}),
-    handler: async (args, context) => {
-      if (MUTATING_MUSIC_TOOLS.has(name) && Object.hasOwn(context, 'userText')
-        && !hasFreshUserInput(context.userText)) {
-        return createToolOutcome({ kind: 'business_failure', code: 'NO_FRESH_MUSIC_REQUEST',
-          modelContext: '本轮用户没有提出新的音乐操作。不要重放上一轮的选歌、播放或反馈动作。',
-          presentation: { displayText: '我看到了你的追问。要我重新换一首，请明确说“再换一首”；这轮我没有改动队列。', speak: false } });
-      }
-      const service = getService();
-      if (!service) return toolOutcome(fail('音乐服务还没准备好。'));
-      return toolOutcome(await handler(service, args, context));
-    },
-  });
+  const allowActionFor = ({ interactionMode = 'radio', isGroup = false } = {}) =>
+    interactionMode === 'roleplay' && !isGroup;
+  const register = (name, description, parameters, handler, capability = MUSIC_CAPABILITY) => {
+    const hasDialogueSlot = MUSIC_DIALOGUE_TOOLS.has(name);
+    const buildDefinition = ({ interactionMode = 'radio', isGroup = false } = {}) => ({
+      description,
+      parameters: hasDialogueSlot
+        ? {
+          ...parameters,
+          properties: {
+            ...parameters.properties,
+            dialogue: MUSIC_DIALOGUE_FIELD,
+            beats: buildBeatsArraySchema({
+              allowAction: allowActionFor({ interactionMode, isGroup }),
+              minItems: 1,
+              maxItems: 4,
+            }),
+          },
+        }
+        : parameters,
+    });
+    return registry.register(name, {
+      capability,
+      ...(hasDialogueSlot
+        ? {
+          resolveDefinition: buildDefinition,
+          prepareArgs: (args, modeContext) => prepareBeatsArgs(args, {
+            allowAction: allowActionFor(modeContext),
+            optionalBeats: true,
+          }),
+        }
+        : { definition: buildDefinition() }),
+      readOnly: READ_ONLY_MUSIC_TOOLS.has(name),
+      // 只有这两个字段已确认 null 与「未指定」同义；不处理版本/硬约束或任何其它工具。
+      ...(name === 'select_music' ? { optionalNullObjectFields: ['playlist', 'reference'] } : {}),
+      handler: async (args, context) => {
+        if (MUTATING_MUSIC_TOOLS.has(name) && Object.hasOwn(context, 'userText')
+          && !hasFreshUserInput(context.userText)) {
+          return createToolOutcome({ kind: 'business_failure', code: 'NO_FRESH_MUSIC_REQUEST',
+            modelContext: '本轮用户没有提出新的音乐操作。不要重放上一轮的选歌、播放或反馈动作。',
+            presentation: { displayText: '我看到了你的追问。要我重新换一首，请明确说“再换一首”；这轮我没有改动队列。', speak: false } });
+        }
+        const service = getService();
+        if (!service) return toolOutcome(fail('音乐服务还没准备好。'));
+        if (!hasDialogueSlot) return toolOutcome(await handler(service, args, context));
+        // 交付字段不参与音乐服务参数校验、候选锁定和提交签名。后台选歌也不交付用户答话。
+        const { dialogue, beats, ...musicArgs } = args;
+        const allowAction = allowActionFor({
+          interactionMode: context.interactionMode,
+          isGroup: Boolean(context.isGroup),
+        });
+        return toolOutcome(await handler(service, musicArgs, context), {
+          dialogue: context.musicTaskRequest ? null : dialogue,
+          beats: context.musicTaskRequest ? null : beats,
+          allowAction,
+        });
+      },
+    });
+  };
   register('set_familiar_artist_cadence', '仅在用户明确反馈推荐歌手熟悉度频率时调用。希望熟悉歌手占多数、陌生歌手偶尔穿插用 familiar_first；明确撤销该安排用 clear。sourceQuote 必须是本轮用户原话的连续片段。仅反馈时调用本工具即可；若同时要求换歌或推荐，还要调用 select_music。本工具不改队列，且应先于选歌执行。', {
     type: 'object', additionalProperties: false, required: ['mode', 'sourceQuote'], properties: {
       mode: { type: 'string', enum: ['familiar_first', 'clear'] },
@@ -155,8 +253,8 @@ export function registerMusicTools(registry, getService) {
       terminal: context.toolCallCount === 1, replayed: saved.replayed === true,
       message: '频率偏好已按本轮用户原话保存。', userMessage: saved.displayText };
   }, MUSIC_MUTATION_CAPABILITY);
-  register('select_music', '按结构化条件选歌或点播。先在对话中理解指代，再提供准确目标/selectionId 与 1 起始序号。用户明确说不想听某位歌手时用 constraints.excludedArtists，不能写成必选 artist；只有用户明确提出的条件才能写入硬标签 constraints.tags，气氛猜测放 softPreferences。推荐不播放用 recommend_only。保留当前条件的纠正必须把完整条件一并传入。用户要听整张专辑时用 mode=album 加 album.source/albumId（不要拆成 targets 逐个点歌，也不要靠歌名猜专辑）；专辑内的歌按专辑顺序一批一批往后取。群聊每人推荐时前面的角色仅提案（开放式选歌也要用 commit_music_selection 登记，只在正文提到的歌不算），最后的负责人统一提交。非点播条件只返回候选（不会直接播放）：拿到候选后必须选序号并调用 commit_music_selection 提交。点播（exact）要播放时直接提交，提交后这一轮就结束、不会再让你说话：要对用户说的话写在调用本工具的同一条消息里（只提点到的歌，说已安排，不说已经在放）。',
-    MUSIC_SELECTION_PARAMETERS, async (service, args, context) => {
+  register('select_music', '按结构化条件选歌或点播。先在对话中理解指代，再提供准确目标/selectionId 与 1 起始序号。用户明确说不想听某位歌手时用 constraints.excludedArtists，不能写成必选 artist；constraints.tags 仅用于语种、男女声、纯音乐/人声、年代、地区等客观硬边界，曲风流派（如 jazz/R&B/民谣）、情绪、快慢节奏与配器氛围一律写入 softPreferences（无客观硬边界时用 mode=discovery），拿到候选窗口后凭你对歌曲与歌手的理解结合 features 挑序号提交。推荐不播放用 recommend_only。保留当前条件的纠正必须把完整条件一并传入。用户要听整张专辑时用 mode=album 加 album.source/albumId（不要拆成 targets 逐个点歌，也不要靠歌名猜专辑）；专辑内的歌按专辑顺序一批一批往后取。群聊每人推荐时前面的角色仅提案（开放式选歌也要用 commit_music_selection 登记，只在正文提到的歌不算），最后的负责人统一提交。非点播条件只返回候选（不会直接播放）：拿到候选后必须选序号并调用 commit_music_selection 提交。点播（exact）要播放时直接提交，提交后这一轮就结束、不会再让你说话：点歌短确认可以写在调用本工具的同一条消息里（只提点到的歌，说已安排，不说已经在放）；用户还问了独立问题时改用 dialogue。',
+    SELECT_MUSIC_PARAMETERS, async (service, args, context) => {
       // 「刚推荐过的歌」的短引用 r1 → 那条 ambient 推荐的真实 selection（不改写续播计划，推荐人另记）。
       const ref = context.recommendationRef;
       const accepting = ref && args?.reference?.selectionId === ref.ref;
@@ -171,7 +269,20 @@ export function registerMusicTools(registry, getService) {
         // 候选事实只暴露 offer 身份与有界序号窗口；候选本身不是已播放，也不是已提交。
         // 群聊非负责人：同样选序号提交，但提交只是登记推荐，由本轮负责人决定是否播放。
         const nonOwner = Boolean(context.groupAction && context.groupAction.ownerId !== context.virtualPersonId);
-        return { ...result, modelContext: nonOwner ? `${OFFER_MODEL_CONTEXT}\n${NON_OWNER_OFFER_NOTE}` : OFFER_MODEL_CONTEXT,
+        const candidates = result.offer?.candidates || [];
+        // 仅后台 host 的临时工具回合，不把私人备忘放进持久 offer 或普通聊天回合。
+        let priorTrackPerspectives = [];
+        if (context.musicTaskRequest) {
+          try {
+            const notes = service.conversationStore?.recallTrackPerspectives?.({
+              sessionId: context.sessionId, personId: context.virtualPersonId, tracks: candidates,
+            }) || [];
+            priorTrackPerspectives = candidates.flatMap((candidate, i) => notes[i] ? [{ index: candidate.index, note: notes[i] }] : [])
+              .slice(0, MAX_PRIOR_TRACK_PERSPECTIVES);
+          } catch { /* 备忘不可读时继续返回原候选 */ }
+        }
+        return { ...result, priorTrackPerspectives, modelContext: [OFFER_MODEL_CONTEXT, nonOwner && NON_OWNER_OFFER_NOTE,
+          priorTrackPerspectives.length && PRIOR_TRACK_PERSPECTIVE_GUIDE].filter(Boolean).join('\n'),
           facts: { offerId: result.offerId, mode: result.request?.mode || null, delivery: result.request?.delivery || null,
             requestedCount: result.request?.count ?? null, candidateCount: result.offer?.candidates?.length ?? 0,
             ...(result.brief ? { brief: result.brief } : {}),
@@ -182,13 +293,17 @@ export function registerMusicTools(registry, getService) {
       }
       return result;
     });
-  register('commit_music_selection', '提交你在 select_music 候选里选中的歌曲。群聊里你不是本轮音乐负责人时，提交只登记为你的推荐、不会播放。提交播放后这一轮就结束，不会再让你说话：要对用户说的话请写在调用本工具的同一条消息里（只提你选中的歌，说已安排，不说已经在放）。必须原样使用 select_music 返回的 offerId，indexes 是候选的 1 起始序号（最多 10 个、不可重复）。交付方式、数量与硬约束由那一次 select_music 的请求锁定，这里不能改写；提交失败时不要换成候选以外的歌；返回 SELECTION_INDEXES_UNPLAYABLE 时，避开 knownUnplayableIndexes 里列出的全部序号，从同一组候选的其余序号里选（或少交几首）再提交。只推荐不播放的请求提交后仍然不会播放。',
+  register('commit_music_selection', '提交你在 select_music 候选里选中的歌曲。群聊里你不是本轮音乐负责人时，提交只登记为你的推荐、不会播放。提交播放后这一轮就结束，不会再让你说话：选歌短确认可以写在调用本工具的同一条消息里（只提你选中的歌，说已安排，不说已经在放）；用户还问了独立问题时改用 dialogue。必须原样使用 select_music 返回的 offerId，indexes 是候选的 1 起始序号（最多 10 个、不可重复）。交付方式、数量与硬约束由那一次 select_music 的请求锁定，这里不能改写；提交失败时不要换成候选以外的歌；返回 SELECTION_INDEXES_UNPLAYABLE 时，避开 knownUnplayableIndexes 里列出的全部序号，从同一组候选的其余序号里选（或少交几首）再提交。只推荐不播放的请求提交后仍然不会播放。',
     {
       type: 'object', additionalProperties: false, required: ['offerId', 'indexes'],
       properties: {
         offerId: { type: 'string', minLength: 1, maxLength: 200 },
         indexes: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'integer', minimum: 1 } },
         delivery: { type: 'string', enum: ['replace_now', 'after_current', 'append', 'recommend_only'] },
+        // 可选：长度不在 schema 里卡（超了由服务截断），免得一句理由写长了让整次提交失败。
+        notes: { type: 'array', maxItems: 10, description: '可选：给选中的每首留一句你为什么这会儿想放它。只给你之后写串词时看，听众看不到；不想写就省略。',
+          items: { type: 'object', required: ['index', 'note'],
+            properties: { index: { type: 'integer', minimum: 1 }, note: { type: 'string' } } } },
       },
     // 只有 music 能力即可见：群聊非负责人的提交由服务登记为推荐（add-peer-message-protocol D5），
     // 播放与否只由负责人决定；单聊里每个角色本来就是负责人。
@@ -234,7 +349,7 @@ export function registerMusicTools(registry, getService) {
         message: result.ok ? '' : '解析可播放版本失败。', userMessage: result.ok ? '' : '没有找到可播放版本。' };
     });
   register('get_listening_state', '查看本聊天的独立播放队列、当前歌曲、进度和续播条件；没有其他聊天的私人列表。', object({}),
-    (service, _args, context) => ({ ok: true, listening: service.playbackRuntime.listeningSnapshot(context.sessionId) }));
+    (service, _args, context) => ({ ok: true, listening: publicRuntimeState(service.playbackRuntime.listeningSnapshot(context.sessionId)) }));
   register('record_music_feedback', '仅记录用户对某首具体歌曲的明确喜欢/不喜欢；对歌手整体作品的评价应使用关系记忆，不要误记成当前歌曲的反馈。必须提供本轮原话依据，不能根据技术失败、暂停或切聊天推断。', object({
     songId: { type: 'string' }, sentiment: { type: 'string', enum: ['like', 'dislike', 'neutral'] }, sourceQuote: { type: 'string' },
   }), (service, args, context) => {
@@ -254,13 +369,13 @@ export function registerMusicTools(registry, getService) {
     const existing = memory.searchMemory(undefined, { namespace: person.memoryNamespace, limit: 500 }).find(row => parseEvidence(row).writeKey === writeKey);
     if (existing) return { ok: true, code: 'MUSIC_FEEDBACK_RECORDED', memoryId: existing.id, replayed: true };
     const labels = { like: '喜欢', dislike: '不喜欢', neutral: '没有表达喜欢或讨厌' };
-    const saved = memory.addMemory({ namespace: person.memoryNamespace,
+    const saved = writeMemoryWithEncoding(memory, { namespace: person.memoryNamespace,
       type: policy.until ? 'working' : 'semantic', source: 'user_explicit_feedback', importance: 7, confidence: 0.7,
       content: `用户与我一起听歌时，对 ${track.artist}《${track.title}》的反馈：${labels[args.sentiment]}。原话：${quote}`,
       tags: ['person-relationship', 'music-feedback', `song:${track.songId}`], expiresAt: policy.until,
       evidence: JSON.stringify({ writeKey, sourceTurnId: context.userTurnId, originSessionId: context.sessionId, ownerId: person.id,
         songId: track.songId, source: track.source, sentiment: args.sentiment, quote, policy }),
-    });
+    }, { session_id: context.sessionId });
     if (saved?.ok) service.pool?.invalidate();
     return { ok: saved?.ok === true, code: saved?.ok ? 'MUSIC_FEEDBACK_RECORDED' : 'MEMORY_WRITE_FAILED',
       memoryId: saved?.id, message: saved?.ok ? '这条反馈已经记入我与你的听歌经历。' : '反馈还没有保存成功。' };
@@ -317,7 +432,7 @@ export function registerMusicTools(registry, getService) {
       retry: exhaustedWithoutContinuation ? finishedCopy : '好，我再试一次续播。',
     };
     return { ok: result.accepted, code: result.accepted ? 'LISTENING_CONTROLLED' : 'LISTENING_STATE_CHANGED', terminal: result.accepted,
-      listening,
+      listening: publicRuntimeState(listening),
       message: result.accepted ? `播放操作已提交：${args.action}。` : '播放操作被拒绝：本聊天当前没有在播放，或播放状态刚刚变化。',
       userMessage: result.accepted ? messages[args.action] : '本聊天现在没有在播放，或者播放状态刚刚变了。' };
   }), MUSIC_MUTATION_CAPABILITY);
@@ -328,9 +443,10 @@ export function registerMusicTools(registry, getService) {
     const index = Number.isInteger(scoped.currentIndex) ? scoped.currentIndex : -1;
     const current = index >= 0 ? scoped.queue[index] : null;
     if (!current) return fail('这个聊天现在没有在播的歌。');
-    if (scoped.activeListeningSessionId !== context.sessionId) return fail('这个聊天现在不是正在收听的那个，切过去之后我再讲。');
+    if (scoped.active !== true) return fail('这个聊天现在不是正在收听的那个，切过去之后我再讲。');
     if (args.queueItemId && String(args.queueItemId) !== current.queueItemId) return fail('这一首现在没在播；等它播的时候我会讲。');
     if (scoped.phase !== 'playing') return fail('这首歌还没有真正开始播放，先让它响起来。');
+    const alreadyWriting = current.narration?.status === 'preparing';
     const result = await service.playbackRuntime.submit({
       type: 'NARRATION_REQUESTED',
       eventId: `narration-request:${context.requestId}:${current.queueItemId}`,
@@ -345,10 +461,20 @@ export function registerMusicTools(registry, getService) {
       guard: context.isCurrent,
     });
     if (!result.accepted) return fail('播放状态刚刚变了，等一下再说。');
+    // 这一首还没有串词：runtime 已开新代次，这一轮结束后接一轮只写这首。没有 line pass 的调用方直接算没写成。
+    const live = service.playbackRuntime.listeningSnapshot(context.sessionId);
+    const liveCurrent = live.queue?.[live.currentIndex];
+    const writing = liveCurrent?.queueItemId === current.queueItemId && liveCurrent.narration?.status === 'preparing';
+    if (!alreadyWriting && writing) {
+      const target = service.lineTargetFor(liveCurrent, context.sessionId);
+      if (context.linePass) context.linePass.collect([target]);
+      else await target.fail('no-line-pass');
+    }
     return { ok: true, code: 'NARRATION_REQUESTED', terminal: true, narrating: true,
       queueItemId: current.queueItemId, title: current.title, artist: current.artist,
       message: '串词请求已提交，会在媒体确认后播出；确认之前不要说已经讲过了。',
-      userMessage: '好，我来说说这一首。' };
+      // 还没写好时不许诺一定会说：写不成这一首就安静放。
+      userMessage: writing ? '好，我想想这首怎么说。' : '好，我来说说这一首。' };
   });
   register('edit_listening_queue', '只修改本聊天的待播队列。clear 清空待播项，remove 按稳定歌曲 ID 删除待播项，reorder 按提供的 ID 顺序重排待播项。当前已播过的和正在播的那一首不在待播列表里，删不掉、也重排不了；想换掉它们用 control_listening 的 next，找新歌用 select_music。当前歌继续播放。', object({
     action: { type: 'string', enum: ['clear', 'remove', 'reorder'] }, songIds: { type: 'array', items: { type: 'string' } },
@@ -357,7 +483,7 @@ export function registerMusicTools(registry, getService) {
     markCommitAttempt();
     const result = await service.playbackRuntime.submit({ type: 'QUEUE_EDIT_REQUESTED', eventId: `queue:${context.requestId}:${args.action}`,
       listeningSessionId: context.sessionId, signal: context.signal, guard: context.isCurrent, expectedQueueVersion: scoped.queueVersion, action: args.action, songIds: args.songIds || [] });
-    return { ok: result.accepted, listening: service.playbackRuntime.listeningSnapshot(context.sessionId),
+    return { ok: result.accepted, listening: publicRuntimeState(service.playbackRuntime.listeningSnapshot(context.sessionId)),
       message: result.accepted ? '待播队列已更新。' : '队列编辑被拒绝：队列版本已经变化，或目标不在待播列表中。',
       userMessage: result.accepted ? '' : '待播队列刚刚发生了变化，或者这些歌已经不在待播列表里。' };
   }), MUSIC_MUTATION_CAPABILITY);

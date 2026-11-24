@@ -96,3 +96,9 @@ test('目标是声音池里的声音时带上它自己的参数', async () => {
   assert.deepEqual(calls[1].params, { model: 'qwen-tts' });
   assert.deepEqual(audio.voiceSource, { kind: 'fallback', providerId: 'custom-qwen', reason: 'timeout' });
 });
+
+test('allowFallback=false 时禁用静默代读并直接保留主声线故障', async () => {
+  const { run, calls } = harness({ primaryError: failure('TTS_CREDIT_EXHAUSTED') });
+  await assert.rejects(run({ allowFallback: false }), error => error.code === 'TTS_CREDIT_EXHAUSTED');
+  assert.equal(calls.length, 1);
+});

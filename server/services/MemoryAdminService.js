@@ -1,4 +1,5 @@
-import { evidenceKeys, isMemoryRevoked, revokeMemory } from '../memory/memoryProvenance.js';
+import { isMemoryRevoked, revokeMemory, transferSuperseded } from '../memory/memoryProvenance.js';
+import { revokeSourceObservations } from '../virtual-person/personMemory.js';
 import { memoryApplies, parseEvidence } from '../memory/memoryPolicy.js';
 import { MemoryType } from '../memory/types.js';
 import { ServiceError } from './ServiceError.js';
@@ -11,12 +12,13 @@ export class MemoryAdminService {
     getDreaming = () => null,
     conversationStore = null,
     invalidate = () => {},
+    dropUnspokenLines = () => {},
     generateDailySummary,
     consolidateStation,
     now = () => Date.now(),
     env = process.env,
   } = {}) {
-    Object.assign(this, { getStation, getDreaming, conversationStore, invalidate });
+    Object.assign(this, { getStation, getDreaming, conversationStore, invalidate, dropUnspokenLines });
     this.generateDailySummary = generateDailySummary;
     this.consolidate = consolidateStation;
     this.now = now;
@@ -51,19 +53,31 @@ export class MemoryAdminService {
     const evidence = parseEvidence(row);
     const replacement = store.db.transaction(() => {
       if (evidence.claimId) this.getDreaming()?.revoke(evidence.claimId);
-      revokeMemory(store, row.id, this.now());
+      // 旧行取代过的事实都不复活：修正时改由新行取代；忘掉新说法也不等于旧说法重新成立（与聊天里忘掉一致）。
+      revokeMemory(store, row.id, this.now(), { restore: false });
       if (forget) return null;
-      const saved = station.stationMemory.addMemory({ namespace: row.namespace, type: 'semantic',
+      // 修正只改说法：保留原行的含义标签（表达偏好、歌曲反馈等）、类型、期限与含义字段；
+      // 来源键不带过去（它们刚写了墓碑），新行以人工修正为来源。
+      const tags = String(row.tags || '').split(',').map(tag => tag.trim())
+        .filter(tag => tag && !['revoked', 'superseded', 'station_seed', 'shared-hypothesis'].includes(tag));
+      if (row.namespace === 'station' && !tags.includes('shared-explicit')) tags.push('shared-explicit');
+      const meaning = Object.fromEntries(['kind', 'ownerId', 'songId', 'source', 'sentiment', 'originSessionId']
+        .filter(key => evidence[key] != null).map(key => [key, evidence[key]]));
+      const saved = station.stationMemory.addMemory({ namespace: row.namespace, type: row.type || 'semantic',
         content: String(content).trim().slice(0, 1000), source: 'user_explicit_feedback', confidence: 0.7, importance: 8,
-        tags: row.namespace === 'station' ? ['shared-explicit'] : ['person-relationship'],
-        evidence: JSON.stringify({ correctedMemoryId: row.id, policy: evidence.policy || {}, manualCorrection: true }) });
+        tags: tags.length ? tags : (row.namespace === 'station' ? ['shared-explicit'] : ['person-relationship']),
+        expiresAt: row.expiresAt && row.expiresAt > this.now() ? row.expiresAt : null,
+        evidence: JSON.stringify({ ...meaning, correctedMemoryId: row.id, policy: evidence.policy || {}, manualCorrection: true }) });
       if (!saved.ok) throw new ServiceError(500, 'memory correction failed', 'memory_write_failed');
+      transferSuperseded(store.db, row.id, saved.id, this.now());
       return saved;
     })();
-    const person = station.virtualPersonRegistry?.list().find(entity => entity.memoryNamespace === row.namespace);
-    if (person) for (const source of evidenceKeys(row)) this.conversationStore?.revokeObservation(person.id, source);
+    revokeSourceObservations({ conversationStore: this.conversationStore, registry: station.virtualPersonRegistry,
+      store, row, now: this.now() });
     this.getDreaming()?.reconcile();
     this.invalidate();
+    // 忘掉或改掉的事，没说出口的串词可能正照着写：这些串词作废。
+    this.dropUnspokenLines();
     return { ok: true, revokedMemoryId: row.id, memoryId: replacement?.id || null };
   }
 
