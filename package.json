@@ -62,7 +62,7 @@
     "ipaddr.js": "2.2.0",
     "linkedom": "0.18.12",
     "NeteaseCloudMusicApi": "^4.31.0",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.6.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
