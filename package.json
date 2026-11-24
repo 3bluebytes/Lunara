@@ -59,18 +59,18 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "ffmpeg-static": "^5.2.0",
-    "ipaddr.js": "2.2.0",
-    "linkedom": "0.18.12",
-    "NeteaseCloudMusicApi": "^4.31.0",
+    "ipaddr.js": "2.5.0",
+    "linkedom": "0.18.15",
+    "NeteaseCloudMusicApi": "^4.34.1",
     "node-cron": "^3.0.3",
-    "ws": "^8.18.0"
+    "ws": "^8.23.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.4",
+    "@electron/rebuild": "^4.2.1",
     "c8": "12.0.0",
     "electron": "^39.8.10",
-    "electron-builder": "^26.15.3",
-    "knip": "6.42.1",
+    "electron-builder": "^26.18.0",
+    "knip": "6.47.0",
     "png2icons": "^2.0.1"
   },
   "publishConfig": {
@@ -89,6 +89,6 @@
     "user/*.example"
   ],
   "optionalDependencies": {
-    "@huggingface/transformers": "4.3.1"
+    "@huggingface/transformers": "4.3.2"
   }
 }
