@@ -57,7 +57,7 @@
     "@sansenjian/qq-music-api": "2.6.0",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^16.4.5",
-    "express": "^4.21.0",
+    "express": "^4.22.3",
     "ffmpeg-static": "^5.2.0",
     "ipaddr.js": "2.2.0",
     "linkedom": "0.18.12",
