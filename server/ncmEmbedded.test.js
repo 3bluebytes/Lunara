@@ -181,7 +181,7 @@ test('raw and managed services both omit default IP headers; fourth-slot IP is n
   assert.match(result.stdout, /loopback-header-check-passed/);
 });
 
-test('standalone launcher reuses the embedded assembly and exits cleanly on SIGTERM', async t => {
+test('standalone launcher reuses the embedded assembly and exits cleanly on SIGTERM', { skip: process.platform === 'win32' ? 'Windows 不支持 POSIX SIGTERM 优雅信号投递' : false }, async t => {
   const { spawn } = await import('node:child_process');
   const { mkdtempSync, rmSync } = await import('node:fs');
   const port = await findFreePort();

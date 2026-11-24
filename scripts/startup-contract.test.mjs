@@ -67,6 +67,9 @@ test('desktop packaging contract: builder config whitelist excludes private runt
   // 真实 user/ 不得整目录入包（user/*.example 模板除外）。
   assert.ok(!/^\s*-\s*user\/?$/m.test(builderConfig), 'user/ 真实数据不得整目录入包');
   assert.ok(builderConfig.includes('icon.icns') && builderConfig.includes('icon.ico'), '打包配置应引用生成的图标');
+  // 平台级 files 若只含 `!` 排除项，electron-builder 会判定 containsOnlyIgnore 并注入 `**/*` 穿透顶层白名单。
+  assert.match(builderConfig, /^mac:[\s\S]*?^\s+files:\n\s+- package\.json/m, 'mac.files 须含正向 package.json 以防穿透顶层白名单');
+  assert.match(builderConfig, /^win:[\s\S]*?^\s+files:\n\s+- package\.json/m, 'win.files 须含正向 package.json 以防穿透顶层白名单');
 });
 
 test('desktop candidates are built manually for Apple Silicon and Windows, without publishing a Release', async () => {

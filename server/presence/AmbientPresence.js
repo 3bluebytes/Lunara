@@ -41,11 +41,10 @@ export function revealDelayMs(text = '') {
   return Math.max(1000, Math.min(3000, 800 + 40 * String(text || '').length));
 }
 
-// 可被撤销打断的等待：你一开口或心跳撤销，已入账的话立即揭示，不再等。
+// 可被撤销打断的等待：你一开口或心跳撤销，已入账的话立即揭示，不再等（已随 signal 清理，不 unref 以免等待中事件循环提前排空）。
 const defaultSleep = (ms, signal) => new Promise(resolve => {
   if (signal?.aborted) return resolve();
   const timer = setTimeout(done, ms);
-  timer.unref?.();
   function done() { clearTimeout(timer); signal?.removeEventListener?.('abort', done); resolve(); }
   signal?.addEventListener?.('abort', done, { once: true });
 });

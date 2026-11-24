@@ -61,6 +61,24 @@ jobs:
         if: runner.os == 'Windows'
         run: npm run dist:win
 
+      - name: Audit Windows app.asar contents (no private data or dev docs)
+        if: runner.os == 'Windows'
+        run: |
+          node -e '
+            import { execFileSync } from "node:child_process";
+            import assert from "node:assert/strict";
+            const asar = "dist-desktop/win-unpacked/resources/app.asar";
+            const list = execFileSync("npx", ["--no-install", "@electron/asar", "list", asar], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: true });
+            const entries = list.split(/\r?\n/).filter(Boolean);
+            for (const req of ["/server/index.js", "/pwa/index.html", "/build/licenses/README-ffmpeg.md"]) {
+              assert.ok(entries.includes(req), "missing required asset: " + req);
+            }
+            for (const bad of [/^\/\.env$/m, /^\/data\//m, /^\/cache\//m, /^\/backup\//m, /^\/docs\//m, /^\/openspec\//m, /^\/user\/taste\.md$/m]) {
+              assert.ok(!bad.test(list), "forbidden entry inside app.asar: " + bad);
+            }
+            console.log("windows asar audit passed (" + entries.length + " entries)");
+          ' --input-type=module
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:

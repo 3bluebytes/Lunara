@@ -10,18 +10,19 @@ import { TrackLikeStore } from './music/trackLikeStore.js';
 
 test('openSqliteDatabase configures WAL and 5000ms busy_timeout before queries', t => {
   const dir = mkdtempSync(join(tmpdir(), 'lunara-sqlite-open-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const dbPath = join(dir, 'state.db');
 
   const db = openSqliteDatabase(dbPath);
   const artworkStore = new TrackArtworkStore({ dbPath }).initialize();
   const conversationStore = new ConversationStore({ dbPath }).initialize();
   const likeStore = new TrackLikeStore({ dbPath }).initialize();
+  // node:test 的 t.after 按 FIFO 执行；先全部 close 再 rmSync，避免 Windows 报 EBUSY。
   t.after(() => {
     likeStore.close();
     conversationStore.close();
     artworkStore.close();
     db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   for (const handle of [db, artworkStore.db, conversationStore.db, likeStore.db]) {

@@ -3,16 +3,15 @@ import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const dir = mkdtempSync(join(tmpdir(), 'r6a-dislike-'));
 process.env.LUNARA_DB_PATH = join(dir, 'memory.db');
-const { MemoryService } = await import(`${ROOT}/memory/MemoryService.js`);
-const { MusicSelectionService } = await import(`${ROOT}/program/MusicSelectionService.js`);
-const { ConversationStore } = await import(`${ROOT}/virtual-person/ConversationStore.js`);
-const { VirtualPersonRegistry } = await import(`${ROOT}/virtual-person/VirtualPersonRegistry.js`);
-const { PlaybackRuntimeHost } = await import(`${ROOT}/playback/PlaybackRuntimeHost.js`);
-const { ProgramCommitService } = await import(`${ROOT}/program/ProgramCommitService.js`);
-const { revokeMemory } = await import(`${ROOT}/memory/memoryProvenance.js`);
+const { MemoryService } = await import(new URL('../memory/MemoryService.js', import.meta.url).href);
+const { MusicSelectionService } = await import(new URL('../program/MusicSelectionService.js', import.meta.url).href);
+const { ConversationStore } = await import(new URL('../virtual-person/ConversationStore.js', import.meta.url).href);
+const { VirtualPersonRegistry } = await import(new URL('../virtual-person/VirtualPersonRegistry.js', import.meta.url).href);
+const { PlaybackRuntimeHost } = await import(new URL('../playback/PlaybackRuntimeHost.js', import.meta.url).href);
+const { ProgramCommitService } = await import(new URL('../program/ProgramCommitService.js', import.meta.url).href);
+const { revokeMemory } = await import(new URL('../memory/memoryProvenance.js', import.meta.url).href);
 
 const feedback = (memory, ns, { turn, sentiment, songId = '123', source = 'qq', policy = { disclosure: 'normal' }, expiresAt }) =>
   memory.addMemory({ namespace: ns, type: expiresAt ? 'working' : 'semantic', source: 'user_explicit_feedback', importance: 7, confidence: 0.7,
@@ -72,6 +71,7 @@ test('select() 开放式选歌屏蔽当前聊天的最新 dislike，但遵循同
       resolveTrack: async () => ({ ok: false }) }),
     playbackRuntime, registry, conversationStore,
     getMemoryService: () => memory,
+    getRecordingStore: () => null,
     getCandidates: async () => tracks,
     getSongTagStore: () => null,
     getUserPlaylists: async () => [],

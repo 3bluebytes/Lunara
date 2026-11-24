@@ -82,7 +82,6 @@ export class EmbeddingClient {
           this.pending.delete(id);
           reject(new EmbeddingUnavailable('EMBEDDING_TIMEOUT'));
         }, timeoutMs);
-        timer.unref?.();
         this.pending.set(id, { resolve, reject, timer });
         child.channel?.ref?.(); // 有请求在途时保持事件循环，等到回复或超时
         child.send({ id, texts });

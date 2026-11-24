@@ -33,8 +33,10 @@ asarUnpack:
 npmRebuild: true
 
 mac:
+  # 保留正向白名单项（package.json），避免 electron-builder 因平台 files 仅含 ! 排除项而触发 **/* 全量兜底。
   # 只带本平台的 onnxruntime 二进制（三个平台合计约 290 MB）。
   files:
+    - package.json
     - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
     - "!node_modules/onnxruntime-node/bin/napi-v6/win32/**"
   target:
@@ -47,7 +49,9 @@ mac:
   # 否则设置 CSC_IDENTITY_AUTO_DISCOVERY=false 显式出未签名包（构建不得因缺证书失败）。
 
 win:
+  # 保留正向白名单项（package.json），避免平台 files 仅含 ! 排除项触发 **/* 穿透顶层 files 白名单。
   files:
+    - package.json
     - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
     - "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
   target:

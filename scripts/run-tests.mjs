@@ -69,10 +69,19 @@ for (const f of tests) {
     failed++;
     failedFiles.push(rel);
     console.log(`  ✗ ${rel}`);
-    // 打印失败测试的末尾输出帮助定位
-    const tail = (r.stdout || '').trim().split('\n').slice(-8).join('\n');
-    if (tail) console.log(tail.split('\n').map(l => `      ${l}`).join('\n'));
-    if (r.stderr) console.log(`      [stderr] ${r.stderr.trim().split('\n').slice(-3).join(' ')}`);
+    // 打印失败测试的关键报错与末尾输出帮助定位（避免仅显示 node:test 统计尾行）
+    const lines = (r.stdout || '').trim().split('\n').filter(Boolean);
+    const errorIndices = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      if (/\b(?:not ok|AssertionError|Error:|ERR_[A-Z_]+|EBUSY|EPERM)\b/.test(lines[i])) {
+        errorIndices.push(i);
+      }
+    }
+    const snippet = errorIndices.length > 0
+      ? lines.slice(Math.max(0, errorIndices[0] - 1), Math.min(lines.length, errorIndices[0] + 18))
+      : lines.slice(-16);
+    if (snippet.length) console.log(snippet.map(l => `      ${l}`).join('\n'));
+    if (r.stderr) console.log(`      [stderr] ${r.stderr.trim().split('\n').slice(-5).join(' ')}`);
   }
 }
 
